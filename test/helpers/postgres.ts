@@ -61,7 +61,7 @@ export async function createPostgresTestContext(
     migratorUrl,
     roleUrls,
     cleanup: async () => {
-      await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
       await adminPool.end();
     },
   };
