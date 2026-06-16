@@ -3,7 +3,7 @@ services:
     image: postgres:18.0-bookworm
     restart: unless-stopped
     ports:
-      - '127.0.0.1:5432:5432'
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
     env_file:
       - .env
     environment:

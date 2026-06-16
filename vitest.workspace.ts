@@ -1,8 +1,17 @@
+import { resolve } from 'node:path';
 import { defineWorkspace, type TestProjectConfiguration } from 'vitest/config';
+
+const resolveConfig = {
+  alias: {
+    '@plus-one/contracts': resolve('packages/contracts/src/index.ts'),
+    '@plus-one/database': resolve('packages/database/src/index.ts'),
+  },
+};
 
 // Vitest 3.2 accepts this at runtime, but the workspace typing omits it.
 const databaseProject = {
   fileParallelism: false,
+  resolve: resolveConfig,
   test: {
     name: 'database',
     include: ['test/database/**/*.test.ts'],
@@ -14,6 +23,7 @@ const databaseProject = {
 
 export default defineWorkspace([
   {
+    resolve: resolveConfig,
     test: {
       name: 'unit',
       include: ['apps/**/{src,test}/**/*.test.ts', 'packages/**/src/**/*.test.ts'],
@@ -22,6 +32,7 @@ export default defineWorkspace([
   },
   databaseProject,
   {
+    resolve: resolveConfig,
     test: {
       name: 'integration',
       include: ['test/integration/**/*.test.ts'],
@@ -29,6 +40,7 @@ export default defineWorkspace([
     },
   },
   {
+    resolve: resolveConfig,
     test: {
       name: 'acceptance',
       include: ['test/acceptance/**/*.test.ts'],
