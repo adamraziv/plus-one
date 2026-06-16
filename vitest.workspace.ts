@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { defineWorkspace, type TestProjectConfiguration } from 'vitest/config';
+import { defineWorkspace } from 'vitest/config';
 
 const resolveConfig = {
   alias: {
@@ -8,18 +8,17 @@ const resolveConfig = {
   },
 };
 
-// Vitest 3.2 accepts this at runtime, but the workspace typing omits it.
 const databaseProject = {
-  fileParallelism: false,
   resolve: resolveConfig,
   test: {
     name: 'database',
     include: ['test/database/**/*.test.ts'],
     environment: 'node',
+    fileParallelism: false,
     hookTimeout: 60_000,
     testTimeout: 60_000,
   },
-} as unknown as TestProjectConfiguration;
+};
 
 export default defineWorkspace([
   {

@@ -1,4 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadDatabaseConfig, runMigrations, verifyMigrations } from '@plus-one/database';
@@ -115,6 +116,93 @@ describe('platform migrations', () => {
       ).rejects.toMatchObject({ code: 'migration_verification_failed' });
     } finally {
       await writeFile(migrationPath, original);
+    }
+  });
+
+  it('rolls back all statements when a migration fails before recording its checksum', async () => {
+    context = await createPostgresTestContext('migration_rollback', false);
+    const directory = await mkdtemp(resolve(tmpdir(), 'plus-one-migration-rollback-'));
+    const config = loadDatabaseConfig();
+
+    try {
+      await writeFile(
+        resolve(directory, '0001_failing_migration.sql'),
+        `
+CREATE SCHEMA operations;
+CREATE TABLE operations.schema_migrations (
+  filename text PRIMARY KEY,
+  checksum text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now(),
+  duration_ms integer NOT NULL CHECK (duration_ms >= 0)
+);
+CREATE TABLE operations.rollback_probe (id bigint PRIMARY KEY);
+SELECT 1 / 0;
+`,
+      );
+
+      await expect(
+        runMigrations({
+          connectionString: context.migratorUrl,
+          migrationDirectory: directory,
+          rolePasswords: config.rolePasswords,
+        }),
+      ).rejects.toMatchObject({ code: 'database_operation_failed' });
+
+      const pool = new Pool({ connectionString: context.migratorUrl });
+
+      try {
+        const result = await pool.query<{ probe_relation: string | null }>(
+          "SELECT to_regclass('operations.rollback_probe')::text AS probe_relation",
+        );
+
+        expect(result.rows[0]).toEqual({ probe_relation: null });
+      } finally {
+        await pool.end();
+      }
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('re-hardens an existing application role when migrations can manage roles', async () => {
+    context = await createPostgresTestContext('reharden_roles', false);
+    const config = loadDatabaseConfig();
+
+    if (config.adminUrl === undefined) {
+      throw new Error('DATABASE_ADMIN_URL is required for database tests');
+    }
+
+    const admin = new Pool({ connectionString: config.adminUrl, max: 1 });
+
+    try {
+      await admin.query(`
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'plus_one_accounting') THEN
+    CREATE ROLE plus_one_accounting LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS PASSWORD 'temporary_plus_one_accounting_password';
+  END IF;
+END
+$$;
+`);
+      await admin.query('ALTER ROLE plus_one_migrator CREATEDB CREATEROLE INHERIT');
+      await admin.query('GRANT plus_one_accounting TO plus_one_migrator WITH ADMIN TRUE');
+      await admin.query('ALTER ROLE plus_one_accounting CREATEDB');
+
+      await runMigrations({
+        connectionString: context.migratorUrl,
+        migrationDirectory: resolve('database/migrations'),
+        rolePasswords: config.rolePasswords,
+      });
+
+      const result = await admin.query<{ rolcreatedb: boolean }>(
+        "SELECT rolcreatedb FROM pg_roles WHERE rolname = 'plus_one_accounting'",
+      );
+
+      expect(result.rows[0]).toEqual({ rolcreatedb: false });
+    } finally {
+      await admin.query('ALTER ROLE plus_one_accounting NOCREATEDB NOCREATEROLE NOBYPASSRLS');
+      await admin.query('ALTER ROLE plus_one_migrator NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS');
+      await admin.end();
     }
   });
 });

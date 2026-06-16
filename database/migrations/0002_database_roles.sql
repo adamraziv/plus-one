@@ -3,8 +3,20 @@ DECLARE
   role_name text;
   role_password text;
   can_manage_roles boolean;
+  current_role_is_superuser boolean;
+  current_role_can_create_database boolean;
+  target_role_is_superuser boolean;
+  target_role_can_create_database boolean;
+  target_role_can_create_role boolean;
+  target_role_can_login boolean;
+  target_role_inherits boolean;
+  target_role_can_replicate boolean;
+  target_role_can_bypass_rls boolean;
 BEGIN
-  SELECT rolcreaterole OR rolsuper INTO can_manage_roles FROM pg_roles WHERE rolname = current_user;
+  SELECT rolcreaterole OR rolsuper, rolsuper, rolcreatedb
+  INTO can_manage_roles, current_role_is_superuser, current_role_can_create_database
+  FROM pg_roles
+  WHERE rolname = current_user;
 
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'plus_one_owner') THEN
     IF NOT can_manage_roles THEN RAISE EXCEPTION 'plus_one_owner is missing and current role cannot create it'; END IF;
@@ -21,7 +33,24 @@ BEGIN
       IF NOT can_manage_roles THEN RAISE EXCEPTION '% is missing and current role cannot create it', role_name; END IF;
       EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L', role_name, role_password);
     ELSIF can_manage_roles THEN
-      EXECUTE format('ALTER ROLE %I PASSWORD %L', role_name, role_password);
+      SELECT rolsuper, rolcreatedb, rolcreaterole, rolcanlogin, rolinherit, rolreplication, rolbypassrls
+      INTO target_role_is_superuser, target_role_can_create_database, target_role_can_create_role, target_role_can_login, target_role_inherits, target_role_can_replicate, target_role_can_bypass_rls
+      FROM pg_roles
+      WHERE rolname = role_name;
+
+      IF (target_role_is_superuser OR target_role_can_replicate OR target_role_can_bypass_rls) AND NOT current_role_is_superuser THEN
+        RAISE EXCEPTION '% has privileged drift and requires a superuser repair', role_name;
+      ELSIF target_role_can_create_database AND NOT (current_role_can_create_database OR current_role_is_superuser) THEN
+        RAISE EXCEPTION '% has CREATEDB drift and requires a CREATEDB-capable repair', role_name;
+      ELSIF current_role_is_superuser THEN
+        EXECUTE format('ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L', role_name, role_password);
+      ELSIF target_role_can_create_database THEN
+        EXECUTE format('ALTER ROLE %I LOGIN NOCREATEDB NOCREATEROLE INHERIT PASSWORD %L', role_name, role_password);
+      ELSIF target_role_can_create_role OR NOT target_role_can_login OR NOT target_role_inherits THEN
+        EXECUTE format('ALTER ROLE %I LOGIN NOCREATEROLE INHERIT PASSWORD %L', role_name, role_password);
+      ELSE
+        EXECUTE format('ALTER ROLE %I PASSWORD %L', role_name, role_password);
+      END IF;
     END IF;
   END LOOP;
 

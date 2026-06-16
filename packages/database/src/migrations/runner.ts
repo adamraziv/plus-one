@@ -162,18 +162,23 @@ export async function runMigrations(options: MigrationRunnerOptions): Promise<st
         }
 
         const startedAt = performance.now();
+        await client.query('RESET ROLE');
+        await client.query('BEGIN');
         try {
-          await client.query('RESET ROLE');
           await setRolePasswords(client, options.rolePasswords);
           await executeSqlStatements(client, migration.sql);
           await client.query(
             'INSERT INTO operations.schema_migrations (filename, checksum, duration_ms) VALUES ($1, $2, $3)',
             [migration.filename, migration.checksum, Math.max(0, Math.round(performance.now() - startedAt))],
           );
+          await client.query('COMMIT');
+          appliedNow.push(migration.filename);
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
         } finally {
           await client.query('RESET ROLE');
         }
-        appliedNow.push(migration.filename);
       }
     } finally {
       client.release();
