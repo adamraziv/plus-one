@@ -1,0 +1,14 @@
+{
+  "name": "@plus-one/database",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@plus-one/contracts": "workspace:*",
+    "dotenv": "17.2.3",
+    "pg": "8.16.3",
+    "zod": "4.1.12"
+  }
+}
