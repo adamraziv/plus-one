@@ -1,0 +1,50 @@
+import { describe, expect, it } from 'vitest';
+import { PlusOneError } from '@plus-one/contracts';
+import { loadDatabaseConfig, normalizeDatabaseError } from './index.js';
+
+const validEnvironment = {
+  DATABASE_ADMIN_URL: 'postgresql://plus_one_admin:admin@127.0.0.1:5432/plus_one',
+  DATABASE_MIGRATOR_URL: 'postgresql://plus_one_migrator:migrator@127.0.0.1:5432/plus_one',
+  DATABASE_ACCOUNTING_URL: 'postgresql://plus_one_accounting:accounting@127.0.0.1:5432/plus_one',
+  DATABASE_PLANNING_URL: 'postgresql://plus_one_planning:planning@127.0.0.1:5432/plus_one',
+  DATABASE_OPERATIONS_URL: 'postgresql://plus_one_operations:operations@127.0.0.1:5432/plus_one',
+  DATABASE_QUERY_URL: 'postgresql://plus_one_query:query-password@127.0.0.1:5432/plus_one',
+  DATABASE_MEMORY_URL: 'postgresql://plus_one_memory:memory-password@127.0.0.1:5432/plus_one',
+  PLUS_ONE_ACCOUNTING_PASSWORD: 'accounting-password',
+  PLUS_ONE_PLANNING_PASSWORD: 'planning-password',
+  PLUS_ONE_OPERATIONS_PASSWORD: 'operations-password',
+  PLUS_ONE_QUERY_PASSWORD: 'query-password-123',
+  PLUS_ONE_MEMORY_PASSWORD: 'memory-password-123',
+};
+
+describe('database configuration', () => {
+  it('parses every role boundary without exposing passwords separately from migration input', () => {
+    const config = loadDatabaseConfig(validEnvironment);
+    expect(config.poolUrls.query).toContain('plus_one_query');
+    expect(config.rolePasswords.accounting).toBe('accounting-password');
+  });
+
+  it('rejects incomplete role configuration', () => {
+    const incomplete = { ...validEnvironment, DATABASE_QUERY_URL: undefined };
+    expect(() => loadDatabaseConfig(incomplete)).toThrow();
+  });
+});
+
+describe('database error normalization', () => {
+  it('maps serialization conflicts without returning raw SQL or database messages', () => {
+    const error = normalizeDatabaseError(
+      { code: '40001', message: 'raw database message', query: 'select secret' },
+      { operation: 'post-journal', receiptLookupRequired: true },
+    );
+
+    expect(error).toBeInstanceOf(PlusOneError);
+    expect(error.toJSON()).toMatchObject({
+      category: 'serialization_conflict',
+      retry: 'after_backoff',
+      receiptLookupRequired: true,
+      details: { operation: 'post-journal', sqlState: '40001' },
+    });
+    expect(JSON.stringify(error.toJSON())).not.toContain('raw database message');
+    expect(JSON.stringify(error.toJSON())).not.toContain('select secret');
+  });
+});

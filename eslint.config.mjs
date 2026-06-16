@@ -2,7 +2,18 @@ import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['node_modules/**', 'dist/**', 'coverage/**', '.mastra/**'] },
+  {
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      'coverage/**',
+      '.mastra/**',
+      'apps/**/*.js',
+      'packages/**/*.js',
+      'test/**/*.js',
+      'vitest.workspace.js',
+    ],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
