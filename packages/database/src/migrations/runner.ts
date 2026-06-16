@@ -50,18 +50,80 @@ async function migrationTableExists(client: PoolClient): Promise<boolean> {
   return result.rows[0]?.exists ?? false;
 }
 
-async function assumeOwnerIfAvailable(client: PoolClient): Promise<void> {
-  const result = await client.query<{ can_set_owner: boolean }>(
-    "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'plus_one_owner') AND pg_has_role(current_user, 'plus_one_owner', 'MEMBER') AS can_set_owner",
-  );
-  if (result.rows[0]?.can_set_owner === true) {
-    await client.query('SET LOCAL ROLE plus_one_owner');
+async function setRolePasswords(client: PoolClient, passwords: MigrationRolePasswords): Promise<void> {
+  for (const [role, password] of Object.entries(passwords)) {
+    await client.query('SELECT set_config($1, $2, false)', [`plus_one.role_password.${role}`, password]);
   }
 }
 
-async function setRolePasswords(client: PoolClient, passwords: MigrationRolePasswords): Promise<void> {
-  for (const [role, password] of Object.entries(passwords)) {
-    await client.query('SELECT set_config($1, $2, true)', [`plus_one.role_password.${role}`, password]);
+function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let singleQuoted = false;
+  let dollarQuoteTag: string | undefined;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index];
+    const rest = sql.slice(index);
+
+    if (dollarQuoteTag !== undefined) {
+      current += char;
+      if (rest.startsWith(dollarQuoteTag)) {
+        current += dollarQuoteTag.slice(1);
+        index += dollarQuoteTag.length - 1;
+        dollarQuoteTag = undefined;
+      }
+      continue;
+    }
+
+    if (singleQuoted) {
+      current += char;
+      if (char === "'" && sql[index + 1] === "'") {
+        current += "'";
+        index += 1;
+      } else if (char === "'") {
+        singleQuoted = false;
+      }
+      continue;
+    }
+
+    const dollarQuoteMatch = /^\$[A-Za-z0-9_]*\$/.exec(rest);
+    if (dollarQuoteMatch !== null) {
+      dollarQuoteTag = dollarQuoteMatch[0];
+      current += dollarQuoteTag;
+      index += dollarQuoteTag.length - 1;
+      continue;
+    }
+
+    if (char === "'") {
+      singleQuoted = true;
+      current += char;
+      continue;
+    }
+
+    if (char === ';') {
+      const statement = current.trim();
+      if (statement.length > 0) {
+        statements.push(statement);
+      }
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  const finalStatement = current.trim();
+  if (finalStatement.length > 0) {
+    statements.push(finalStatement);
+  }
+
+  return statements;
+}
+
+async function executeSqlStatements(client: PoolClient, sql: string): Promise<void> {
+  for (const statement of splitSqlStatements(sql)) {
+    await client.query(statement);
   }
 }
 
@@ -100,23 +162,18 @@ export async function runMigrations(options: MigrationRunnerOptions): Promise<st
         }
 
         const startedAt = performance.now();
-        await client.query('BEGIN');
-
         try {
+          await client.query('RESET ROLE');
           await setRolePasswords(client, options.rolePasswords);
-          await assumeOwnerIfAvailable(client);
-          await client.query(migration.sql);
-          await assumeOwnerIfAvailable(client);
+          await executeSqlStatements(client, migration.sql);
           await client.query(
             'INSERT INTO operations.schema_migrations (filename, checksum, duration_ms) VALUES ($1, $2, $3)',
             [migration.filename, migration.checksum, Math.max(0, Math.round(performance.now() - startedAt))],
           );
-          await client.query('COMMIT');
-          appliedNow.push(migration.filename);
-        } catch (error) {
-          await client.query('ROLLBACK');
-          throw error;
+        } finally {
+          await client.query('RESET ROLE');
         }
+        appliedNow.push(migration.filename);
       }
     } finally {
       client.release();

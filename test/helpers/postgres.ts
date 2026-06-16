@@ -53,6 +53,7 @@ export async function createPostgresTestContext(
       migrationDirectory: resolve('database/migrations'),
       rolePasswords: config.rolePasswords,
     });
+    await adminPool.query('ALTER ROLE plus_one_migrator NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS');
   }
 
   return {
