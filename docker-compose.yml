@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:18.0-bookworm
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:5432:5432'
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: plus_one_admin
+      POSTGRES_PASSWORD: ${PLUS_ONE_ADMIN_PASSWORD}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+      PLUS_ONE_MIGRATOR_PASSWORD: ${PLUS_ONE_MIGRATOR_PASSWORD}
+    volumes:
+      - plus_one_postgres:/var/lib/postgresql
+      - ./database/bootstrap/0001_create_migrator.sh:/docker-entrypoint-initdb.d/0001_create_migrator.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U plus_one_admin -d "$${POSTGRES_DB}"']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  plus_one_postgres:
