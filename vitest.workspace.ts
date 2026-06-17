@@ -5,6 +5,7 @@ const resolveConfig = {
   alias: {
     '@plus-one/contracts': resolve('packages/contracts/src/index.ts'),
     '@plus-one/database': resolve('packages/database/src/index.ts'),
+    '@plus-one/runtime': resolve('packages/runtime/src/index.ts'),
   },
 };
 

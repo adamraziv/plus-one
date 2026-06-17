@@ -4,3 +4,7 @@ coverage/
 .mastra/
 .env
 *.tsbuildinfo
+apps/**/*.js
+packages/**/*.js
+test/**/*.js
+vitest.workspace.js
