@@ -55,6 +55,10 @@ const SQL_STATE_MAPPING: Record<
   },
 };
 
+function isConstraintClass(sqlState: string): boolean {
+  return sqlState.startsWith('22') || sqlState.startsWith('23') || sqlState.startsWith('2B');
+}
+
 export function normalizeDatabaseError(error: unknown, context: DatabaseErrorContext): PlusOneError {
   if (error instanceof PlusOneError) {
     return error;
@@ -63,9 +67,8 @@ export function normalizeDatabaseError(error: unknown, context: DatabaseErrorCon
   const candidate = error as PostgreSqlLikeError;
   const sqlState = typeof candidate?.code === 'string' ? candidate.code : undefined;
   const mapped = sqlState === undefined ? undefined : SQL_STATE_MAPPING[sqlState];
-  const integrityViolation = sqlState?.startsWith('23') === true;
   const normalized = mapped ??
-    (integrityViolation
+    (sqlState !== undefined && isConstraintClass(sqlState)
       ? {
           category: 'constraint_violation' as const,
           code: 'database_constraint_violation',

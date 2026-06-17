@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from 'pg';
+import { PlusOneError } from '@plus-one/contracts';
 import type { DatabasePoolRole } from './config.js';
 import { normalizeDatabaseError } from './errors.js';
 
@@ -39,16 +40,17 @@ export async function verifyDatabasePools(pools: DatabasePools): Promise<void> {
       const expected = `plus_one_${role}`;
 
       if (result.rows[0]?.current_user !== expected) {
-        throw new PlusOneDatabaseRoleError(role, result.rows[0]?.current_user);
+        const actualUser = result.rows[0]?.current_user ?? 'no role';
+        throw new PlusOneError({
+          category: 'validation_rejected',
+          code: 'database_role_mismatch',
+          message: `Expected plus_one_${role}, received ${actualUser}`,
+          retry: 'never',
+          receiptLookupRequired: false,
+          details: { role, actualUser },
+        });
       }
     });
-  }
-}
-
-class PlusOneDatabaseRoleError extends Error {
-  constructor(expectedRole: DatabasePoolRole, actualRole: string | undefined) {
-    super(`Expected plus_one_${expectedRole}, received ${actualRole ?? 'no role'}`);
-    this.name = 'PlusOneDatabaseRoleError';
   }
 }
 
