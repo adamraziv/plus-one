@@ -41,6 +41,9 @@ importers:
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.18.12)(tsx@4.20.6)
+      zod:
+        specifier: 4.1.12
+        version: 4.1.12
 
   apps/engine:
     dependencies:
