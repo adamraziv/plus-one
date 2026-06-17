@@ -37,6 +37,8 @@ export default defineWorkspace([
       name: 'integration',
       include: ['test/integration/**/*.test.ts'],
       environment: 'node',
+      hookTimeout: 60_000,
+      testTimeout: 60_000,
     },
   },
   {
