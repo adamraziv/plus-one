@@ -4,7 +4,8 @@
     "baseUrl": ".",
     "paths": {
       "@plus-one/contracts": ["packages/contracts/src/index.ts"],
-      "@plus-one/database": ["packages/database/src/index.ts"]
+      "@plus-one/database": ["packages/database/src/index.ts"],
+      "@plus-one/runtime": ["packages/runtime/src/index.ts"]
     }
   },
   "include": ["apps/**/*.ts", "packages/**/*.ts", "test/**/*.ts", "vitest.workspace.ts"]
