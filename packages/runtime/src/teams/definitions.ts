@@ -1,6 +1,7 @@
-import type {
-  ArtifactEnvelopeV1, CheckerRubricV1, CheckerVerdictV1, MakerArtifactV1,
-  RoleIdentityV1, SchemaIdentityV1, StopConditionV1, TeamResultStatusV1,
+import {
+  PlusOneError,
+  type ArtifactEnvelopeV1, type CheckerRubricV1, type CheckerVerdictV1, type MakerArtifactV1,
+  type RoleIdentityV1, type SchemaIdentityV1, type StopConditionV1, type TeamResultStatusV1,
 } from '@plus-one/contracts';
 import type { z } from 'zod';
 
@@ -50,4 +51,31 @@ export function findWorkCell(team: TeamDefinition, workCellId: string): WorkCell
   const cell = team.workCells.find((candidate) => candidate.workCellId === workCellId);
   if (cell === undefined) throw new Error('Unknown work cell ' + team.team + '/' + workCellId);
   return cell;
+}
+
+export interface CheckedWorkCellResult {
+  householdId: string;
+  taskId: string;
+  team: string;
+  workCellId: string;
+  status: TeamResultStatusV1;
+  makerArtifacts: readonly ArtifactEnvelopeV1[];
+  checkerVerdicts: readonly CheckerVerdictV1[];
+  acceptedMaker?: MakerArtifactV1;
+  completionReason: string;
+  outstanding: readonly string[];
+}
+
+export function assertMakerOutputSchemaIdentity(actual: SchemaIdentityV1,
+  expected: SchemaIdentityV1): void {
+  if (actual.schemaName !== expected.schemaName
+    || actual.schemaVersion !== expected.schemaVersion) {
+    throw new PlusOneError({
+      category: 'validation_rejected', code: 'maker_output_schema_identity_mismatch',
+      message: 'Maker output schema identity does not match the selected work-cell contract',
+      retry: 'never', receiptLookupRequired: false,
+      details: { expectedSchemaName: expected.schemaName,
+        expectedSchemaVersion: expected.schemaVersion },
+    });
+  }
 }
