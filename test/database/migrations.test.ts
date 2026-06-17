@@ -26,6 +26,7 @@ describe('platform migrations', () => {
     expect(await runMigrations(options)).toEqual([
       '0001_platform_foundation.sql',
       '0002_database_roles.sql',
+      '0003_operational_verification.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();
