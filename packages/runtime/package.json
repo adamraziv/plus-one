@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@mastra/core": "1.42.0",
     "@plus-one/contracts": "workspace:*",
     "canonicalize": "3.0.0",
     "ulid": "3.0.2",
