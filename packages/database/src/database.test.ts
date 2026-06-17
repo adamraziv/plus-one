@@ -61,6 +61,7 @@ describe('migration discovery', () => {
     expect(migrations.map((migration) => migration.filename)).toEqual([
       '0001_platform_foundation.sql',
       '0002_database_roles.sql',
+      '0003_operational_verification.sql',
     ]);
 
     for (const migration of migrations) {
