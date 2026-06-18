@@ -62,6 +62,7 @@ describe('migration discovery', () => {
       '0001_platform_foundation.sql',
       '0002_database_roles.sql',
       '0003_operational_verification.sql',
+      '0004_accounting_ledger.sql',
     ]);
 
     for (const migration of migrations) {

@@ -341,5 +341,478 @@ CREATE UNIQUE INDEX account_source_mappings_active_identity
     (household_id, source_system, external_account_id)
   WHERE archived_at IS NULL;
 
+CREATE FUNCTION accounting.reject_immutable_fact_change()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  RAISE EXCEPTION USING
+    ERRCODE = '55000',
+    MESSAGE = TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME || ' is immutable';
+END;
+$$;
+
+CREATE FUNCTION accounting.validate_draft_revision()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting
+AS $$
+DECLARE
+  previous accounting.journal_drafts%ROWTYPE;
+BEGIN
+  IF NEW.version = 1 THEN
+    RETURN NEW;
+  END IF;
+  SELECT * INTO previous
+  FROM accounting.journal_drafts
+  WHERE household_id = NEW.household_id AND id = NEW.previous_draft_id;
+  IF NOT FOUND
+    OR previous.book_id <> NEW.book_id
+    OR previous.draft_series_id <> NEW.draft_series_id
+    OR previous.version <> NEW.version - 1 THEN
+    RAISE EXCEPTION USING ERRCODE = '23514',
+      CONSTRAINT = 'journal_drafts_previous_version_exact',
+      MESSAGE = 'Draft revision must reference the immediately preceding version in the same household book';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION accounting.guard_account_history()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting
+AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM accounting.postings WHERE household_id = OLD.household_id AND account_id = OLD.id
+  ) AND (
+    NEW.household_id <> OLD.household_id OR NEW.book_id <> OLD.book_id
+    OR NEW.account_id <> OLD.account_id OR NEW.native_currency <> OLD.native_currency
+    OR NEW.accounting_class <> OLD.accounting_class OR NEW.normal_balance <> OLD.normal_balance
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '55000', CONSTRAINT = 'accounts_posted_identity_immutable',
+      MESSAGE = 'Posted account identity, class, balance direction, book, and currency are immutable';
+  END IF;
+  NEW.updated_at := clock_timestamp();
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION accounting.validate_account_hierarchy()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting
+AS $$
+BEGIN
+  IF NEW.parent_account_id IS NULL THEN RETURN NEW; END IF;
+  IF EXISTS (
+    WITH RECURSIVE ancestors AS (
+      SELECT id, parent_account_id
+      FROM accounting.accounts
+      WHERE household_id = NEW.household_id AND book_id = NEW.book_id
+        AND id = NEW.parent_account_id
+      UNION ALL
+      SELECT parent.id, parent.parent_account_id
+      FROM accounting.accounts parent
+      JOIN ancestors child ON child.parent_account_id = parent.id
+      WHERE parent.household_id = NEW.household_id AND parent.book_id = NEW.book_id
+    )
+    SELECT 1 FROM ancestors WHERE id = NEW.id
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'accounts_hierarchy_acyclic',
+      MESSAGE = 'Account hierarchy cannot contain a cycle';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER journal_drafts_validate_revision
+BEFORE INSERT ON accounting.journal_drafts
+FOR EACH ROW EXECUTE FUNCTION accounting.validate_draft_revision();
+
+CREATE TRIGGER accounts_guard_history
+BEFORE UPDATE ON accounting.accounts
+FOR EACH ROW EXECUTE FUNCTION accounting.guard_account_history();
+CREATE TRIGGER accounts_validate_hierarchy
+BEFORE INSERT OR UPDATE OF parent_account_id ON accounting.accounts
+FOR EACH ROW EXECUTE FUNCTION accounting.validate_account_hierarchy();
+
+CREATE TRIGGER book_configurations_immutable
+BEFORE UPDATE OR DELETE ON accounting.book_configurations
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+CREATE TRIGGER journal_drafts_immutable
+BEFORE UPDATE OR DELETE ON accounting.journal_drafts
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+CREATE TRIGGER draft_postings_immutable
+BEFORE UPDATE OR DELETE ON accounting.draft_postings
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+CREATE TRIGGER journals_immutable
+BEFORE UPDATE OR DELETE ON accounting.journals
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+CREATE TRIGGER postings_immutable
+BEFORE UPDATE OR DELETE ON accounting.postings
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+CREATE TRIGGER journal_tags_immutable
+BEFORE UPDATE OR DELETE ON accounting.journal_tags
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+CREATE TRIGGER posting_tags_immutable
+BEFORE UPDATE OR DELETE ON accounting.posting_tags
+FOR EACH ROW EXECUTE FUNCTION accounting.reject_immutable_fact_change();
+
+CREATE FUNCTION accounting.validate_complete_journal()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, accounting, operations
+AS $$
+DECLARE
+  target_journal_id bigint;
+  journal accounting.journals%ROWTYPE;
+  posting_count integer;
+  debit_total numeric;
+  credit_total numeric;
+BEGIN
+  IF TG_TABLE_NAME = 'journals' THEN
+    target_journal_id := NEW.id;
+  ELSE
+    target_journal_id := NEW.journal_id;
+  END IF;
+  SELECT * INTO journal FROM accounting.journals WHERE id = target_journal_id;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM accounting.journal_drafts successor
+    WHERE successor.household_id = journal.household_id
+      AND successor.previous_draft_id = journal.draft_id
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_latest_draft_only',
+      MESSAGE = 'Only the latest draft version may be posted';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM accounting.journal_drafts draft
+    WHERE draft.id = journal.draft_id
+      AND draft.household_id = journal.household_id
+      AND draft.book_id = journal.book_id
+      AND draft.task_id = journal.task_id
+      AND draft.checked_artifact_id = journal.checked_artifact_id
+      AND draft.checked_artifact_hash = journal.checked_artifact_hash
+      AND draft.journal_type = journal.journal_type
+      AND draft.transaction_currency = journal.transaction_currency
+      AND draft.occurred_on = journal.occurred_on
+      AND draft.effective_on = journal.effective_on
+      AND draft.settlement_on IS NOT DISTINCT FROM journal.settlement_on
+      AND draft.source_on IS NOT DISTINCT FROM journal.source_on
+      AND draft.description = journal.description
+      AND draft.counterparty_id IS NOT DISTINCT FROM journal.counterparty_id
+      AND draft.tag_ids = ARRAY(
+        SELECT tag.tag_id
+        FROM accounting.journal_tags link
+        JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+        WHERE link.household_id = journal.household_id AND link.journal_id = journal.id
+        ORDER BY tag.tag_id
+      )
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_exact_draft_metadata',
+      MESSAGE = 'Posted journal metadata and tags must exactly match the checked draft';
+  END IF;
+
+  IF EXISTS (
+    (SELECT ordinal, account_id, direction, transaction_amount, account_native_amount,
+       account_native_currency, exchange_rate, exchange_rate_quote, exchange_rate_date,
+       exchange_rate_source, memo, tag_ids
+     FROM accounting.draft_postings
+     WHERE household_id = journal.household_id AND draft_id = journal.draft_id)
+    EXCEPT ALL
+    (SELECT posting.ordinal, posting.account_id, posting.direction, posting.transaction_amount,
+       posting.account_native_amount, posting.account_native_currency, posting.exchange_rate,
+       posting.exchange_rate_quote, posting.exchange_rate_date, posting.exchange_rate_source,
+       posting.memo,
+       ARRAY(SELECT tag.tag_id
+         FROM accounting.posting_tags link
+         JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+         WHERE link.household_id = posting.household_id AND link.posting_id = posting.id
+         ORDER BY tag.tag_id)
+     FROM accounting.postings posting
+     WHERE posting.household_id = journal.household_id AND posting.journal_id = journal.id)
+  ) OR EXISTS (
+    (SELECT posting.ordinal, posting.account_id, posting.direction, posting.transaction_amount,
+       posting.account_native_amount, posting.account_native_currency, posting.exchange_rate,
+       posting.exchange_rate_quote, posting.exchange_rate_date, posting.exchange_rate_source,
+       posting.memo,
+       ARRAY(SELECT tag.tag_id
+         FROM accounting.posting_tags link
+         JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+         WHERE link.household_id = posting.household_id AND link.posting_id = posting.id
+         ORDER BY tag.tag_id)
+     FROM accounting.postings posting
+     WHERE posting.household_id = journal.household_id AND posting.journal_id = journal.id)
+    EXCEPT ALL
+    (SELECT ordinal, account_id, direction, transaction_amount, account_native_amount,
+       account_native_currency, exchange_rate, exchange_rate_quote, exchange_rate_date,
+       exchange_rate_source, memo, tag_ids
+     FROM accounting.draft_postings
+     WHERE household_id = journal.household_id AND draft_id = journal.draft_id)
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_exact_draft_postings',
+      MESSAGE = 'Posted journal entries must exactly match the checked draft entries';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM operations.artifacts artifact
+    JOIN operations.checker_verdicts verdict
+      ON verdict.household_id = artifact.household_id
+     AND verdict.task_id = artifact.task_id
+     AND verdict.covered_artifact_id = artifact.artifact_id
+     AND verdict.covered_artifact_hash = artifact.artifact_hash
+    WHERE artifact.household_id = journal.household_id
+      AND artifact.task_id = journal.task_id
+      AND artifact.artifact_id = journal.checked_artifact_id
+      AND artifact.artifact_hash = journal.checked_artifact_hash
+      AND artifact.artifact_type = 'maker_output'
+      AND verdict.verdict = 'accepted'
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_accepted_artifact_required',
+      MESSAGE = 'Journal draft artifact has no exact accepting checker verdict';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM accounting.periods period
+    WHERE period.id = journal.period_id
+      AND period.household_id = journal.household_id
+      AND period.book_id = journal.book_id
+      AND period.state = 'open'
+      AND journal.effective_on BETWEEN period.period_start AND period.period_end
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_open_period_required',
+      MESSAGE = 'Journal effective date must belong to its open accounting period';
+  END IF;
+
+  SELECT count(*),
+    coalesce(sum(transaction_amount) FILTER (WHERE direction = 'debit'), 0),
+    coalesce(sum(transaction_amount) FILTER (WHERE direction = 'credit'), 0)
+  INTO posting_count, debit_total, credit_total
+  FROM accounting.postings
+  WHERE household_id = journal.household_id AND journal_id = journal.id;
+
+  IF posting_count < 2 THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_two_postings_required',
+      MESSAGE = 'Posted journals require at least two postings';
+  END IF;
+  IF debit_total <> credit_total THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'journals_transaction_currency_balanced',
+      MESSAGE = 'Journal transaction-currency debits and credits must balance';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM accounting.postings posting
+    JOIN accounting.accounts account
+      ON account.household_id = posting.household_id AND account.id = posting.account_id
+    LEFT JOIN operations.currency_metadata native_meta
+      ON native_meta.currency_code = posting.account_native_currency
+    LEFT JOIN operations.currency_metadata transaction_meta
+      ON transaction_meta.currency_code = journal.transaction_currency
+    WHERE posting.household_id = journal.household_id AND posting.journal_id = journal.id
+      AND (
+        account.book_id <> journal.book_id
+        OR posting.account_native_currency <> account.native_currency
+        OR NOT operations.amount_matches_currency_scale(
+          posting.transaction_amount, journal.transaction_currency)
+        OR NOT operations.amount_matches_currency_scale(
+          posting.account_native_amount, posting.account_native_currency)
+        OR (
+          account.native_currency = journal.transaction_currency
+          AND (posting.account_native_amount <> posting.transaction_amount
+            OR posting.exchange_rate IS NOT NULL)
+        )
+        OR (
+          account.native_currency <> journal.transaction_currency
+          AND (
+            posting.exchange_rate IS NULL
+            OR CASE posting.exchange_rate_quote
+              WHEN 'native_per_transaction' THEN
+                round(posting.transaction_amount * posting.exchange_rate, native_meta.decimal_scale)
+                  <> posting.account_native_amount
+              WHEN 'transaction_per_native' THEN
+                round(posting.account_native_amount * posting.exchange_rate, transaction_meta.decimal_scale)
+                  <> posting.transaction_amount
+              ELSE true
+            END
+          )
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'postings_currency_and_book_consistent',
+      MESSAGE = 'Posting account, book, currency scale, native amount, or exchange rate is invalid';
+  END IF;
+
+  IF journal.journal_type = 'transfer' AND EXISTS (
+    SELECT 1 FROM accounting.postings posting
+    JOIN accounting.accounts account
+      ON account.household_id = posting.household_id AND account.id = posting.account_id
+    WHERE posting.household_id = journal.household_id AND posting.journal_id = journal.id
+      AND account.accounting_class NOT IN ('asset','liability')
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'transfer_balance_sheet_accounts_only',
+      MESSAGE = 'Transfers may use only asset and liability accounts';
+  END IF;
+
+  IF journal.journal_type = 'reversal' AND (
+    (SELECT transaction_currency FROM accounting.journals
+      WHERE household_id = journal.household_id AND id = journal.reverses_journal_id)
+      <> journal.transaction_currency
+    OR EXISTS (
+      (SELECT account_id,
+          CASE direction WHEN 'debit' THEN 'credit' ELSE 'debit' END AS direction,
+          transaction_amount, account_native_amount, account_native_currency,
+          exchange_rate, exchange_rate_quote, exchange_rate_date, exchange_rate_source, memo,
+          ARRAY(SELECT tag.tag_id FROM accounting.posting_tags link
+            JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+            WHERE link.household_id = original.household_id AND link.posting_id = original.id
+            ORDER BY tag.tag_id) AS tag_ids
+       FROM accounting.postings original
+       WHERE original.household_id = journal.household_id
+         AND original.journal_id = journal.reverses_journal_id)
+      EXCEPT ALL
+      (SELECT account_id, direction, transaction_amount, account_native_amount, account_native_currency,
+          exchange_rate, exchange_rate_quote, exchange_rate_date, exchange_rate_source, memo,
+          ARRAY(SELECT tag.tag_id FROM accounting.posting_tags link
+            JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+            WHERE link.household_id = reversed.household_id AND link.posting_id = reversed.id
+            ORDER BY tag.tag_id) AS tag_ids
+       FROM accounting.postings reversed
+       WHERE reversed.household_id = journal.household_id AND reversed.journal_id = journal.id)
+    )
+    OR EXISTS (
+      (SELECT account_id, direction, transaction_amount, account_native_amount, account_native_currency,
+          exchange_rate, exchange_rate_quote, exchange_rate_date, exchange_rate_source, memo,
+          ARRAY(SELECT tag.tag_id FROM accounting.posting_tags link
+            JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+            WHERE link.household_id = reversed.household_id AND link.posting_id = reversed.id
+            ORDER BY tag.tag_id) AS tag_ids
+       FROM accounting.postings reversed
+       WHERE reversed.household_id = journal.household_id AND reversed.journal_id = journal.id)
+      EXCEPT ALL
+      (SELECT account_id,
+          CASE direction WHEN 'debit' THEN 'credit' ELSE 'debit' END AS direction,
+          transaction_amount, account_native_amount, account_native_currency,
+          exchange_rate, exchange_rate_quote, exchange_rate_date, exchange_rate_source, memo,
+          ARRAY(SELECT tag.tag_id FROM accounting.posting_tags link
+            JOIN accounting.tags tag ON tag.household_id = link.household_id AND tag.id = link.tag_id
+            WHERE link.household_id = original.household_id AND link.posting_id = original.id
+            ORDER BY tag.tag_id) AS tag_ids
+       FROM accounting.postings original
+       WHERE original.household_id = journal.household_id
+         AND original.journal_id = journal.reverses_journal_id)
+    )
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'reversal_exact_opposite',
+      MESSAGE = 'Reversal postings must exactly oppose the original journal';
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER journals_validate_complete
+AFTER INSERT ON accounting.journals
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION accounting.validate_complete_journal();
+
+CREATE CONSTRAINT TRIGGER postings_validate_complete
+AFTER INSERT ON accounting.postings
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION accounting.validate_complete_journal();
+
+CREATE INDEX book_configurations_effective_lookup
+  ON accounting.book_configurations (household_id, book_id, effective_from DESC);
+CREATE INDEX accounts_active_by_class
+  ON accounting.accounts (household_id, book_id, accounting_class, account_id)
+  WHERE archived_at IS NULL;
+CREATE INDEX accounts_parent_lookup
+  ON accounting.accounts (household_id, book_id, parent_account_id)
+  WHERE parent_account_id IS NOT NULL;
+CREATE INDEX account_source_mappings_account_lookup
+  ON accounting.account_source_mappings (household_id, account_id, source_system)
+  WHERE archived_at IS NULL;
+CREATE INDEX periods_open_lookup
+  ON accounting.periods (household_id, book_id, period_start)
+  WHERE state = 'open';
+CREATE INDEX journal_drafts_series_latest
+  ON accounting.journal_drafts (household_id, draft_series_id, version DESC);
+CREATE INDEX journals_household_effective
+  ON accounting.journals (household_id, effective_on DESC, journal_id);
+CREATE INDEX journals_household_period
+  ON accounting.journals (household_id, period_id, effective_on);
+CREATE UNIQUE INDEX journals_one_reversal_per_original
+  ON accounting.journals (household_id, reverses_journal_id)
+  WHERE reverses_journal_id IS NOT NULL;
+CREATE UNIQUE INDEX journals_one_replacement_per_original
+  ON accounting.journals (household_id, replaces_journal_id)
+  WHERE replaces_journal_id IS NOT NULL;
+CREATE INDEX postings_account_journal
+  ON accounting.postings (household_id, account_id, journal_id);
+
+ALTER TABLE accounting.books OWNER TO plus_one_owner;
+ALTER TABLE accounting.book_configurations OWNER TO plus_one_owner;
+ALTER TABLE accounting.accounts OWNER TO plus_one_owner;
+ALTER TABLE accounting.account_source_mappings OWNER TO plus_one_owner;
+ALTER TABLE accounting.periods OWNER TO plus_one_owner;
+ALTER TABLE accounting.counterparties OWNER TO plus_one_owner;
+ALTER TABLE accounting.tags OWNER TO plus_one_owner;
+ALTER TABLE accounting.journal_drafts OWNER TO plus_one_owner;
+ALTER TABLE accounting.draft_postings OWNER TO plus_one_owner;
+ALTER TABLE accounting.journals OWNER TO plus_one_owner;
+ALTER TABLE accounting.postings OWNER TO plus_one_owner;
+ALTER TABLE accounting.journal_tags OWNER TO plus_one_owner;
+ALTER TABLE accounting.posting_tags OWNER TO plus_one_owner;
+ALTER FUNCTION accounting.reject_immutable_fact_change() OWNER TO plus_one_owner;
+ALTER FUNCTION accounting.validate_draft_revision() OWNER TO plus_one_owner;
+ALTER FUNCTION accounting.guard_account_history() OWNER TO plus_one_owner;
+ALTER FUNCTION accounting.validate_account_hierarchy() OWNER TO plus_one_owner;
+ALTER FUNCTION accounting.validate_complete_journal() OWNER TO plus_one_owner;
+
+REVOKE ALL ON ALL TABLES IN SCHEMA accounting FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA accounting FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA accounting FROM PUBLIC;
+
+GRANT SELECT, INSERT ON
+  accounting.books, accounting.accounts, accounting.account_source_mappings, accounting.periods,
+  accounting.counterparties, accounting.tags,
+  accounting.book_configurations, accounting.journal_drafts, accounting.draft_postings,
+  accounting.journals, accounting.postings, accounting.journal_tags, accounting.posting_tags
+TO plus_one_accounting;
+GRANT UPDATE (parent_account_id, name, purpose, accounting_class, normal_balance,
+  native_currency, ownership_label, archived_at, updated_at)
+  ON accounting.accounts TO plus_one_accounting;
+GRANT UPDATE (archived_at) ON accounting.account_source_mappings TO plus_one_accounting;
+GRANT UPDATE (state, closed_at, reopened_at, updated_at)
+  ON accounting.periods TO plus_one_accounting;
+GRANT UPDATE (display_name, archived_at, updated_at)
+  ON accounting.counterparties TO plus_one_accounting;
+GRANT UPDATE (name, archived_at, updated_at)
+  ON accounting.tags TO plus_one_accounting;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA accounting TO plus_one_accounting;
+GRANT USAGE ON SCHEMA operations TO plus_one_accounting;
+GRANT SELECT ON operations.households, operations.currency_metadata TO plus_one_accounting;
+
+REVOKE ALL ON ALL TABLES IN SCHEMA accounting FROM plus_one_query, plus_one_planning, plus_one_operations;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA accounting FROM plus_one_query, plus_one_planning, plus_one_operations;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE plus_one_owner IN SCHEMA accounting
+  REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE plus_one_owner IN SCHEMA accounting
+  REVOKE ALL ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE plus_one_owner IN SCHEMA accounting
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
 COMMIT;
 RESET ROLE;
