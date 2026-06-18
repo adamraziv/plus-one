@@ -96,6 +96,30 @@ importers:
         specifier: 4.1.12
         version: 4.1.12
 
+  packages/mutations:
+    dependencies:
+      '@plus-one/accounting':
+        specifier: workspace:*
+        version: link:../accounting
+      '@plus-one/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@plus-one/database':
+        specifier: workspace:*
+        version: link:../database
+      '@plus-one/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+      ulid:
+        specifier: 3.0.2
+        version: 3.0.2
+      zod:
+        specifier: 4.1.12
+        version: 4.1.12
+
   packages/runtime:
     dependencies:
       '@mastra/core':
