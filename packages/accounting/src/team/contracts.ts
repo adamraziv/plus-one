@@ -127,7 +127,7 @@ export const AccountingJournalMutationProposalSchemaV1 = z.discriminatedUnion(
   [postMutation, correctionMutation],
 );
 
-export const AccountingWorkResultSchemaV1 = z.union([
+export const AccountingWorkResultSchemaV1 = z.discriminatedUnion('schemaName', [
   AccountingJournalMutationProposalSchemaV1,
   AccountingClarificationSchemaV1,
 ]);
