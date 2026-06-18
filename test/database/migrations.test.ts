@@ -148,7 +148,7 @@ SELECT 1 / 0;
           migrationDirectory: directory,
           rolePasswords: config.rolePasswords,
         }),
-      ).rejects.toMatchObject({ code: 'database_operation_failed' });
+      ).rejects.toMatchObject({ code: 'database_constraint_violation' });
 
       const pool = new Pool({ connectionString: context.migratorUrl });
 

@@ -1,9 +1,15 @@
 export * from './amounts.js';
+export { normalizeAccountingError } from './errors.js';
 export * from './errors.js';
+export { assertSerializableTransaction } from './transactions.js';
 export * from './transactions.js';
+export { AccountingRepository } from './repositories/accounting-repository.js';
 export * from './repositories/accounting-repository.js';
+export { JournalDraftRepository } from './repositories/journal-draft-repository.js';
 export * from './repositories/journal-draft-repository.js';
+export { LedgerReadback } from './repositories/ledger-readback.js';
 export * from './repositories/ledger-readback.js';
+export { JournalPostingService } from './posting/journal-posting-service.js';
 export * from './posting/journal-posting-service.js';
 export * from './posting/corrections.js';
 export * from './posting/projection-hook.js';

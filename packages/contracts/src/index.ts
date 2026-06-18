@@ -1,3 +1,9 @@
+export {
+  AccountSourceMappingIdSchema,
+  PostJournalInputSchemaV1,
+  PostJournalProposalSchemaV1,
+  ReverseAndReplaceInputSchemaV1,
+} from './accounting.js';
 export * from './accounting.js';
 export * from './artifacts.js';
 export * from './errors.js';
