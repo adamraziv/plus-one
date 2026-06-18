@@ -20,3 +20,5 @@ export * from './team/roles.js';
 export * from './team/work-cells.js';
 export * from './team/accounting-team.js';
 export * from './mutations/accounting-journal-handler.js';
+export * from './mutations/chart-handler.js';
+export * from './mutations/command-adapters.js';
