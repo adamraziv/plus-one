@@ -19,3 +19,4 @@ export * from './team/policies.js';
 export * from './team/roles.js';
 export * from './team/work-cells.js';
 export * from './team/accounting-team.js';
+export * from './mutations/accounting-journal-handler.js';
