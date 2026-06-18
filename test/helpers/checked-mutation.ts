@@ -1,12 +1,32 @@
 import {
   CheckedCommandSchemaV1,
   ExternalConfirmationSchemaV1,
+  PostJournalProposalSchemaV1,
+  type AccountId,
   type CheckedCommandV1,
+  type CurrencyCode,
+  type DecimalString,
   type ExternalConfirmationV1,
+  type JsonValue,
 } from '@plus-one/contracts';
-import { canonicalizeJson, hashArtifact } from '@plus-one/runtime';
-import type { Pool } from 'pg';
+import {
+  PostgresArtifactRepository,
+  PostgresDomainCommandBridge,
+  PostgresMutationCommandRepository,
+  PostgresVerificationLedgerRepository,
+} from '@plus-one/database';
+import {
+  CheckedMutationExecutor,
+  CommandRegistry,
+  CommandStateResolver,
+  SerializableMutationRunner,
+  createPostAccountingJournalHandler,
+} from '@plus-one/mutations';
+import { ArtifactStore, canonicalizeJson, hashArtifact } from '@plus-one/runtime';
+import { Pool } from 'pg';
 import { z } from 'zod';
+import { accounts, postInput, seedLedgerScenario, type DraftSpec } from './accounting-ledger.js';
+import type { PostgresTestContext } from './postgres.js';
 
 export const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 export const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -99,4 +119,121 @@ export async function seedCheckedProposal(pool: Pool): Promise<void> {
      WHERE household_id = $1 AND task_id = $2`,
     [householdDbId, taskId, proposalId, proposalHash],
   );
+}
+
+export async function seedCheckedAccountingMutation(pool: Pool): Promise<{
+  spec: DraftSpec;
+  command: CheckedCommandV1;
+}> {
+  const usd = (accountId: string, direction: 'debit' | 'credit', amount: string) => ({
+    accountId: accountId as AccountId,
+    direction,
+    transactionAmount: amount as DecimalString,
+    accountNativeAmount: amount as DecimalString,
+    accountNativeCurrency: 'USD' as CurrencyCode,
+    tagIds: [] as never[],
+  });
+  const base: DraftSpec = {
+    index: 1,
+    journalType: 'ordinary',
+    description: 'Checked lunch',
+    transactionCurrency: 'USD',
+    postings: [
+      usd(accounts.food, 'debit', '20.00'),
+      usd(accounts.cash, 'credit', '20.00'),
+    ],
+  };
+  const executionInput = postInput(base);
+  const {
+    checkedArtifactId: _artifactId,
+    checkedArtifactHash: _artifactHash,
+    schemaName: _schemaName,
+    ...proposalBody
+  } = executionInput;
+  void _artifactId;
+  void _artifactHash;
+  void _schemaName;
+  const payload = PostJournalProposalSchemaV1.parse({
+    ...proposalBody,
+    schemaName: 'post-journal-proposal',
+    postings: proposalBody.postings.map(({ postingId: _postingId, ...posting }) => {
+      void _postingId;
+      return posting;
+    }),
+  });
+  const payloadJson = JSON.parse(JSON.stringify(payload)) as JsonValue;
+  const makerPayload = {
+    schemaName: 'maker-artifact' as const,
+    schemaVersion: 1 as const,
+    outputSchema: { schemaName: 'post-journal-proposal', schemaVersion: 1 },
+    output: payloadJson,
+    claims: [{
+      claimId: 'journal-proposal-ready',
+      text: 'Balanced journal proposal is ready for checked execution.',
+      evidenceArtifactIds: [],
+    }],
+    assumptions: [],
+    uncertainty: [],
+  } satisfies JsonValue;
+  const spec: DraftSpec = {
+    ...base,
+    artifactPayload: makerPayload,
+    artifactSchema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+    checkedArtifactHash: hashArtifact(makerPayload),
+  };
+  await seedLedgerScenario(pool, [spec]);
+  const boundInput = postInput(spec);
+  return {
+    spec,
+    command: CheckedCommandSchemaV1.parse({
+      schemaName: 'checked-command',
+      schemaVersion: 1,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: payload.householdId,
+      taskId: payload.taskId,
+      commandType: 'post_accounting_journal',
+      checkedProposalId: boundInput.checkedArtifactId,
+      checkedProposalHash: boundInput.checkedArtifactHash,
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      payloadSchema: { schemaName: 'post-journal-proposal', schemaVersion: 1 },
+      payload: payloadJson,
+    }),
+  };
+}
+
+export function createExecutor(testContext: PostgresTestContext): {
+  executor: CheckedMutationExecutor;
+  close(): Promise<void>;
+} {
+  const operations = new Pool({ connectionString: testContext.roleUrls.operations });
+  const accounting = new Pool({ connectionString: testContext.roleUrls.accounting });
+  const commands = new PostgresMutationCommandRepository(operations);
+  const ledger = new PostgresVerificationLedgerRepository(operations);
+  const resolver = new CommandStateResolver({ commands, ledger });
+  let readbackCounter = 1;
+  const runner = new SerializableMutationRunner({
+    clients: { connect: async () => accounting.connect() },
+    bridge: new PostgresDomainCommandBridge(),
+    findReceipt: async (targetHouseholdId, commandId) =>
+      commands.findReceiptByCommand(targetHouseholdId, commandId),
+    sleep: async (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    now: () => Date.now(),
+  });
+  const executor = new CheckedMutationExecutor({
+    artifacts: new ArtifactStore(new PostgresArtifactRepository(operations)),
+    ledger,
+    commands,
+    resolver,
+    registry: new CommandRegistry([createPostAccountingJournalHandler()]),
+    runner,
+    readClients: { connect: async () => accounting.connect() },
+    newReadbackId: () => 'readback_' + String(readbackCounter++).padStart(26, '0'),
+  });
+  return {
+    executor,
+    close: async () => {
+      await accounting.end();
+      await operations.end();
+    },
+  };
 }

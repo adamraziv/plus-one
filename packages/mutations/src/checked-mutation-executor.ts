@@ -16,6 +16,7 @@ import {
   type VerificationLedgerPort,
 } from '@plus-one/runtime';
 import type { PoolClient } from 'pg';
+import type { CommandStateResolver } from './command-state-resolver.js';
 import type { CommandRegistry, MutationCommandHandler } from './command-registry.js';
 import type { SerializableMutationRunner } from './serializable-runner.js';
 
@@ -28,6 +29,7 @@ export class CheckedMutationExecutor {
     artifacts: ArtifactStore;
     ledger: Pick<VerificationLedgerPort, 'findLatestVerdict' | 'transition'>;
     commands: PostgresMutationCommandRepository;
+    resolver: CommandStateResolver;
     registry: CommandRegistry;
     runner: SerializableMutationRunner;
     readClients: ReadClientRouter;
@@ -69,67 +71,85 @@ export class CheckedMutationExecutor {
       command,
       prepared.handler.confirmation === 'required',
     );
-    if (registered.status === 'readback_verified') {
-      return this.requireVerifiedReplay(command);
-    }
-    if (registered.status !== 'registered') {
+    let state = await this.dependencies.resolver.reconcile(
+      registered.householdId,
+      registered.commandId,
+    );
+    if (state.status === 'readback_verified') return this.requireVerifiedReplay(command);
+    if (state.status === 'execution_failed' || state.status === 'readback_failed') {
       throw new PlusOneError({
-        category: 'serialization_conflict',
-        code: 'mutation_state_resolution_required',
-        message: 'Existing mutation command must be resolved before execution continues',
-        retry: 'after_state_resolution',
+        category: state.status === 'readback_failed' ? 'readback_mismatch' : 'runtime_failure',
+        code: 'mutation_command_terminal_failure',
+        message: 'Mutation command is already in a terminal failed state',
+        retry: 'never',
         receiptLookupRequired: true,
         details: { commandId: command.commandId, status: registered.status },
       });
     }
 
-    await this.dependencies.ledger.transition({
-      householdId: command.householdId,
-      taskId: command.taskId,
-      expectedFrom: 'checker_validated',
-      to: 'execution_pending',
-      reasonCode: 'checked_mutation_registered',
-      responsibleComponent: 'CheckedMutationExecutor',
-    });
-    await this.dependencies.commands.markExecutionPending(command.householdId, command.commandId);
-
-    let receipt: MutationReceiptV1;
-    try {
-      receipt = await this.dependencies.runner.run({
-        command,
-        handler: prepared.handler,
-        input: prepared.input,
-        receiptId: command.commandId.replace(/^command_/, 'receipt_'),
+    let receipt = await this.dependencies.commands.findReceiptByCommand(
+      command.householdId,
+      command.commandId,
+    );
+    if (state.status === 'execution_pending') {
+      try {
+        receipt = await this.dependencies.runner.run({
+          command,
+          handler: prepared.handler,
+          input: prepared.input,
+          receiptId: command.commandId.replace(/^command_/, 'receipt_'),
+        });
+      } catch (error) {
+        const resolved = await this.dependencies.resolver
+          .reconcile(command.householdId, command.commandId)
+          .catch(() => undefined);
+        if (resolved?.status === 'committed' || resolved?.status === 'readback_verified') {
+          state = resolved;
+        } else {
+          if (error instanceof PlusOneError && error.receiptLookupRequired) throw error;
+          await this.dependencies.commands.markExecutionFailed(
+            command.householdId,
+            command.commandId,
+            this.failureCategory(error),
+          );
+          await this.dependencies.resolver.reconcile(command.householdId, command.commandId);
+          throw error;
+        }
+      }
+      if (state.status === 'execution_pending') {
+        state = await this.dependencies.resolver.reconcile(
+          command.householdId,
+          command.commandId,
+        );
+      }
+    }
+    if (state.status === 'readback_verified') return this.requireVerifiedReplay(command);
+    if (state.status === 'execution_failed' || state.status === 'readback_failed') {
+      throw new PlusOneError({
+        category: state.status === 'readback_failed' ? 'readback_mismatch' : 'runtime_failure',
+        code: 'mutation_command_terminal_failure',
+        message: 'Mutation command is already in a terminal failed state',
+        retry: 'never',
+        receiptLookupRequired: true,
+        details: { commandId: command.commandId, status: state.status },
       });
-    } catch (error) {
-      if (error instanceof PlusOneError && error.receiptLookupRequired) throw error;
-      await this.dependencies.commands.markExecutionFailed(
+    }
+    if (receipt === undefined) {
+      receipt = await this.dependencies.commands.findReceiptByCommand(
         command.householdId,
         command.commandId,
-        this.failureCategory(error),
       );
-      await this.dependencies.ledger.transition({
-        householdId: command.householdId,
-        taskId: command.taskId,
-        expectedFrom: 'execution_pending',
-        to: 'execution_failed',
-        reasonCode: 'checked_mutation_execution_failed',
-        responsibleComponent: 'CheckedMutationExecutor',
-        terminal: true,
-        failureCategory: this.failureCategory(error),
-        resumable: false,
-      });
-      throw error;
     }
-
-    await this.dependencies.ledger.transition({
-      householdId: command.householdId,
-      taskId: command.taskId,
-      expectedFrom: 'execution_pending',
-      to: 'committed',
-      reasonCode: 'checked_mutation_committed',
-      responsibleComponent: 'CheckedMutationExecutor',
-    });
+    if (state.status !== 'committed' || receipt === undefined) {
+      throw new PlusOneError({
+        category: 'constraint_violation',
+        code: 'committed_mutation_receipt_missing',
+        message: 'Committed mutation state or receipt is missing',
+        retry: 'never',
+        receiptLookupRequired: true,
+        details: { commandId: command.commandId },
+      });
+    }
 
     let readback: ReadbackResultV1;
     try {
@@ -137,21 +157,18 @@ export class CheckedMutationExecutor {
     } catch (error) {
       readback = this.failedReadback(command, receipt, prepared.handler.requiredReadbackChecks, error);
     }
-    await this.dependencies.commands.recordReadback(command.householdId, readback);
-    await this.dependencies.ledger.transition({
-      householdId: command.householdId,
-      taskId: command.taskId,
-      expectedFrom: 'committed',
-      to: readback.ok ? 'readback_verified' : 'readback_failed',
-      reasonCode: readback.ok ? 'mutation_readback_verified' : 'mutation_readback_failed',
-      responsibleComponent: 'CheckedMutationExecutor',
-      ...(readback.ok ? {} : {
-        terminal: true,
-        failureCategory: 'readback_mismatch',
-        resumable: false,
-      }),
-    });
-    if (!readback.ok) {
+    try {
+      await this.dependencies.commands.recordReadback(command.householdId, readback);
+    } catch (error) {
+      const existing = await this.dependencies.commands.findReadbackByCommand(
+        command.householdId,
+        command.commandId,
+      );
+      if (existing === undefined) throw error;
+      readback = existing;
+    }
+    state = await this.dependencies.resolver.reconcile(command.householdId, command.commandId);
+    if (!readback.ok || state.status === 'readback_failed') {
       throw new PlusOneError({
         category: 'readback_mismatch',
         code: 'mutation_readback_failed',

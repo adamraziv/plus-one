@@ -1,5 +1,10 @@
 // test/helpers/accounting-ledger.ts
-import { PostJournalInputSchemaV1, type PostJournalInputV1 } from '@plus-one/contracts';
+import {
+  PostJournalInputSchemaV1,
+  type JsonValue,
+  type PostJournalInputV1,
+} from '@plus-one/contracts';
+import { canonicalizeJson, hashArtifact } from '@plus-one/runtime';
 import type { Pool } from 'pg';
 
 export interface DraftSpec {
@@ -10,6 +15,9 @@ export interface DraftSpec {
   reversesIndex?: number;
   replacesIndex?: number;
   postings: Array<Omit<PostJournalInputV1['postings'][number], 'postingId'>>;
+  artifactPayload?: JsonValue;
+  artifactSchema?: { schemaName: string; schemaVersion: number };
+  checkedArtifactHash?: string;
 }
 
 export const householdId = id('hh', 1);
@@ -32,13 +40,22 @@ export function artifactHash(index: number): string {
   return (index % 16).toString(16).repeat(64);
 }
 
+export function checkedArtifactHash(spec: DraftSpec): string {
+  return spec.checkedArtifactHash
+    ?? (spec.artifactPayload === undefined ? artifactHash(spec.index) : hashArtifact(spec.artifactPayload));
+}
+
+function artifactSchema(spec: DraftSpec) {
+  return spec.artifactSchema ?? { schemaName: 'journal-draft-input', schemaVersion: 1 };
+}
+
 export function postInput(spec: DraftSpec): PostJournalInputV1 {
   return PostJournalInputSchemaV1.parse({
     schemaName: 'post-journal-input', schemaVersion: 1,
     householdId, bookId, journalId: id('journal', spec.index),
     draftId: id('draft', spec.index), periodId, taskId: id('task', spec.index),
     checkedArtifactId: id('artifact', spec.index * 2 - 1),
-    checkedArtifactHash: artifactHash(spec.index),
+    checkedArtifactHash: checkedArtifactHash(spec),
     journalType: spec.journalType, transactionCurrency: spec.transactionCurrency,
     occurredOn: '2026-06-15', effectiveOn: '2026-06-15',
     description: spec.description, tagIds: [],
@@ -96,7 +113,15 @@ export async function seedLedgerScenario(owner: Pool, drafts: readonly DraftSpec
     const taskId = id('task', spec.index);
     const makerId = id('artifact', spec.index * 2 - 1);
     const checkerId = id('artifact', spec.index * 2);
-    const hash = artifactHash(spec.index);
+    const hash = checkedArtifactHash(spec);
+    const schema = artifactSchema(spec);
+    const payload = spec.artifactPayload ?? {};
+    const checkerPayload = {
+      verdict: 'accepted' as const,
+      coveredArtifactId: makerId,
+      coveredArtifactHash: hash,
+      findings: [],
+    };
     await owner.query(
       `INSERT INTO operations.verification_tasks
        (task_id, household_id, team, status, attempt_limit, resumable)
@@ -108,15 +133,23 @@ export async function seedLedgerScenario(owner: Pool, drafts: readonly DraftSpec
        (artifact_id, household_id, task_id, artifact_type, schema_name, schema_version,
         canonicalization_version, hash_algorithm, artifact_hash, canonical_payload, payload)
        VALUES
-       ($1,$2,$3,'maker_output','journal-draft-input',1,'rfc8785-v1','sha256',$4,'{}','{}'),
-       ($5,$2,$3,'checker_output','checker-verdict',1,'rfc8785-v1','sha256',$6,'{}','{}')`,
-      [makerId, householdDbId, taskId, hash, checkerId, artifactHash(spec.index + 8)],
+       ($1,$2,$3,'maker_output',$4,$5,'rfc8785-v1','sha256',$6,$7,$8),
+       ($9,$2,$3,'checker_output','checker-verdict',1,'rfc8785-v1','sha256',$10,$11,$12)`,
+      [makerId, householdDbId, taskId, schema.schemaName, schema.schemaVersion,
+        hash, canonicalizeJson(payload), payload, checkerId, hashArtifact(checkerPayload),
+        canonicalizeJson(checkerPayload), checkerPayload],
     );
     await owner.query(
       `INSERT INTO operations.checker_verdicts
        (household_id, task_id, checker_artifact_id, covered_artifact_id, covered_artifact_hash, verdict)
        VALUES ($1,$2,$3,$4,$5,'accepted')`,
       [householdDbId, taskId, checkerId, makerId, hash],
+    );
+    await owner.query(
+      `UPDATE operations.verification_tasks
+       SET current_maker_artifact_id = $3, current_maker_artifact_hash = $4
+       WHERE household_id = $1 AND task_id = $2`,
+      [householdDbId, taskId, makerId, hash],
     );
     const draft = await owner.query<{ id: string }>(
       `INSERT INTO accounting.journal_drafts

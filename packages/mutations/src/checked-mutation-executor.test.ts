@@ -87,6 +87,12 @@ function setup(readbackOk = true) {
     recordReadback: vi.fn(),
     findReadbackByCommand: vi.fn(),
   };
+  const resolver = {
+    reconcile: vi.fn()
+      .mockResolvedValueOnce({ ...command, status: 'execution_pending' })
+      .mockResolvedValueOnce({ ...command, status: 'committed' })
+      .mockResolvedValue({ ...command, status: readbackOk ? 'readback_verified' : 'readback_failed' }),
+  };
   const ledger = {
     findLatestVerdict: vi.fn().mockResolvedValue({
       verdict: 'accepted',
@@ -113,36 +119,31 @@ function setup(readbackOk = true) {
     } as never,
     ledger: ledger as never,
     commands: commands as never,
+    resolver: resolver as never,
     registry: new CommandRegistry([handler]),
     runner: { run: vi.fn().mockResolvedValue(receipt) } as never,
     readClients: { connect: vi.fn().mockResolvedValue(fakeClient()) },
     newReadbackId: () => 'readback_01JNZQ4A9B8C7D6E5F4G3H2J1K',
   });
-  return { executor, handler, commands, ledger };
+  return { executor, handler, commands, resolver };
 }
 
 describe('CheckedMutationExecutor', () => {
   it('reports success only after command and task reach readback_verified', async () => {
-    const { executor, commands, ledger } = setup(true);
+    const { executor, commands, resolver } = setup(true);
     await expect(executor.execute(command)).resolves.toMatchObject({ status: 'readback_verified' });
     expect(commands.recordReadback).toHaveBeenCalledWith(command.householdId,
       expect.objectContaining({ ok: true }));
-    expect(ledger.transition).toHaveBeenLastCalledWith(expect.objectContaining({
-      expectedFrom: 'committed',
-      to: 'readback_verified',
-    }));
+    expect(resolver.reconcile).toHaveBeenLastCalledWith(command.householdId, command.commandId);
   });
 
   it('records readback_failed and never executes the mutation handler again', async () => {
-    const { executor, handler, commands, ledger } = setup(false);
+    const { executor, handler, commands, resolver } = setup(false);
     await expect(executor.execute(command)).rejects.toMatchObject({ category: 'readback_mismatch' });
     expect(handler.execute).not.toHaveBeenCalled();
     expect(commands.recordReadback).toHaveBeenCalledWith(command.householdId,
       expect.objectContaining({ ok: false }));
-    expect(ledger.transition).toHaveBeenLastCalledWith(expect.objectContaining({
-      expectedFrom: 'committed',
-      to: 'readback_failed',
-    }));
+    expect(resolver.reconcile).toHaveBeenLastCalledWith(command.householdId, command.commandId);
   });
 
   it('rejects artifact hash drift before command registration', async () => {

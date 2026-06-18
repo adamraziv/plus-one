@@ -115,6 +115,13 @@ export class PostgresMutationCommandRepository {
       });
       return this.mapCommand(inserted.rows[0]);
     } catch (error) {
+      const failure = error as { code?: string; constraint?: string };
+      if (failure.code === '23505'
+        && ['mutation_commands_public_unique', 'mutation_commands_idempotency_unique']
+          .includes(failure.constraint ?? '')) {
+        const replay = await this.findByIdempotency(input.householdId, input.idempotencyKey);
+        if (replay !== undefined) return this.validateReplay(replay, input, confirmationRequired);
+      }
       throw this.normalizeRegistrationError(error);
     }
   }
@@ -314,7 +321,18 @@ export class PostgresMutationCommandRepository {
       && record.confirmationId === input.confirmationId
       && record.payloadSchema.schemaName === input.payloadSchema.schemaName
       && record.payloadSchema.schemaVersion === input.payloadSchema.schemaVersion
-      && JSON.stringify(record.payload) === JSON.stringify(input.payload);
+      && this.stableJson(record.payload) === this.stableJson(input.payload);
+  }
+
+  private stableJson(value: JsonValue): string {
+    if (Array.isArray(value)) return '[' + value.map((entry) => this.stableJson(entry)).join(',') + ']';
+    if (value !== null && typeof value === 'object') {
+      return '{' + Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => JSON.stringify(key) + ':' + this.stableJson(entry))
+        .join(',') + '}';
+    }
+    return JSON.stringify(value);
   }
 
   private normalizeRegistrationError(error: unknown): PlusOneError {
