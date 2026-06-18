@@ -3,6 +3,8 @@ export * from './duplicate-matcher.js';
 export * from './import-batch-service.js';
 export * from './mutations/command-adapters.js';
 export * from './mutations/import-handler.js';
+export * from './mutations/reconciliation-handlers.js';
+export * from './period-close-service.js';
 export * from './repositories/ingestion-repository.js';
 export * from './repositories/reconciliation-repository.js';
 export * from './source/local-source-object-store.js';
