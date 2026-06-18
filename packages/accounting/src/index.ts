@@ -3,4 +3,7 @@ export * from './errors.js';
 export * from './transactions.js';
 export * from './repositories/accounting-repository.js';
 export * from './repositories/journal-draft-repository.js';
+export * from './repositories/ledger-readback.js';
 export * from './posting/journal-posting-service.js';
+export * from './posting/corrections.js';
+export * from './posting/projection-hook.js';

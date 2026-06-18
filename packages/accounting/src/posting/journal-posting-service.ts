@@ -7,6 +7,7 @@ import {
 import type { PoolClient } from 'pg';
 import { normalizeAccountingError } from '../errors.js';
 import { assertSerializableTransaction } from '../transactions.js';
+import type { CurrentBalanceProjectionHook } from './projection-hook.js';
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -39,6 +40,8 @@ function referenceError(code: string, message: string, details: Record<string, s
 }
 
 export class JournalPostingService {
+  constructor(private readonly projection?: CurrentBalanceProjectionHook) {}
+
   async postInTransaction(client: PoolClient, candidate: PostJournalInputV1): Promise<{
     journalId: string; postingIds: string[];
   }> {
@@ -84,6 +87,7 @@ export class JournalPostingService {
         postingIds.push(postingId);
       }
       await this.insertJournalTags(client, resolved.household_id, journalDbId, input.tagIds);
+      await this.updateCurrentProjection(client, input, postingIds);
       await client.query(
         'SET CONSTRAINTS journals_validate_complete, postings_validate_complete IMMEDIATE',
       );
@@ -92,6 +96,16 @@ export class JournalPostingService {
       );
       return { journalId: input.journalId, postingIds };
     } catch (error) { throw normalizeAccountingError(error); }
+  }
+
+  private async updateCurrentProjection(client: PoolClient, input: PostJournalInputV1,
+    postingIds: readonly string[]): Promise<void> {
+    await this.projection?.applyJournal(client, {
+      householdId: input.householdId,
+      journalId: input.journalId,
+      postingIds: [...postingIds],
+      effectiveOn: input.effectiveOn,
+    });
   }
 
   private async resolveJournal(client: PoolClient, input: PostJournalInputV1): Promise<ResolvedJournal> {

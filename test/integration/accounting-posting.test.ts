@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
-import { AccountingRepository, JournalDraftRepository, JournalPostingService } from '@plus-one/accounting';
+import {
+  AccountingRepository, JournalDraftRepository, JournalPostingService, LedgerReadback,
+} from '@plus-one/accounting';
 import type {
   AccountId, BookId, CurrencyCode, DecimalString, HouseholdId, JournalDraftId,
   JournalId, LocalDate, PeriodId, TaskId, ArtifactId,
@@ -19,9 +21,22 @@ describe('journal posting', () => {
     const client = await pool.connect();
     await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
     await seedAccountingFoundation(client);
-    const result = await new JournalPostingService().postInTransaction(client, postInput());
+    const applyJournal = vi.fn().mockResolvedValue(undefined);
+    const service = new JournalPostingService({ applyJournal });
+    const input = postInput();
+    const result = await service.postInTransaction(client, input);
     expect(result.journalId).toBe('journal_01JNZQ4A9B8C7D6E5F4G3H2J1K');
     expect(result.postingIds.length).toBe(3);
+    expect(applyJournal).toHaveBeenCalledWith(client, expect.objectContaining({
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      effectiveOn: '2026-06-14',
+      postingIds: expect.any(Array),
+    }));
+    const readback = new LedgerReadback();
+    await expect(readback.verifyPostedJournal(client, {
+      householdId: input.householdId, expected: input,
+    })).resolves.toMatchObject({ ok: true, journalId: result.journalId, mismatches: [] });
     await client.query('COMMIT');
     const totals = await owner.query(
       `SELECT direction, sum(transaction_amount)::text AS amount
