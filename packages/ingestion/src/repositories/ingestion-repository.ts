@@ -296,15 +296,20 @@ export class IngestionRepository {
 
   async readBatchOutcome(importBatchId: string): Promise<unknown> {
     const result = await this.client.query(
-      `SELECT batch.state,
-        count(*) FILTER (WHERE decision.action = 'post')::integer AS posted,
-        count(*) FILTER (WHERE decision.action = 'link_existing')::integer AS "linkedExisting",
-        count(*) FILTER (WHERE decision.action = 'defer')::integer AS deferred,
-        count(*) FILTER (WHERE decision.action = 'reject')::integer AS rejected
+      `SELECT batch.import_batch_id AS "importBatchId", batch.state,
+        COALESCE(jsonb_agg(jsonb_build_object(
+          'normalizedRowId', row.normalized_row_id,
+          'action', decision.action
+        ) ORDER BY row.normalized_row_id) FILTER (WHERE decision.action IS NOT NULL), '[]'::jsonb)
+          AS decisions,
+        bool_and(decision.checked_artifact_id = batch.checked_artifact_id
+          AND decision.checked_artifact_hash = batch.checked_artifact_hash)
+          AS "allRowsBoundToCheckedArtifact"
        FROM ingestion.import_batches batch
        LEFT JOIN ingestion.import_row_decisions decision ON decision.import_batch_id = batch.id
+       LEFT JOIN ingestion.normalized_rows row ON row.id = decision.normalized_row_id
        WHERE batch.import_batch_id = $1
-       GROUP BY batch.state`,
+       GROUP BY batch.import_batch_id, batch.state`,
       [importBatchId],
     );
     return this.one(result.rows[0], 'batch_outcome_not_found');

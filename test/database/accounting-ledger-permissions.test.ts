@@ -27,7 +27,7 @@ describe('accounting ledger permissions', () => {
     expect(privileges.rows[0]).toEqual({
       accounting_insert: true, accounting_update_postings: false,
       accounting_delete_journals: false, query_select: false,
-      operations_select_artifacts: false, household_lookup: true,
+      operations_select_artifacts: true, household_lookup: true,
       mapping_insert: true, mapping_delete: false,
     });
     await admin.end();

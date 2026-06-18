@@ -182,9 +182,47 @@ export class ReconciliationRepository {
 
   async readReconciliation(reconciliationId: string): Promise<unknown> {
     const result = await this.client.query(
-      `SELECT reconciliation_id AS "reconciliationId", completion_status AS "completionStatus",
-        unresolved_discrepancies AS "unresolvedDiscrepancies"
-       FROM accounting.reconciliations WHERE reconciliation_id = $1`,
+      `SELECT reconciliation.reconciliation_id AS "reconciliationId",
+        household.household_id AS "householdId", book.book_id AS "bookId",
+        account.account_id AS "accountId", snapshot.statement_snapshot_id AS "statementSnapshotId",
+        reconciliation.period_start::text AS "periodStart",
+        reconciliation.period_end::text AS "periodEnd", reconciliation.currency,
+        reconciliation.ledger_opening_balance::text AS "ledgerOpeningBalance",
+        reconciliation.ledger_closing_balance::text AS "ledgerClosingBalance",
+        reconciliation.statement_opening_balance::text AS "statementOpeningBalance",
+        reconciliation.statement_closing_balance::text AS "statementClosingBalance",
+        COALESCE(evidence."artifactIds", '[]'::jsonb) AS "evidenceArtifactIds",
+        COALESCE(items.items, '[]'::jsonb) AS items,
+        reconciliation.unresolved_discrepancies AS "unresolvedDiscrepancies",
+        reconciliation.completion_status AS "completionStatus"
+       FROM accounting.reconciliations reconciliation
+       JOIN operations.households household ON household.id = reconciliation.household_id
+       JOIN accounting.books book ON book.id = reconciliation.book_id
+       JOIN accounting.accounts account ON account.id = reconciliation.account_id
+       JOIN ingestion.statement_snapshots snapshot ON snapshot.id = reconciliation.statement_snapshot_id
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(artifact.artifact_id ORDER BY artifact.artifact_id) AS "artifactIds"
+         FROM accounting.reconciliation_evidence link
+         JOIN operations.artifacts artifact ON artifact.id = link.artifact_id
+         WHERE link.reconciliation_id = reconciliation.id
+       ) evidence ON true
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+           'reconciliationItemId', item.reconciliation_item_id,
+           'statementLineId', statement_line.statement_line_id,
+           'normalizedRowId', normalized.normalized_row_id,
+           'journalId', journal.journal_id,
+           'status', item.status,
+           'amountDifference', item.amount_difference::text,
+           'explanation', item.explanation
+         )) ORDER BY item.reconciliation_item_id) AS items
+         FROM accounting.reconciliation_items item
+         LEFT JOIN ingestion.statement_lines statement_line ON statement_line.id = item.statement_line_id
+         LEFT JOIN ingestion.normalized_rows normalized ON normalized.id = item.normalized_row_id
+         LEFT JOIN accounting.journals journal ON journal.id = item.journal_id
+         WHERE item.reconciliation_id = reconciliation.id
+       ) items ON true
+       WHERE reconciliation.reconciliation_id = $1`,
       [reconciliationId],
     );
     return this.one(result.rows[0], 'reconciliation_not_found');
@@ -206,8 +244,22 @@ export class ReconciliationRepository {
 
   async readPeriodCoverage(householdId: string, bookId: string, periodId: string): Promise<unknown> {
     const result = await this.client.query(
-      `SELECT period.period_id AS "periodId", period.state,
-        count(reconciliation.id)::integer AS "reconciliationCount"
+      `SELECT period.period_id AS "periodId", period.state AS "periodStatus",
+        COALESCE(
+          jsonb_agg(DISTINCT reconciliation.reconciliation_id)
+            FILTER (WHERE reconciliation.reconciliation_id IS NOT NULL),
+          '[]'::jsonb
+        ) AS "reconciliationIds",
+        COALESCE(
+          jsonb_agg(DISTINCT discrepancy.item ->> 'discrepancyId')
+            FILTER (WHERE discrepancy.item ->> 'discrepancyId' IS NOT NULL),
+          '[]'::jsonb
+        ) AS "unresolvedDiscrepancyIds",
+        COALESCE(
+          jsonb_agg(DISTINCT artifact.artifact_id)
+            FILTER (WHERE artifact.artifact_id IS NOT NULL),
+          '[]'::jsonb
+        ) AS "responsibleArtifactIds"
        FROM accounting.periods period
        JOIN operations.households household ON household.id = period.household_id
        JOIN accounting.books book ON book.id = period.book_id
@@ -216,6 +268,14 @@ export class ReconciliationRepository {
         AND reconciliation.book_id = period.book_id
         AND reconciliation.period_start = period.period_start
         AND reconciliation.period_end = period.period_end
+       LEFT JOIN LATERAL jsonb_array_elements(reconciliation.unresolved_discrepancies) discrepancy(item)
+         ON true
+       LEFT JOIN LATERAL (
+         SELECT artifact.artifact_id
+         FROM accounting.reconciliation_evidence link
+         JOIN operations.artifacts artifact ON artifact.id = link.artifact_id
+         WHERE link.reconciliation_id = reconciliation.id
+       ) artifact ON true
        WHERE household.household_id = $1 AND book.book_id = $2 AND period.period_id = $3
        GROUP BY period.period_id, period.state`,
       [householdId, bookId, periodId],

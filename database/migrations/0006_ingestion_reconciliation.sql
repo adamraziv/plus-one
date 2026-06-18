@@ -318,6 +318,8 @@ GRANT SELECT, INSERT ON
   accounting.reconciliation_evidence, accounting.reconciliation_items,
   accounting.period_events
 TO plus_one_accounting;
+GRANT SELECT ON operations.artifacts, operations.checker_verdicts, operations.external_confirmations
+TO plus_one_accounting;
 GRANT SELECT, INSERT, UPDATE (state, checked_artifact_id, checked_artifact_hash, updated_at)
   ON ingestion.import_batches TO plus_one_accounting;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ingestion TO plus_one_accounting;
