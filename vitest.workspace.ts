@@ -3,6 +3,7 @@ import { defineWorkspace } from 'vitest/config';
 
 const resolveConfig = {
   alias: {
+    '@plus-one/accounting': resolve('packages/accounting/src/index.ts'),
     '@plus-one/contracts': resolve('packages/contracts/src/index.ts'),
     '@plus-one/database': resolve('packages/database/src/index.ts'),
     '@plus-one/runtime': resolve('packages/runtime/src/index.ts'),
