@@ -29,6 +29,7 @@ describe('platform migrations', () => {
       '0003_operational_verification.sql',
       '0004_accounting_ledger.sql',
       '0005_checked_mutations.sql',
+      '0006_ingestion_reconciliation.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();

@@ -25,7 +25,9 @@ describe('accounting ledger schema', () => {
     expect(relations.rows.map((row) => row.table_name)).toEqual([
       'account_source_mappings', 'accounts', 'book_configurations', 'books',
       'counterparties', 'draft_postings',
-      'journal_drafts', 'journal_tags', 'journals', 'periods', 'posting_tags', 'postings', 'tags',
+      'journal_drafts', 'journal_source_links', 'journal_tags', 'journals',
+      'period_events', 'periods', 'posting_tags', 'postings', 'reconciliation_evidence',
+      'reconciliation_items', 'reconciliations', 'tags',
     ]);
     const accountColumns = await pool.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
