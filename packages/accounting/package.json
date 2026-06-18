@@ -5,6 +5,7 @@
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@plus-one/contracts": "workspace:*",
+    "@plus-one/database": "workspace:*",
     "pg": "8.16.3",
     "zod": "4.1.12"
   }

@@ -65,6 +65,9 @@ importers:
       '@plus-one/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@plus-one/database':
+        specifier: workspace:*
+        version: link:../database
       pg:
         specifier: 8.16.3
         version: 8.16.3
