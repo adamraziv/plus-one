@@ -307,7 +307,7 @@ CREATE FUNCTION operations.commit_mutation_command(
   expected_state jsonb,
   expected_state_hash text
 )
-RETURNS TABLE(receipt_id text)
+RETURNS TABLE(receipt_id text, committed_at timestamptz)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, operations
@@ -340,7 +340,11 @@ BEGIN
   SET status = 'committed', committed_at = clock_timestamp()
   WHERE household_id = command.household_id AND id = command.id;
 
-  RETURN QUERY SELECT receipt_public_id;
+  RETURN QUERY
+  SELECT receipt.receipt_id, receipt.committed_at
+  FROM operations.mutation_receipts receipt
+  WHERE receipt.household_id = command.household_id
+    AND receipt.command_id = command.id;
 END;
 $$;
 
