@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .mastra/
+.claude/
 .env
 *.tsbuildinfo
 apps/**/*.js
