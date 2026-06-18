@@ -59,6 +59,7 @@ export interface CheckedWorkCellResult {
   team: string;
   workCellId: string;
   status: TeamResultStatusV1;
+  completionState: 'terminal' | 'checked_mutation_pending';
   makerArtifacts: readonly ArtifactEnvelopeV1[];
   checkerVerdicts: readonly CheckerVerdictV1[];
   acceptedMaker?: MakerArtifactV1;

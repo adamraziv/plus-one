@@ -1,5 +1,5 @@
 import {
-  TeamResultEnvelopeSchemaV1, type SkillIdentityV1, type StopConditionV1,
+  PlusOneError, TeamResultEnvelopeSchemaV1, type SkillIdentityV1, type StopConditionV1,
   type TeamResultEnvelopeV1, type TeamResultStatusV1,
 } from '@plus-one/contracts';
 import type { CheckedWorkCellResult } from '../teams/definitions.js';
@@ -15,6 +15,24 @@ export class TeamResultAssembler {
     results: readonly CheckedWorkCellResult[];
     claimSources?: readonly CheckedWorkCellResult[];
   }): TeamResultEnvelopeV1 {
+    if (input.results.some((result) => result.completionState !== 'terminal')) {
+      throw new PlusOneError({
+        category: 'constraint_violation',
+        code: 'checked_mutation_not_terminal',
+        message: 'A checked mutation result cannot be assembled before deterministic read-back',
+        retry: 'after_state_resolution',
+        receiptLookupRequired: true,
+        details: {
+          taskIds: input.results
+            .filter((result) => result.completionState !== 'terminal')
+            .map((result) => result.taskId)
+            .join(','),
+          taskCount: input.results
+            .filter((result) => result.completionState !== 'terminal')
+            .length,
+        },
+      });
+    }
     const claimSources = input.claimSources ?? input.results;
     const accepted = claimSources.filter((result) =>
       result.status === 'verified' && result.acceptedMaker !== undefined);

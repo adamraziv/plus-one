@@ -57,6 +57,81 @@ describe('TeamExecutor', () => {
     expect(calls).toEqual(['begin-maker', 'freeze-maker', 'begin-checker', 'freeze-checker',
       'revision', 'begin-maker', 'freeze-maker', 'begin-checker', 'freeze-checker']);
   });
+
+  it('leaves an accepted mutation work cell at checker_validated', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      beginChecker: vi.fn(),
+      validateMaker: vi.fn(async (input) => ({
+        ...input,
+        artifactType: 'maker_output',
+        schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+        canonicalizationVersion: 'rfc8785-v1',
+        hashAlgorithm: 'sha256',
+        artifactHash: 'a'.repeat(64),
+        createdAt: '2026-06-15T08:00:00.000Z',
+      })),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const runner = { run: vi.fn()
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
+        output: { answer: '42' },
+        claims: [{ claimId: 'c1', text: '42', evidenceArtifactIds: [] }],
+        assumptions: [],
+        uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'accepted',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        coveredArtifactHash: 'a'.repeat(64),
+        findings: [],
+      }) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({
+          systemPrompt: 'maker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+        forChecker: vi.fn(() => ({
+          systemPrompt: 'checker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({
+        maxAttempts: 1,
+        teamDeadlineMs: 5_000,
+        identity: { policyName: 'test', policyVersion: 1 },
+      })) } as never,
+      ids: { nextArtifactId: vi.fn()
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K') },
+    });
+    const result = await executor.executeWorkCell({
+      ...makeExecutionInput(),
+      completionMode: 'checked_mutation',
+    });
+    expect(result.status).toBe('verified');
+    expect(result.completionState).toBe('checked_mutation_pending');
+    expect(runtime.complete).not.toHaveBeenCalled();
+  });
 });
 
 function makeExecutionInput() {

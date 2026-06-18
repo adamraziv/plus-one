@@ -219,6 +219,31 @@ export class PostgresMutationCommandRepository {
       : MutationReceiptSchemaV1.parse(result.rows[0].receipt);
   }
 
+  async findReadbackByCommand(
+    householdId: string,
+    commandId: string,
+  ): Promise<ReadbackResultV1 | undefined> {
+    const result = await this.pool.query<{ readback: ReadbackResultV1 }>(
+      `SELECT jsonb_build_object(
+        'schemaName','mutation-readback','schemaVersion',1,
+        'readbackId',readback.readback_id,'commandId',command.command_id,
+        'receiptId',receipt.receipt_id,'ok',readback.ok,'checks',readback.checks,
+        'mismatches',to_jsonb(readback.mismatches),
+        'observedStateHash',readback.observed_state_hash
+      ) AS readback
+      FROM operations.mutation_readbacks readback
+      JOIN operations.mutation_commands command
+        ON command.household_id = readback.household_id AND command.id = readback.command_id
+      JOIN operations.mutation_receipts receipt
+        ON receipt.household_id = readback.household_id AND receipt.id = readback.receipt_id
+      JOIN operations.households household ON household.id = command.household_id
+      WHERE household.household_id = $1 AND command.command_id = $2`,
+      [householdId, commandId],
+    );
+    return result.rows[0] === undefined ? undefined
+      : ReadbackResultSchemaV1.parse(result.rows[0].readback);
+  }
+
   private async findOne(householdId: string, predicate: string, value: string) {
     const result = await this.pool.query<CommandRow>(
       `SELECT command.command_id, household.household_id, command.task_id,

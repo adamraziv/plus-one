@@ -67,28 +67,53 @@ describe('TeamExecutionCoordinator', () => {
       stopCondition: { code: 'done', description: 'Complete checked work.' },
     })).toThrow();
   });
+
+  it('rejects a checked mutation result before read-back completion', () => {
+    const assembler = new TeamResultAssembler();
+    const deferred = {
+      ...checkedResult('task_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
+      completionState: 'checked_mutation_pending' as const,
+    };
+    try {
+      assembler.assemble({
+        householdId: deferred.householdId,
+        resultTaskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J9K',
+        team: 'accounting',
+        strategyName: 'single-maker-checker',
+        selectedSkill: skill,
+        stopCondition: { code: 'persisted', description: 'Require checked persistence.' },
+        results: [deferred],
+      });
+      throw new Error('Expected deferred mutation assembly to fail');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'checked_mutation_not_terminal' });
+    }
+  });
 });
 
 function checkedResult(taskId: string) {
   const endsIn1K = taskId.endsWith('1K');
+  const householdId = HouseholdIdSchema.parse('hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+  const parsedTaskId = TaskIdSchema.parse(taskId);
   const artifactId = ArtifactIdSchema.parse(
     endsIn1K ? 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K' : 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K');
   const artifactHash = endsIn1K ? 'b'.repeat(64) : 'c'.repeat(64);
   return {
-    householdId: HouseholdIdSchema.parse('hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
+    householdId,
     taskId, team: 'query', workCellId: 'analysis',
     status: 'verified' as const,
-    makerArtifacts: [{ artifactId, householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K', taskId,
-      artifactType: 'maker_output', schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
-      canonicalizationVersion: 'rfc8785-v1', hashAlgorithm: 'sha256', artifactHash,
+    completionState: 'terminal' as const,
+    makerArtifacts: [{ artifactId, householdId, taskId: parsedTaskId,
+      artifactType: 'maker_output' as const, schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1' as const, hashAlgorithm: 'sha256' as const, artifactHash,
       payload: { schemaName: 'maker-artifact', schemaVersion: 1,
         outputSchema: { schemaName: 'analysis-output', schemaVersion: 1 }, output: { view: taskId },
         claims: [{ claimId: taskId, text: 'Checked view ' + taskId, evidenceArtifactIds: [] }],
         assumptions: [], uncertainty: [] },
       createdAt: UtcInstantSchema.parse('2026-06-14T10:00:00.000Z') }],
-    checkerVerdicts: [{ verdict: 'accepted', coveredArtifactId: artifactId, coveredArtifactHash: artifactHash,
+    checkerVerdicts: [{ verdict: 'accepted' as const, coveredArtifactId: artifactId, coveredArtifactHash: artifactHash,
       findings: [] }],
-    acceptedMaker: { schemaName: 'maker-artifact', schemaVersion: 1,
+    acceptedMaker: { schemaName: 'maker-artifact' as const, schemaVersion: 1 as const,
       outputSchema: { schemaName: 'analysis-output', schemaVersion: 1 }, output: { view: taskId },
       claims: [{ claimId: taskId, text: 'Checked view ' + taskId, evidenceArtifactIds: [] }],
       assumptions: [], uncertainty: [] },

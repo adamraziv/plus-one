@@ -39,6 +39,7 @@ export class TeamExecutor {
     stopCondition: StopConditionV1;
     strategyName: string;
     abortSignal: AbortSignal;
+    completionMode?: 'terminal' | 'checked_mutation';
   }): Promise<CheckedWorkCellResult> {
     if (!input.workCell.allowedSkillNames.includes(input.selectedSkill.skillName)) {
       throw new PlusOneError({ category: 'policy_rejected', code: 'work_cell_skill_not_allowed',
@@ -199,12 +200,18 @@ export class TeamExecutor {
         });
         throw error;
       }
-      await this.dependencies.runtime.complete({
-        householdId: input.householdId, taskId: input.taskId, status: terminal.status,
-      });
+      const completionState = input.completionMode === 'checked_mutation'
+        && terminal.status === 'verified'
+        ? 'checked_mutation_pending' as const
+        : 'terminal' as const;
+      if (completionState === 'terminal') {
+        await this.dependencies.runtime.complete({
+          householdId: input.householdId, taskId: input.taskId, status: terminal.status,
+        });
+      }
       return {
         householdId: input.householdId, taskId: input.taskId, team: input.team,
-        workCellId: input.workCell.workCellId, status: terminal.status,
+        workCellId: input.workCell.workCellId, status: terminal.status, completionState,
         makerArtifacts, checkerVerdicts,
         completionReason: terminal.reason, outstanding: terminal.outstanding,
         ...(verdict.verdict === 'accepted' ? { acceptedMaker: makerOutput } : {}),
