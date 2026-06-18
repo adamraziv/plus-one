@@ -13,3 +13,4 @@ export { JournalPostingService } from './posting/journal-posting-service.js';
 export * from './posting/journal-posting-service.js';
 export * from './posting/corrections.js';
 export * from './posting/projection-hook.js';
+export * from './team/contracts.js';
