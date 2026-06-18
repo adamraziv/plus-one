@@ -20,6 +20,7 @@ export * from './team/roles.js';
 export * from './team/work-cells.js';
 export * from './team/accounting-team.js';
 export * from './team/accounting-mutation-service.js';
+export { ingestionWorkCellDefinition, reconciliationWorkCellDefinition } from '@plus-one/ingestion';
 export * from './mutations/accounting-journal-handler.js';
 export * from './mutations/chart-handler.js';
 export * from './mutations/command-adapters.js';

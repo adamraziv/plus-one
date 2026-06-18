@@ -17,7 +17,7 @@ export const accountingTeamDefinition: TeamDefinition = {
   prohibitedBehavior: [
     'Do not execute SQL or access database credentials.',
     'Do not treat a checker verdict as external confirmation.',
-    'Do not perform ingestion, reconciliation, query, planning, or external financial actions.',
+    'Do not access databases, query tools, arbitrary files, command handlers, or external financial systems from agents.',
   ],
   workCells: accountingWorkCells,
   allowedStrategyNames: ['single-maker-checker'],
@@ -25,8 +25,10 @@ export const accountingTeamDefinition: TeamDefinition = {
 
 const expectedCell = {
   transaction_capture: 'transaction-capture',
+  ingestion: 'ingestion',
   journal: 'journal',
   chart_of_accounts: 'chart-of-accounts',
+  reconciliation: 'reconciliation',
 } as const;
 
 export function validateAccountingLeadPlan(request: AccountingLeadRequestV1,

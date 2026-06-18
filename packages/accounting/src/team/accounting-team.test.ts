@@ -42,13 +42,13 @@ describe('Accounting Team registrations', () => {
       .toBe(true);
   });
 
-  it('contains exactly the three Plan 06 work cells with isolated makers and checkers', () => {
+  it('contains exactly the five Plan 07 work cells with isolated makers and checkers', () => {
     expect(accountingTeamDefinition.workCells.map((cell) => cell.workCellId)).toEqual([
-      'transaction-capture', 'journal', 'chart-of-accounts',
+      'transaction-capture', 'ingestion', 'journal', 'chart-of-accounts', 'reconciliation',
     ]);
     expect(new Set(accountingTeamDefinition.workCells.flatMap((cell) => [
       cell.maker.agentId, cell.checker.agentId,
-    ])).size).toBe(6);
+    ])).size).toBe(10);
   });
 
   it('routes one typed intent to one allowed cell and rejects lead drift', () => {
@@ -61,6 +61,33 @@ describe('Accounting Team registrations', () => {
       work: [{ workCellId: 'chart-of-accounts', makerInput: {} }],
       stopCondition: { code: 'checked-chart-change', description: 'Return one checked chart change.' },
     }).work[0]!.workCellId).toBe('chart-of-accounts');
+    expect(validateAccountingLeadPlan({
+      schemaName: 'accounting-lead-request', schemaVersion: 1,
+      intent: 'ingestion', request: {},
+    }, {
+      schemaName: 'team-lead-plan', schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'ingestion', makerInput: {} }],
+      stopCondition: { code: 'checked-ingestion', description: 'Return one checked import proposal.' },
+    }).work[0]!.workCellId).toBe('ingestion');
+    expect(validateAccountingLeadPlan({
+      schemaName: 'accounting-lead-request', schemaVersion: 1,
+      intent: 'reconciliation', request: {},
+    }, {
+      schemaName: 'team-lead-plan', schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'reconciliation', makerInput: {} }],
+      stopCondition: { code: 'checked-reconciliation', description: 'Return one checked reconciliation proposal.' },
+    }).work[0]!.workCellId).toBe('reconciliation');
+    expect(() => validateAccountingLeadPlan({
+      schemaName: 'accounting-lead-request', schemaVersion: 1,
+      intent: 'ingestion', request: {},
+    }, {
+      schemaName: 'team-lead-plan', schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'journal', makerInput: {} }],
+      stopCondition: { code: 'wrong', description: 'Wrong.' },
+    })).toThrow();
     expect(() => validateAccountingLeadPlan({
       schemaName: 'accounting-lead-request', schemaVersion: 1,
       intent: 'transaction_capture', request: {},

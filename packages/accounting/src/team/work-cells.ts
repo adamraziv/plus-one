@@ -1,4 +1,5 @@
 import type { WorkCellDefinition } from '@plus-one/runtime';
+import { ingestionWorkCellDefinition, reconciliationWorkCellDefinition } from '@plus-one/ingestion';
 import {
   AccountingClarificationSchemaV1,
   AccountingWorkResultSchemaV1,
@@ -100,6 +101,8 @@ export const chartOfAccountsWorkCell: WorkCellDefinition = {
 
 export const accountingWorkCells = [
   transactionCaptureWorkCell,
+  ingestionWorkCellDefinition,
   journalWorkCell,
   chartOfAccountsWorkCell,
+  reconciliationWorkCellDefinition,
 ] as const;

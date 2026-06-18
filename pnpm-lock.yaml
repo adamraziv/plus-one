@@ -71,6 +71,9 @@ importers:
       '@plus-one/database':
         specifier: workspace:*
         version: link:../database
+      '@plus-one/ingestion':
+        specifier: workspace:*
+        version: link:../ingestion
       '@plus-one/mutations':
         specifier: workspace:*
         version: link:../mutations

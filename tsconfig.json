@@ -6,6 +6,7 @@
       "@plus-one/accounting": ["packages/accounting/src/index.ts"],
       "@plus-one/contracts": ["packages/contracts/src/index.ts"],
       "@plus-one/database": ["packages/database/src/index.ts"],
+      "@plus-one/ingestion": ["packages/ingestion/src/index.ts"],
       "@plus-one/mutations": ["packages/mutations/src/index.ts"],
       "@plus-one/runtime": ["packages/runtime/src/index.ts"]
     }

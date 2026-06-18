@@ -12,7 +12,7 @@ const optionalText = z.string().min(1).max(2_000).optional();
 export const AccountingLeadRequestSchemaV1 = z.object({
   schemaName: z.literal('accounting-lead-request'),
   schemaVersion: z.literal(1),
-  intent: z.enum(['transaction_capture', 'journal', 'chart_of_accounts']),
+  intent: z.enum(['transaction_capture', 'ingestion', 'journal', 'chart_of_accounts', 'reconciliation']),
   request: z.json(),
 }).strict();
 
