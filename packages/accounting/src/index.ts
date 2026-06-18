@@ -14,3 +14,6 @@ export * from './posting/journal-posting-service.js';
 export * from './posting/corrections.js';
 export * from './posting/projection-hook.js';
 export * from './team/contracts.js';
+export * from './team/skills.js';
+export * from './team/policies.js';
+export * from './team/roles.js';

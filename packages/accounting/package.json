@@ -4,8 +4,11 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
+    "@mastra/core": "1.42.0",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
+    "@plus-one/mutations": "workspace:*",
+    "@plus-one/runtime": "workspace:*",
     "pg": "8.16.3",
     "zod": "4.1.12"
   }
