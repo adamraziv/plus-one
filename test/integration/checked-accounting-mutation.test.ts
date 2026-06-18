@@ -40,6 +40,23 @@ describe('checked accounting mutation', () => {
        WHERE household.household_id = $1 AND command.command_id = $2`,
       [command.householdId, command.commandId],
     )).rows[0]).toEqual({ command_status: 'readback_verified', task_status: 'readback_verified' });
+    const evidence = await owner.query<{
+      command_status: string;
+      task_status: string;
+      receipts: number;
+      readbacks: number;
+    }>(`SELECT command.status AS command_status, task.status AS task_status,
+      (SELECT count(*)::int FROM operations.mutation_receipts) AS receipts,
+      (SELECT count(*)::int FROM operations.mutation_readbacks) AS readbacks
+      FROM operations.mutation_commands command
+      JOIN operations.verification_tasks task
+        ON task.household_id = command.household_id AND task.task_id = command.task_id`);
+    expect(evidence.rows[0]).toEqual({
+      command_status: 'readback_verified',
+      task_status: 'readback_verified',
+      receipts: 1,
+      readbacks: 1,
+    });
     await owner.end();
   });
 });

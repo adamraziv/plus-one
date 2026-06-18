@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { PostgresMutationCommandRepository } from '@plus-one/database';
 import { canonicalizeJson, hashArtifact } from '@plus-one/runtime';
 import { Pool } from 'pg';
+import { checkedCommand } from '../helpers/checked-mutation.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 let context: PostgresTestContext | undefined;
@@ -16,6 +18,7 @@ const identity = {
   artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
 };
 const acceptedProposal = { amount: '20.00' };
+const rejectedProposal = { amount: '30.00' };
 const acceptedMakerPayload = {
   schemaName: 'maker-artifact',
   schemaVersion: 1,
@@ -26,6 +29,16 @@ const acceptedMakerPayload = {
   uncertainty: [],
 };
 const acceptedProposalHash = hashArtifact(acceptedMakerPayload);
+const rejectedMakerPayload = {
+  schemaName: 'maker-artifact',
+  schemaVersion: 1,
+  outputSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
+  output: rejectedProposal,
+  claims: [{ claimId: 'rejected-proposal', text: 'Rejected test proposal.', evidenceArtifactIds: [] }],
+  assumptions: [],
+  uncertainty: [],
+};
+const rejectedProposalHash = hashArtifact(rejectedMakerPayload);
 
 describe('checked mutation schema', () => {
   it('creates only the required Plan 05 operations relations', async () => {
@@ -119,6 +132,43 @@ describe('checked mutation schema', () => {
     )).rejects.toMatchObject({ code: '23514', constraint: 'mutation_command_receipt_required' });
     await pool.end();
   });
+
+  it('normalizes exact checker and confirmation constraint failures without payload leakage', async () => {
+    context = await createPostgresTestContext('mutation_safe_errors');
+    const owner = new Pool({ connectionString: context.migratorUrl });
+    await seedRejectedArtifact(owner);
+    const operations = new Pool({ connectionString: context.roleUrls.operations });
+    const repository = new PostgresMutationCommandRepository(operations);
+    const result = repository.register(checkedCommand({
+      checkedProposalId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J4K',
+      checkedProposalHash: rejectedProposalHash,
+      payload: rejectedProposal,
+    }));
+    await expect(result).rejects.toMatchObject({
+      category: 'checker_rejected',
+      code: 'exact_checker_acceptance_required',
+    });
+    await expect(result.catch((error: unknown) => JSON.stringify(error)))
+      .resolves.not.toMatch(/30\.00|INSERT INTO|postgres:\/\//);
+    await operations.end();
+    await owner.end();
+  });
+
+  it('uses the incomplete-command status index for restart scanning', async () => {
+    context = await createPostgresTestContext('mutation_status_plan');
+    const pool = new Pool({ connectionString: context.migratorUrl });
+    await pool.query('SET enable_seqscan = off');
+    const plan = await pool.query<{ 'QUERY PLAN': string }>(
+      `EXPLAIN (COSTS OFF)
+       SELECT command_id, status, updated_at
+       FROM operations.mutation_commands
+       WHERE status IN ('registered','execution_pending','committed')
+       ORDER BY updated_at LIMIT 100`,
+    );
+    expect(plan.rows.map((row) => row['QUERY PLAN']).join('\n'))
+      .toContain('mutation_commands_status_updated');
+    await pool.end();
+  });
 });
 
 async function seedAcceptedArtifact(pool: Pool): Promise<void> {
@@ -170,6 +220,49 @@ async function seedAcceptedArtifact(pool: Pool): Promise<void> {
      SET current_maker_artifact_id = $3, current_maker_artifact_hash = $4
      WHERE household_id = $1 AND task_id = $2`,
     [householdDbId, identity.taskId, identity.artifactId, acceptedProposalHash],
+  );
+}
+
+async function seedRejectedArtifact(pool: Pool): Promise<void> {
+  await seedAcceptedArtifact(pool);
+  await pool.query(
+    `INSERT INTO operations.artifacts
+     (artifact_id, household_id, task_id, artifact_type, schema_name, schema_version,
+      canonicalization_version, hash_algorithm, artifact_hash, canonical_payload, payload)
+     SELECT 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J4K', household.id,
+      'task_01JNZQ4A9B8C7D6E5F4G3H2J1K','maker_output','maker-artifact',1,
+      'rfc8785-v1','sha256',$1,$2,$3
+     FROM operations.households household
+     WHERE household.household_id = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'`,
+    [rejectedProposalHash, canonicalizeJson(rejectedMakerPayload), rejectedMakerPayload],
+  );
+  await pool.query(
+    `INSERT INTO operations.artifacts
+     (artifact_id, household_id, task_id, artifact_type, schema_name, schema_version,
+      canonicalization_version, hash_algorithm, artifact_hash, canonical_payload, payload)
+     SELECT 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J5K', household.id,
+      'task_01JNZQ4A9B8C7D6E5F4G3H2J1K','checker_output','checker-verdict',1,
+      'rfc8785-v1','sha256',repeat('e',64),'{}','{}'
+     FROM operations.households household
+     WHERE household.household_id = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'`,
+  );
+  await pool.query(
+    `UPDATE operations.verification_tasks
+     SET current_maker_artifact_id = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J4K',
+         current_maker_artifact_hash = $1
+     WHERE task_id = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K'`,
+    [rejectedProposalHash],
+  );
+  await pool.query(
+    `INSERT INTO operations.checker_verdicts
+     (household_id, task_id, checker_artifact_id, covered_artifact_id,
+      covered_artifact_hash, verdict)
+     SELECT household.id,'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      'artifact_01JNZQ4A9B8C7D6E5F4G3H2J5K','artifact_01JNZQ4A9B8C7D6E5F4G3H2J4K',
+      $1,'rejected'
+     FROM operations.households household
+     WHERE household.household_id = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'`,
+    [rejectedProposalHash],
   );
 }
 

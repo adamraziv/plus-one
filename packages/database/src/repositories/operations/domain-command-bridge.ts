@@ -1,6 +1,6 @@
 import { MutationReceiptIdSchema, type JsonValue } from '@plus-one/contracts';
 import type { PoolClient } from 'pg';
-import { normalizeDatabaseError } from '../../errors.js';
+import { normalizeMutationDatabaseError } from './mutation-errors.js';
 
 export class PostgresDomainCommandBridge {
   async claim(client: PoolClient, householdId: string, commandId: string): Promise<{
@@ -22,7 +22,7 @@ export class PostgresDomainCommandBridge {
         ...(row.receipt_id === null ? {} : { receiptId: MutationReceiptIdSchema.parse(row.receipt_id) }),
       };
     } catch (error) {
-      throw normalizeDatabaseError(error, { operation: 'claim-mutation-command' });
+      throw normalizeMutationDatabaseError(error);
     }
   }
 
@@ -45,7 +45,7 @@ export class PostgresDomainCommandBridge {
       );
       return { receiptId: result.rows[0]!.receipt_id, committedAt: result.rows[0]!.committed_at };
     } catch (error) {
-      throw normalizeDatabaseError(error, { operation: 'commit-mutation-command' });
+      throw normalizeMutationDatabaseError(error);
     }
   }
 }

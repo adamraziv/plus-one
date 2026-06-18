@@ -158,12 +158,18 @@ BEGIN
   IF artifact.id IS NULL
     OR artifact.payload->'output' <> NEW.payload
     OR artifact.payload #>> '{outputSchema,schemaName}' <> NEW.payload_schema_name
-    OR (artifact.payload #>> '{outputSchema,schemaVersion}')::integer <> NEW.payload_schema_version
-    OR NOT accepted THEN
+    OR (artifact.payload #>> '{outputSchema,schemaVersion}')::integer <> NEW.payload_schema_version THEN
     RAISE EXCEPTION USING
       ERRCODE = '23514',
       CONSTRAINT = 'mutation_command_exact_artifact',
-      MESSAGE = 'Mutation command does not match an accepted maker artifact';
+      MESSAGE = 'Mutation command does not match the exact maker artifact';
+  END IF;
+
+  IF NOT accepted THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      CONSTRAINT = 'mutation_command_acceptance_required',
+      MESSAGE = 'Mutation command does not have an accepting checker verdict';
   END IF;
 
   IF NEW.confirmation_required OR NEW.confirmation_id IS NOT NULL THEN
@@ -377,7 +383,9 @@ GRANT SELECT, INSERT ON operations.external_confirmations, operations.mutation_c
 GRANT UPDATE (status, failure_code, failure_detail, execution_started_at, committed_at,
   readback_finished_at, updated_at) ON operations.mutation_commands TO plus_one_operations;
 GRANT SELECT ON operations.mutation_receipts, operations.mutation_readbacks TO plus_one_operations;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON operations.mutation_receipts FROM plus_one_operations;
 GRANT INSERT ON operations.mutation_readbacks TO plus_one_operations;
+REVOKE UPDATE, DELETE, TRUNCATE ON operations.mutation_readbacks FROM plus_one_operations;
 GRANT USAGE, SELECT ON SEQUENCE operations.external_confirmations_id_seq,
   operations.mutation_commands_id_seq, operations.mutation_readbacks_id_seq
   TO plus_one_operations;

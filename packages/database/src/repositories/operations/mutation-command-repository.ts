@@ -12,7 +12,7 @@ import {
   type ReadbackResultV1,
 } from '@plus-one/contracts';
 import type { Pool } from 'pg';
-import { normalizeDatabaseError } from '../../errors.js';
+import { normalizeMutationDatabaseError } from './mutation-errors.js';
 
 export interface MutationCommandRecord {
   commandId: string;
@@ -76,7 +76,7 @@ export class PostgresMutationCommandRepository {
         details: { householdId: input.householdId },
       });
     } catch (error) {
-      throw normalizeDatabaseError(error, { operation: 'record-confirmation' });
+      throw normalizeMutationDatabaseError(error);
     }
   }
 
@@ -184,7 +184,7 @@ export class PostgresMutationCommandRepository {
       await client.query('ROLLBACK');
       throw error instanceof PlusOneError
         ? error
-        : normalizeDatabaseError(error, { operation: 'record-readback' });
+        : normalizeMutationDatabaseError(error);
     } finally {
       client.release();
     }
@@ -349,7 +349,7 @@ export class PostgresMutationCommandRepository {
         cause: error,
       });
     }
-    return normalizeDatabaseError(error, { operation: 'register-mutation-command' });
+    return normalizeMutationDatabaseError(error);
   }
 
   private stateConflict(commandId: string, expected: string): PlusOneError {
