@@ -17,3 +17,5 @@ export * from './team/contracts.js';
 export * from './team/skills.js';
 export * from './team/policies.js';
 export * from './team/roles.js';
+export * from './team/work-cells.js';
+export * from './team/accounting-team.js';
