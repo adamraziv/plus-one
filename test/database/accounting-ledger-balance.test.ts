@@ -104,7 +104,8 @@ async function seedCheckedDraft(client: PoolClient, debitAmount = '20.00',
   };
 }
 
-async function insertJournal(client: PoolClient, seed: SeededLedger, amount: string, creditAmount = amount) {
+async function insertJournal(client: PoolClient, seed: SeededLedger, amount: string,
+  creditAmount = amount, description = 'Burger') {
   const journal = await client.query<{ id: string }>(
     `INSERT INTO accounting.journals
      (journal_id, household_id, book_id, period_id, draft_id, task_id,
@@ -113,8 +114,9 @@ async function insertJournal(client: PoolClient, seed: SeededLedger, amount: str
      VALUES ('journal_01JNZQ4A9B8C7D6E5F4G3H2J1K', $1, $2, $3, $4,
        'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
        'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K', $5, 'ordinary', 'USD',
-       DATE '2026-06-14', DATE '2026-06-14', 'Burger') RETURNING id::text`,
-    [seed.householdDbId, seed.bookDbId, seed.periodDbId, seed.draftDbId, 'a'.repeat(64)],
+       DATE '2026-06-14', DATE '2026-06-14', $6) RETURNING id::text`,
+    [seed.householdDbId, seed.bookDbId, seed.periodDbId, seed.draftDbId,
+      'a'.repeat(64), description],
   );
   await client.query(
     `INSERT INTO accounting.postings
@@ -179,6 +181,19 @@ describe('accounting commit-time integrity', () => {
         client.release();
       },
     ), { numRuns: 25 });
+    await pool.end();
+  });
+
+  it('rejects a posted body that differs from the exact checked draft', async () => {
+    context = await createPostgresTestContext('accounting_exact_draft');
+    const pool = new Pool({ connectionString: context.migratorUrl });
+    const client = await pool.connect();
+    await client.query('BEGIN');
+    const seed = await seedCheckedDraft(client);
+    await insertJournal(client, seed, '20.00', '20.00', 'Changed after checking');
+    await expect(client.query('SET CONSTRAINTS ALL IMMEDIATE')).rejects.toMatchObject({ code: '23514' });
+    await client.query('ROLLBACK');
+    client.release();
     await pool.end();
   });
 });
