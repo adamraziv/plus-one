@@ -145,7 +145,33 @@ export const PostJournalInputSchemaV1 = z.object({
   tagIds: z.array(TagIdSchema).max(32).default([]),
   reversesJournalId: JournalIdSchema.optional(),
   replacesJournalId: JournalIdSchema.optional(),
-  postings: z.array(DraftPostingInputSchemaV1).min(2),
+  postings: z.array(z.object({
+    accountId: AccountIdSchema,
+    direction: PostingDirectionSchemaV1,
+    transactionAmount: NonNegativeAmountStringSchema,
+    accountNativeAmount: NonNegativeAmountStringSchema,
+    accountNativeCurrency: CurrencyCodeSchema,
+    exchangeRate: PositiveExchangeRateSchema.optional(),
+    exchangeRateQuote: ExchangeRateQuoteSchemaV1.optional(),
+    exchangeRateDate: LocalDateSchema.optional(),
+    exchangeRateSource: z.string().min(1).max(256).optional(),
+    memo: z.string().max(2_000).optional(),
+    tagIds: z.array(TagIdSchema).max(32).default([]),
+    postingId: PostingIdSchema.optional(),
+  }).strict().superRefine((posting, context) => {
+    if (posting.postingId === undefined) {
+      const okAmount = PositiveAmountStringSchema.safeParse(posting.transactionAmount).success;
+      if (!okAmount) {
+        context.addIssue({ code: 'custom', message: 'Posted postings require a positive transaction amount' });
+      }
+    }
+    const rateFields = [posting.exchangeRate, posting.exchangeRateQuote,
+      posting.exchangeRateDate, posting.exchangeRateSource];
+    const supplied = rateFields.filter((field) => field !== undefined).length;
+    if (supplied !== 0 && supplied !== rateFields.length) {
+      context.addIssue({ code: 'custom', message: 'Exchange-rate fields must be all present or all absent' });
+    }
+  })).min(2),
 }).strict().superRefine((journal, context) => {
   for (const posting of journal.postings) {
     if (PositiveAmountStringSchema.safeParse(posting.transactionAmount).success === false) {

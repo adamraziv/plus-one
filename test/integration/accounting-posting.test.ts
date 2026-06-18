@@ -62,8 +62,11 @@ describe('journal posting', () => {
     const invalid = postInput();
     invalid.postings[2]!.transactionAmount = '11.00' as DecimalString;
     invalid.postings[2]!.accountNativeAmount = '11.00' as DecimalString;
+    // The trigger fires the exact-draft-mismatch constraint first because the
+    // accepted draft postings still sum to 40. Plan 04 normalizer maps this
+    // constraint to `checker_rejected`.
     await expect(new JournalPostingService().postInTransaction(client, invalid))
-      .rejects.toMatchObject({ category: 'constraint_violation' });
+      .rejects.toMatchObject({ category: 'checker_rejected' });
     await client.query('ROLLBACK');
     client.release();
     await pool.end();

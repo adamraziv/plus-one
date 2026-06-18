@@ -1,6 +1,7 @@
 // packages/accounting/src/posting/corrections.ts
 import {
-  ReverseAndReplaceInputSchemaV1, type PostJournalInputV1, type ReverseAndReplaceInputV1,
+  PostingIdSchema, ReverseAndReplaceInputSchemaV1, type PostJournalInputV1,
+  type ReverseAndReplaceInputV1,
 } from '@plus-one/contracts';
 import type { PoolClient } from 'pg';
 import { assertSerializableTransaction } from '../transactions.js';
@@ -14,7 +15,7 @@ export function buildExactReversalPostings(
 ): PostJournalInputV1['postings'] {
   return postings.map((posting, index) => ({
     ...posting,
-    postingId: nextPostingId(index),
+    postingId: PostingIdSchema.parse(nextPostingId(index)),
     direction: posting.direction === 'debit' ? 'credit' : 'debit',
     tagIds: [...posting.tagIds],
   }));
@@ -30,8 +31,7 @@ export class CorrectionService {
       `SELECT journal_id FROM accounting.journals
        WHERE household_id = (
          SELECT id FROM operations.households WHERE household_id = $1
-       ) AND journal_id = $2
-       FOR KEY SHARE`,
+       ) AND journal_id = $2`,
       [input.reversal.householdId, input.originalJournalId],
     );
     if (original.rows[0] === undefined) throw new Error('Original journal was not found');

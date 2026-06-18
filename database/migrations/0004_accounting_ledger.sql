@@ -801,6 +801,7 @@ GRANT UPDATE (display_name, archived_at, updated_at)
 GRANT UPDATE (name, archived_at, updated_at)
   ON accounting.tags TO plus_one_accounting;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA accounting TO plus_one_accounting;
+GRANT USAGE ON SCHEMA accounting TO plus_one_accounting;
 GRANT USAGE ON SCHEMA operations TO plus_one_accounting;
 GRANT SELECT ON operations.households, operations.currency_metadata TO plus_one_accounting;
 

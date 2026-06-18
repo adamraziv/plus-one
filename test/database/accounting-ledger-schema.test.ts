@@ -132,4 +132,61 @@ describe('accounting ledger schema', () => {
     )).resolves.toBeDefined();
     await pool.end();
   });
+
+  it('rejects an indirect cycle in the account hierarchy', async () => {
+    context = await createPostgresTestContext('accounting_hierarchy');
+    const pool = new Pool({ connectionString: context.migratorUrl });
+    await seedHousehold(pool, 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+    const book = await pool.query<{ household_id: string; id: string }>(
+      `INSERT INTO accounting.books (book_id, household_id, name)
+       SELECT 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K', id, 'Household Book'
+       FROM operations.households WHERE household_id = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'
+       RETURNING household_id::text, id::text`,
+    );
+    const ids = book.rows[0]!;
+    const accounts = await pool.query<{ id: string; account_id: string }>(
+      `INSERT INTO accounting.accounts
+       (account_id, household_id, book_id, name, accounting_class, normal_balance, native_currency)
+       VALUES
+       ('account_01JNZQ4A9B8C7D6E5F4G3H2J1K',$1,$2,'Parent','asset','debit','USD'),
+       ('account_01JNZQ4A9B8C7D6E5F4G3H2J2K',$1,$2,'Child','asset','debit','USD')
+       RETURNING id::text, account_id`,
+      [ids.household_id, ids.id],
+    );
+    const parent = accounts.rows.find((row) => row.account_id.endsWith('J1K'))!;
+    const child = accounts.rows.find((row) => row.account_id.endsWith('J2K'))!;
+    await pool.query('UPDATE accounting.accounts SET parent_account_id = $1 WHERE id = $2',
+      [parent.id, child.id]);
+    await expect(pool.query(
+      'UPDATE accounting.accounts SET parent_account_id = $1 WHERE id = $2',
+      [child.id, parent.id],
+    )).rejects.toMatchObject({ code: '23514', constraint: 'accounts_hierarchy_acyclic' });
+    await pool.end();
+  });
+
+  it('uses the household/effective-date index for the documented ledger range query', async () => {
+    context = await createPostgresTestContext('accounting_query_plan');
+    const pool = new Pool({ connectionString: context.migratorUrl });
+    await pool.query(`
+      INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
+      VALUES ('hh_01JNZQ4A9B8C7D6E5F4G3H2J1K', 'USD', 'UTC');
+      INSERT INTO accounting.books (book_id, household_id, name)
+      SELECT 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K', id, 'Household Book'
+      FROM operations.households WHERE household_id = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+    `);
+    await pool.query('SET enable_seqscan = off');
+    const plan = await pool.query<{ 'QUERY PLAN': string }>(
+      `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+       SELECT journal_id, effective_on
+       FROM accounting.journals
+       WHERE household_id = (
+         SELECT id FROM operations.households
+         WHERE household_id = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'
+       ) AND effective_on BETWEEN DATE '2026-01-01' AND DATE '2026-12-31'
+       ORDER BY effective_on DESC`,
+    );
+    expect(plan.rows.map((row) => row['QUERY PLAN']).join('\n'))
+      .toContain('journals_household_effective');
+    await pool.end();
+  });
 });
