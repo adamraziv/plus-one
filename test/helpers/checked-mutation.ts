@@ -21,6 +21,7 @@ import {
   CommandStateResolver,
   SerializableMutationRunner,
   createPostAccountingJournalHandler,
+  type MutationCommandHandler,
 } from '@plus-one/mutations';
 import { ArtifactStore, canonicalizeJson, hashArtifact } from '@plus-one/runtime';
 import { Pool } from 'pg';
@@ -201,7 +202,8 @@ export async function seedCheckedAccountingMutation(pool: Pool): Promise<{
   };
 }
 
-export function createExecutor(testContext: PostgresTestContext): {
+export function createExecutor(testContext: PostgresTestContext,
+  handlers: readonly MutationCommandHandler[] = [createPostAccountingJournalHandler()]): {
   executor: CheckedMutationExecutor;
   close(): Promise<void>;
 } {
@@ -224,7 +226,7 @@ export function createExecutor(testContext: PostgresTestContext): {
     ledger,
     commands,
     resolver,
-    registry: new CommandRegistry([createPostAccountingJournalHandler()]),
+    registry: new CommandRegistry(handlers),
     runner,
     readClients: { connect: async () => accounting.connect() },
     newReadbackId: () => 'readback_' + String(readbackCounter++).padStart(26, '0'),
