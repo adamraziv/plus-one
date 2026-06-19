@@ -31,6 +31,23 @@ describe('DuplicateMatcher', () => {
     expect(one).toEqual(two);
   });
 
+  it('keeps fallback fingerprints distinct across source scopes', () => {
+    const one = matcher.exactFingerprint({
+      ...scope,
+      sourceDocumentHash: 'a'.repeat(64),
+      sourceRowIdentity: 'row-1',
+      rawPayload: { amount: '20' },
+    });
+    const two = matcher.exactFingerprint({
+      ...scope,
+      sourceAccountId: 'account_2',
+      sourceDocumentHash: 'a'.repeat(64),
+      sourceRowIdentity: 'row-1',
+      rawPayload: { amount: '20' },
+    });
+    expect(one.hash).not.toBe(two.hash);
+  });
+
   it('never calls similarity an exact duplicate', () => {
     expect(matcher.scoreProbable(
       { amount: '-20.00', occurredOn: '2026-05-01', description: 'Burger' },

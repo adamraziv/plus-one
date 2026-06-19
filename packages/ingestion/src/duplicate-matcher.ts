@@ -17,7 +17,14 @@ export class DuplicateMatcher {
     return input.externalTransactionId === undefined
       ? {
         kind: 'source_row_fallback',
-        hash: digest([input.householdId, input.sourceDocumentHash, input.sourceRowIdentity, input.rawPayload]),
+        hash: digest([
+          input.householdId,
+          input.sourceAccountId,
+          input.sourceSystem,
+          input.sourceDocumentHash,
+          input.sourceRowIdentity,
+          input.rawPayload,
+        ]),
       }
       : {
         kind: 'stable_external_id',

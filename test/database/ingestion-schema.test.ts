@@ -13,6 +13,7 @@ const ids = {
   household: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
   book: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
   account: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  secondAccount: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
   period: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
   source: 'source_01JNZQ4A9B8C7D6E5F4G3H2J1K',
   rawRow: 'rawrow_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -51,6 +52,48 @@ describe('0006 ingestion and reconciliation', () => {
          JOIN accounting.accounts account ON account.household_id = household.id
          WHERE household.household_id = $1 AND account.account_id = $2`,
         [ids.household, ids.account, 'a'.repeat(64)],
+      )).rejects.toMatchObject({ code: '23505' });
+    } finally {
+      await accounting.end();
+      await owner.end();
+    }
+  });
+
+  it('keeps fallback exact fingerprints unique per source scope', async () => {
+    context = await createPostgresTestContext('ingestion_fingerprint_scope');
+    const owner = new Pool({ connectionString: context.migratorUrl });
+    const accounting = new Pool({ connectionString: context.roleUrls.accounting });
+    try {
+      await seedBook(owner, true);
+      await insertSourceBatchRaw(accounting, {
+        sourceDocumentId: ids.source,
+        sourceAccountId: ids.account,
+        importBatchId: 'import_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        rawRowId: ids.rawRow,
+        storageKey: 'sha256/aa/file-1',
+      });
+      await insertSourceBatchRaw(accounting, {
+        sourceDocumentId: 'source_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        sourceAccountId: ids.secondAccount,
+        importBatchId: 'import_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        rawRowId: 'rawrow_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        storageKey: 'sha256/aa/file-2',
+      });
+
+      await insertNormalizedFallback(accounting, ids.rawRow, ids.account);
+      await expect(insertNormalizedFallback(
+        accounting,
+        'rawrow_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        ids.secondAccount,
+        'normrow_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      )).resolves.toBeUndefined();
+
+      await expect(insertNormalizedFallback(
+        accounting,
+        ids.rawRow,
+        ids.account,
+        'normrow_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        2,
       )).rejects.toMatchObject({ code: '23505' });
     } finally {
       await accounting.end();
@@ -115,7 +158,7 @@ describe('0006 ingestion and reconciliation', () => {
   });
 });
 
-async function seedBook(pool: Pool): Promise<void> {
+async function seedBook(pool: Pool, includeSecondAccount = false): Promise<void> {
   await pool.query(
     `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
      VALUES ($1, 'USD', 'UTC')`,
@@ -130,10 +173,69 @@ async function seedBook(pool: Pool): Promise<void> {
        INSERT INTO accounting.accounts
        (account_id, household_id, book_id, name, accounting_class, normal_balance, native_currency)
        SELECT $3, household_id, id, 'Checking', 'asset', 'debit', 'USD' FROM book
+     ), second_account AS (
+       INSERT INTO accounting.accounts
+       (account_id, household_id, book_id, name, accounting_class, normal_balance, native_currency)
+       SELECT $5, household_id, id, 'Savings', 'asset', 'debit', 'USD' FROM book WHERE $6
      )
      INSERT INTO accounting.periods (period_id, household_id, book_id, period_start, period_end)
      SELECT $4, household_id, id, DATE '2026-05-01', DATE '2026-05-31' FROM book`,
-    [ids.household, ids.book, ids.account, ids.period],
+    [ids.household, ids.book, ids.account, ids.period, ids.secondAccount, includeSecondAccount],
+  );
+}
+
+async function insertSourceBatchRaw(pool: Pool, input: {
+  sourceDocumentId: string;
+  sourceAccountId: string;
+  importBatchId: string;
+  rawRowId: string;
+  storageKey: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO ingestion.source_documents
+     (source_document_id, household_id, source_account_id, source_system, content_hash,
+      byte_size, storage_key, media_type, parser_version, source_schema_version,
+      extraction_status, upload_reference)
+     SELECT $1, household.id, account.id, 'bank', $4, 8, $5,
+      'text/csv', 'csv-v1', 'bank-v1', 'received', $6
+     FROM operations.households household
+     JOIN accounting.accounts account ON account.household_id = household.id
+     WHERE household.household_id = $2 AND account.account_id = $3`,
+    [input.sourceDocumentId, ids.household, input.sourceAccountId, 'a'.repeat(64),
+      input.storageKey, input.sourceDocumentId],
+  );
+  await pool.query(
+    `INSERT INTO ingestion.import_batches (import_batch_id, household_id, source_document_id, state)
+     SELECT $1, household.id, source.id, 'received'
+     FROM operations.households household
+     JOIN ingestion.source_documents source ON source.household_id = household.id
+     WHERE household.household_id = $2 AND source.source_document_id = $3`,
+    [input.importBatchId, ids.household, input.sourceDocumentId],
+  );
+  await pool.query(
+    `INSERT INTO ingestion.raw_rows
+     (raw_row_id, import_batch_id, source_row_identity, source_row_number, raw_payload, canonical_raw_hash)
+     SELECT $1, id, 'row-1', 1, '{"amount":"12.00"}'::jsonb, $2
+     FROM ingestion.import_batches WHERE import_batch_id = $3`,
+    [input.rawRowId, 'd'.repeat(64), input.importBatchId],
+  );
+}
+
+async function insertNormalizedFallback(
+  pool: Pool,
+  rawRowId: string,
+  accountId: string,
+  normalizedRowId = 'normrow_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  version = 1,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO ingestion.normalized_rows
+     (normalized_row_id, raw_row_id, version, occurred_on, amount, currency,
+      description, parser_version, normalized_payload, exact_fingerprint, fingerprint_kind, row_state)
+     SELECT $1, raw.id, $2, DATE '2026-05-01', 12.00, 'USD',
+      $3, 'csv-v1', '{"amount":"12.00"}'::jsonb, $4, 'source_row_fallback', 'ready'
+     FROM ingestion.raw_rows raw WHERE raw.raw_row_id = $5`,
+    [normalizedRowId, version, `Fallback ${accountId}`, 'f'.repeat(64), rawRowId],
   );
 }
 
