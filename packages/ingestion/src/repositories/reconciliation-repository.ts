@@ -1,5 +1,7 @@
 import type { PoolClient } from 'pg';
 import { PlusOneError } from '@plus-one/contracts';
+import { canonicalizeJson } from '@plus-one/runtime';
+import type { DomainReadbackOutput } from '@plus-one/mutations';
 
 export class ReconciliationRepository {
   constructor(private readonly client: PoolClient) {}
@@ -70,7 +72,7 @@ export class ReconciliationRepository {
         input.reconciliationId, input.householdId, input.bookId, input.accountId,
         input.statementSnapshotId, input.periodStart, input.periodEnd, input.currency,
         input.ledgerOpeningBalance, input.ledgerClosingBalance, input.statementOpeningBalance,
-        input.statementClosingBalance, input.completionStatus, input.unresolvedDiscrepancies,
+        input.statementClosingBalance, input.completionStatus, JSON.stringify(input.unresolvedDiscrepancies),
         input.makerArtifactId, input.checkerArtifactId,
       ],
     );
@@ -152,8 +154,9 @@ export class ReconciliationRepository {
          AND artifact.artifact_id = $10`,
       [
         input.periodEventId, input.householdId, input.bookId, input.periodId,
-        input.eventType, input.priorEventId ?? null, input.reconciliationIds,
-        input.unresolvedDiscrepancyIds, input.responsibleArtifactIds, input.checkedArtifactId,
+        input.eventType, input.priorEventId ?? null, JSON.stringify(input.reconciliationIds),
+        JSON.stringify(input.unresolvedDiscrepancyIds), JSON.stringify(input.responsibleArtifactIds),
+        input.checkedArtifactId,
         input.confirmationId ?? null, input.reason ?? null,
       ],
     );
@@ -182,15 +185,16 @@ export class ReconciliationRepository {
 
   async readReconciliation(reconciliationId: string): Promise<unknown> {
     const result = await this.client.query(
-      `SELECT reconciliation.reconciliation_id AS "reconciliationId",
+      `SELECT 'reconciliation-proposal' AS "schemaName", 1 AS "schemaVersion",
+        reconciliation.reconciliation_id AS "reconciliationId",
         household.household_id AS "householdId", book.book_id AS "bookId",
         account.account_id AS "accountId", snapshot.statement_snapshot_id AS "statementSnapshotId",
         reconciliation.period_start::text AS "periodStart",
         reconciliation.period_end::text AS "periodEnd", reconciliation.currency,
-        reconciliation.ledger_opening_balance::text AS "ledgerOpeningBalance",
-        reconciliation.ledger_closing_balance::text AS "ledgerClosingBalance",
-        reconciliation.statement_opening_balance::text AS "statementOpeningBalance",
-        reconciliation.statement_closing_balance::text AS "statementClosingBalance",
+        to_char(reconciliation.ledger_opening_balance, 'FM999999999999999999999999999990.00') AS "ledgerOpeningBalance",
+        to_char(reconciliation.ledger_closing_balance, 'FM999999999999999999999999999990.00') AS "ledgerClosingBalance",
+        to_char(reconciliation.statement_opening_balance, 'FM999999999999999999999999999990.00') AS "statementOpeningBalance",
+        to_char(reconciliation.statement_closing_balance, 'FM999999999999999999999999999990.00') AS "statementClosingBalance",
         COALESCE(evidence."artifactIds", '[]'::jsonb) AS "evidenceArtifactIds",
         COALESCE(items.items, '[]'::jsonb) AS items,
         reconciliation.unresolved_discrepancies AS "unresolvedDiscrepancies",
@@ -213,7 +217,7 @@ export class ReconciliationRepository {
            'normalizedRowId', normalized.normalized_row_id,
            'journalId', journal.journal_id,
            'status', item.status,
-           'amountDifference', item.amount_difference::text,
+           'amountDifference', to_char(item.amount_difference, 'FM999999999999999999999999999990.00'),
            'explanation', item.explanation
          )) ORDER BY item.reconciliation_item_id) AS items
          FROM accounting.reconciliation_items item
@@ -281,6 +285,40 @@ export class ReconciliationRepository {
       [householdId, bookId, periodId],
     );
     return this.one(result.rows[0], 'period_coverage_not_found');
+  }
+
+  async readPeriodMutation(expectedState: unknown): Promise<DomainReadbackOutput> {
+    const expected = expectedState as {
+      periodId: string;
+      status: string;
+      periodEventId: string;
+      checkedArtifactId: string;
+      confirmationId?: string;
+    };
+    const result = await this.client.query(
+      `SELECT period.period_id AS "periodId", period.state AS status,
+        event.period_event_id AS "periodEventId", artifact.artifact_id AS "checkedArtifactId",
+        confirmation.confirmation_id AS "confirmationId"
+       FROM accounting.period_events event
+       JOIN accounting.periods period ON period.id = event.period_id
+       JOIN operations.artifacts artifact ON artifact.id = event.checked_artifact_id
+       LEFT JOIN operations.external_confirmations confirmation ON confirmation.id = event.confirmation_id
+       WHERE event.period_event_id = $1`,
+      [expected.periodEventId],
+    );
+    const observed = this.one(result.rows[0], 'period_event_not_found') as Record<string, unknown>;
+    if (observed.confirmationId === null) delete observed.confirmationId;
+    const matches = canonicalizeJson(observed as never) === canonicalizeJson(expected as never);
+    return {
+      checks: [
+        { kind: 'row_values', status: matches ? 'passed' : 'failed',
+          ...(matches ? {} : { detailCode: 'period_event_state' }) },
+        { kind: 'artifact_links', status: observed.checkedArtifactId === expected.checkedArtifactId ? 'passed' : 'failed',
+          ...(observed.checkedArtifactId === expected.checkedArtifactId ? {} : { detailCode: 'period_event_artifact' }) },
+      ],
+      mismatches: matches ? [] : ['period_event_readback_mismatch'],
+      observedState: JSON.parse(JSON.stringify(observed)) as never,
+    };
   }
 
   private one<T>(row: T | undefined, code: string): T {

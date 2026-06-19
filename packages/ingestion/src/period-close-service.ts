@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { PlusOneError } from '@plus-one/contracts';
 import type { MutationExecutionContext, MutationExecutionOutput, DomainReadbackOutput } from '@plus-one/mutations';
 import type { PoolClient } from 'pg';
@@ -7,7 +8,7 @@ import type { ReconciliationRepository } from './repositories/reconciliation-rep
 const sorted = (values: readonly string[]) => [...values].sort();
 const sameSet = (left: readonly string[], right: readonly string[]) =>
   JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
-const eventIdFor = (periodId: string) => periodId.replace(/^period_/, 'periodevent_');
+const newPeriodEventId = () => 'periodevent_' + randomUUID().replace(/-/g, '').slice(0, 26).toUpperCase();
 
 interface PeriodCoverage {
   reconciliationIds: string[];
@@ -50,7 +51,7 @@ export class PeriodCloseService {
         details: { periodId: proposal.periodId },
       });
     }
-    const periodEventId = eventIdFor(proposal.periodId);
+    const periodEventId = newPeriodEventId();
     const event = await this.repository.insertPeriodEvent({
       ...proposal,
       periodEventId,
@@ -109,7 +110,7 @@ export class PeriodCloseService {
         details: { periodId: proposal.periodId },
       });
     }
-    const periodEventId = eventIdFor(proposal.periodId);
+    const periodEventId = newPeriodEventId();
     const event = await this.repository.insertPeriodEvent({
       householdId: proposal.householdId,
       bookId: proposal.bookId,

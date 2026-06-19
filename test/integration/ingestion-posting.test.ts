@@ -29,4 +29,34 @@ describe('checked import posting', () => {
       sourceDocumentId: expect.any(String),
     });
   });
+
+  it('returns one receipt and one journal under concurrent same-key confirmations', async () => {
+    const h = await createIngestionHarness();
+    harness = h;
+    const checked = await h.confirm(await h.checkedImport());
+
+    const results = await Promise.all(Array.from({ length: 4 }, () => h.execute(checked)));
+
+    expect(new Set(results.map((result) => result.receipt.receiptId)).size).toBe(1);
+    expect(await h.postedJournalCount()).toBe(1);
+  });
+
+  it('links an existing journal without posting twice', async () => {
+    const h = await createIngestionHarness();
+    harness = h;
+    const existing = await h.postExistingJournal();
+    const checked = await h.confirm(await h.checkedExistingMatch(existing.journalId));
+
+    await expect(h.execute(checked)).resolves.toMatchObject({ status: 'readback_verified' });
+    expect(await h.postedJournalCount()).toBe(1);
+  });
+
+  it('resumes committed import read-back without posting again', async () => {
+    const h = await createIngestionHarness();
+    harness = h;
+    const checked = await h.commitImportWithoutReadback();
+
+    await expect(h.execute(checked)).resolves.toMatchObject({ status: 'readback_verified' });
+    expect(await h.postedJournalCount()).toBe(1);
+  });
 });

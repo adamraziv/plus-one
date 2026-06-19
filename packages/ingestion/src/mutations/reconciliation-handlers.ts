@@ -1,4 +1,6 @@
 import type { DomainReadbackOutput, MutationCommandHandler } from '@plus-one/mutations';
+import { canonicalizeJson } from '@plus-one/runtime';
+import type { PoolClient } from 'pg';
 import {
   PeriodCloseProposalSchemaV1,
   PeriodReopenProposalSchemaV1,
@@ -13,6 +15,8 @@ import type { ReconciliationRepository } from '../repositories/reconciliation-re
 export const createRecordReconciliationHandler = (
   repository: Pick<ReconciliationRepository,
     'insertReconciliation' | 'insertItems' | 'insertEvidenceLinks' | 'readReconciliation'>,
+  repositoryForClient?: (client: PoolClient) => Pick<ReconciliationRepository,
+    'insertReconciliation' | 'insertItems' | 'insertEvidenceLinks' | 'readReconciliation'>,
 ): MutationCommandHandler<ReconciliationProposalV1> => ({
   commandType: 'record_reconciliation',
   domainRole: 'accounting',
@@ -20,24 +24,25 @@ export const createRecordReconciliationHandler = (
   inputSchemaIdentity: { schemaName: 'reconciliation-proposal', schemaVersion: 1 },
   confirmation: 'optional',
   requiredReadbackChecks: ['row_values', 'artifact_links', 'idempotency_receipt'],
-  async execute(_client, proposal, context) {
-    await repository.insertReconciliation({
+  async execute(client, proposal, context) {
+    const writer = repositoryForClient?.(client) ?? repository;
+    await writer.insertReconciliation({
       ...proposal,
       makerArtifactId: context.checkedProposalId,
       checkerArtifactId: context.checkedProposalId,
       unresolvedDiscrepancies: proposal.unresolvedDiscrepancies,
     });
-    await repository.insertItems(proposal.reconciliationId, proposal.items as never);
-    await repository.insertEvidenceLinks(proposal.reconciliationId, proposal.evidenceArtifactIds);
+    await writer.insertItems(proposal.reconciliationId, proposal.items as never);
+    await writer.insertEvidenceLinks(proposal.reconciliationId, proposal.evidenceArtifactIds);
     return {
       committedRecords: [{ recordType: 'reconciliation', recordId: proposal.reconciliationId }],
       expectedState: JSON.parse(JSON.stringify(proposal)) as never,
     };
   },
-  async readback(_client, proposal): Promise<DomainReadbackOutput> {
+  async readback(_client, proposal, receipt): Promise<DomainReadbackOutput> {
     const observed = await repository.readReconciliation(proposal.reconciliationId);
-    const observedText = JSON.stringify(observed);
-    const expectedText = JSON.stringify(proposal);
+    const observedText = canonicalizeJson(observed as never);
+    const expectedText = canonicalizeJson(receipt.expectedState as never);
     const matches = observedText === expectedText;
     const evidenceOk = typeof observed === 'object' && observed !== null
       && 'evidenceArtifactIds' in observed
@@ -58,6 +63,7 @@ export const createRecordReconciliationHandler = (
 
 export const createClosePeriodHandler = (
   service: Pick<PeriodCloseService, 'close' | 'readClose'>,
+  serviceForClient?: (client: PoolClient) => Pick<PeriodCloseService, 'close' | 'readClose'>,
 ): MutationCommandHandler<PeriodCloseProposalV1> => ({
   commandType: 'close_accounting_period',
   domainRole: 'accounting',
@@ -65,12 +71,13 @@ export const createClosePeriodHandler = (
   inputSchemaIdentity: { schemaName: 'period-close-proposal', schemaVersion: 1 },
   confirmation: 'optional',
   requiredReadbackChecks: ['row_values', 'artifact_links', 'idempotency_receipt'],
-  execute: (client, proposal, context) => service.close(client, proposal, context),
+  execute: (client, proposal, context) => (serviceForClient?.(client) ?? service).close(client, proposal, context),
   readback: (client, proposal, receipt) => service.readClose(client, proposal, receipt),
 });
 
 export const createReopenPeriodHandler = (
   service: Pick<PeriodCloseService, 'reopen' | 'readReopen'>,
+  serviceForClient?: (client: PoolClient) => Pick<PeriodCloseService, 'reopen' | 'readReopen'>,
 ): MutationCommandHandler<PeriodReopenProposalV1> => ({
   commandType: 'reopen_accounting_period',
   domainRole: 'accounting',
@@ -78,6 +85,6 @@ export const createReopenPeriodHandler = (
   inputSchemaIdentity: { schemaName: 'period-reopen-proposal', schemaVersion: 1 },
   confirmation: 'required',
   requiredReadbackChecks: ['row_values', 'artifact_links', 'idempotency_receipt'],
-  execute: (client, proposal, context) => service.reopen(client, proposal, context as never),
+  execute: (client, proposal, context) => (serviceForClient?.(client) ?? service).reopen(client, proposal, context as never),
   readback: (client, proposal, receipt) => service.readReopen(client, proposal, receipt),
 });
