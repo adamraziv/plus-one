@@ -270,6 +270,7 @@ CREATE TRIGGER budget_mappings_no_active_overlap
   BEFORE INSERT OR UPDATE ON planning.budget_category_account_mappings
   FOR EACH ROW EXECUTE FUNCTION planning.prevent_budget_mapping_overlap();
 
+GRANT USAGE ON SCHEMA operations, accounting TO plus_one_planning;
 GRANT SELECT ON operations.households, operations.currency_metadata TO plus_one_planning;
 GRANT SELECT ON accounting.accounts TO plus_one_planning;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA planning TO plus_one_planning;
