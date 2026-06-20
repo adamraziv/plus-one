@@ -9,6 +9,7 @@
       "@plus-one/ingestion": ["packages/ingestion/src/index.ts"],
       "@plus-one/mutations": ["packages/mutations/src/index.ts"],
       "@plus-one/planning": ["packages/planning/src/index.ts"],
+      "@plus-one/reporting": ["packages/reporting/src/index.ts"],
       "@plus-one/runtime": ["packages/runtime/src/index.ts"]
     }
   },

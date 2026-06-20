@@ -166,6 +166,56 @@ importers:
         specifier: 4.1.12
         version: 4.1.12
 
+  packages/planning:
+    dependencies:
+      '@plus-one/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@plus-one/database':
+        specifier: workspace:*
+        version: link:../database
+      '@plus-one/mutations':
+        specifier: workspace:*
+        version: link:../mutations
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+      zod:
+        specifier: 4.1.12
+        version: 4.1.12
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.18.12
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.18.12)(tsx@4.20.6)
+
+  packages/reporting:
+    dependencies:
+      '@plus-one/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+      zod:
+        specifier: 4.1.12
+        version: 4.1.12
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.18.12
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.18.12)(tsx@4.20.6)
+
   packages/runtime:
     dependencies:
       '@mastra/core':
