@@ -77,6 +77,9 @@ importers:
       '@plus-one/mutations':
         specifier: workspace:*
         version: link:../mutations
+      '@plus-one/reporting':
+        specifier: workspace:*
+        version: link:../reporting
       '@plus-one/runtime':
         specifier: workspace:*
         version: link:../runtime

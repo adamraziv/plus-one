@@ -8,6 +8,7 @@ import {
   PlusOneError, PostJournalInputSchemaV1, ReverseAndReplaceInputSchemaV1,
   type JournalDraftInputV1, type PostJournalInputV1,
 } from '@plus-one/contracts';
+import { ProjectionWriter } from '@plus-one/reporting';
 import { CorrectionService } from '../posting/corrections.js';
 import { JournalPostingService } from '../posting/journal-posting-service.js';
 import { JournalDraftRepository } from '../repositories/journal-draft-repository.js';
@@ -64,7 +65,7 @@ export function createAccountingJournalMutationHandler(dependencies: {
   readback?: Pick<LedgerReadback, 'verifyPostedJournal' | 'accountNativeBalance'>;
 } = {}): MutationCommandHandler<AccountingWorkResultV1> {
   const drafts = dependencies.drafts ?? new JournalDraftRepository();
-  const posting = dependencies.posting ?? new JournalPostingService();
+  const posting = dependencies.posting ?? new JournalPostingService(new ProjectionWriter());
   const corrections = dependencies.corrections ?? new CorrectionService(posting);
   const readback = dependencies.readback ?? new LedgerReadback();
 

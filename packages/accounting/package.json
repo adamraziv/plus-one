@@ -9,6 +9,7 @@
     "@plus-one/database": "workspace:*",
     "@plus-one/ingestion": "workspace:*",
     "@plus-one/mutations": "workspace:*",
+    "@plus-one/reporting": "workspace:*",
     "@plus-one/runtime": "workspace:*",
     "pg": "8.16.3",
     "zod": "4.1.12"
