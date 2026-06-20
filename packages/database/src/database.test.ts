@@ -67,6 +67,7 @@ describe('migration discovery', () => {
       '0006_ingestion_reconciliation.sql',
       '0007_source_scoped_fingerprints.sql',
       '0008_planning.sql',
+      '0009_reporting.sql',
     ]);
 
     for (const migration of migrations) {

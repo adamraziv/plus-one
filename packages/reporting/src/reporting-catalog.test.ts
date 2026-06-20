@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { ReportingRelationMetadataSchemaV1 } from '@plus-one/contracts';
 import { REQUIRED_REPORTING_RELATIONS, ReportingCatalog } from './reporting-catalog.js';
+import {
+  ProjectionFinalizer,
+  ProjectionHealthRepository,
+  ProjectionRebuilder,
+  ProjectionWriter,
+} from './index.js';
 
 describe('ReportingCatalog', () => {
   it('lists every V1 relation with grain, metrics, freshness, and source semantics', () => {
@@ -32,4 +38,11 @@ describe('ReportingCatalog', () => {
       expect(metadata.sourceSemantics.length).toBeGreaterThan(0);
     }
   });
+});
+
+it('exports the Plan 09 public interfaces', () => {
+  expect(ProjectionWriter).toBeTypeOf('function');
+  expect(ProjectionFinalizer).toBeTypeOf('function');
+  expect(ProjectionHealthRepository).toBeTypeOf('function');
+  expect(ProjectionRebuilder).toBeTypeOf('function');
 });
