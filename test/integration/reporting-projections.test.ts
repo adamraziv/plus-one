@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import { createAccountingJournalMutationHandler } from '@plus-one/accounting';
-import { ProjectionFinalizer, ProjectionWriter } from '@plus-one/reporting';
+import {
+  ProjectionFinalizer,
+  ProjectionHealthRepository,
+  ProjectionRebuilder,
+  ProjectionWriter,
+} from '@plus-one/reporting';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 import { seedPostedJournalInput } from '../helpers/reporting.js';
 
@@ -80,5 +85,46 @@ describe('reporting projections', () => {
       [seeded.householdDbId],
     );
     expect(netWorth.rows[0]?.net_worth_reporting_amount).toBe('-20.000000000000');
+  });
+
+  it('records drift and rebuilds projections from authoritative postings', async () => {
+    context = await createPostgresTestContext('reporting_rebuild');
+    owner = new Pool({ connectionString: context.migratorUrl });
+    const seeded = await seedPostedJournalInput(owner);
+    accounting = new Pool({ connectionString: context.roleUrls.accounting });
+    client = await accounting.connect();
+    const handler = createAccountingJournalMutationHandler({
+      posting: seeded.postingService(new ProjectionWriter()),
+    });
+    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+    await handler.execute(client, seeded.workResult, seeded.commandContext);
+    await client.query('COMMIT');
+    client.release();
+    client = undefined;
+
+    await owner.query(
+      `UPDATE reporting.account_current_balances
+       SET native_amount=999
+       WHERE household_id=$1 AND account_id=$2`,
+      [seeded.householdDbId, seeded.cashAccountDbId],
+    );
+
+    const health = new ProjectionHealthRepository();
+    const drifts = await health.checkCurrentBalanceDrift(owner, {
+      householdId: seeded.householdId,
+      asOf: '2026-06-20',
+    });
+    expect(drifts).toHaveLength(1);
+
+    await new ProjectionRebuilder().rebuildCurrentBalances(owner, {
+      householdId: seeded.householdId,
+      asOf: '2026-06-20',
+    });
+
+    const after = await health.checkCurrentBalanceDrift(owner, {
+      householdId: seeded.householdId,
+      asOf: '2026-06-20',
+    });
+    expect(after).toHaveLength(0);
   });
 });
