@@ -32,6 +32,8 @@ describe('checked mutation permissions', () => {
         AS accounting_select_command,
       has_function_privilege('plus_one_accounting',
         'operations.claim_mutation_command(text,text)','EXECUTE') AS accounting_claim,
+      has_function_privilege('plus_one_planning',
+        'operations.claim_mutation_command(text,text)','EXECUTE') AS planning_claim,
       has_table_privilege('plus_one_query','operations.mutation_receipts','SELECT')
         AS query_select_receipt,
       EXISTS (
@@ -46,6 +48,7 @@ describe('checked mutation permissions', () => {
       operations_update_readback: false,
       accounting_select_command: false,
       accounting_claim: true,
+      planning_claim: true,
       query_select_receipt: false,
       public_claim: false,
     });

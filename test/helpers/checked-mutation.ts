@@ -203,18 +203,22 @@ export async function seedCheckedAccountingMutation(pool: Pool): Promise<{
 }
 
 export function createExecutor(testContext: PostgresTestContext,
-  handlers: readonly MutationCommandHandler[] = [createPostAccountingJournalHandler()]): {
+  handlers: readonly MutationCommandHandler[] = [createPostAccountingJournalHandler()],
+  defaultRole: 'accounting' | 'planning' = 'accounting'): {
   executor: CheckedMutationExecutor;
   close(): Promise<void>;
 } {
   const operations = new Pool({ connectionString: testContext.roleUrls.operations });
   const accounting = new Pool({ connectionString: testContext.roleUrls.accounting });
+  const planning = new Pool({ connectionString: testContext.roleUrls.planning });
   const commands = new PostgresMutationCommandRepository(operations);
   const ledger = new PostgresVerificationLedgerRepository(operations);
   const resolver = new CommandStateResolver({ commands, ledger });
   let readbackCounter = 1;
+  const connect = async (role: 'accounting' | 'planning' = defaultRole) =>
+    (role === 'planning' ? planning : accounting).connect();
   const runner = new SerializableMutationRunner({
-    clients: { connect: async () => accounting.connect() },
+    clients: { connect },
     bridge: new PostgresDomainCommandBridge(),
     findReceipt: async (targetHouseholdId, commandId) =>
       commands.findReceiptByCommand(targetHouseholdId, commandId),
@@ -228,12 +232,13 @@ export function createExecutor(testContext: PostgresTestContext,
     resolver,
     registry: new CommandRegistry(handlers),
     runner,
-    readClients: { connect: async () => accounting.connect() },
+    readClients: { connect: async (role) => connect(role ?? defaultRole) },
     newReadbackId: () => 'readback_' + String(readbackCounter++).padStart(26, '0'),
   });
   return {
     executor,
     close: async () => {
+      await planning.end();
       await accounting.end();
       await operations.end();
     },

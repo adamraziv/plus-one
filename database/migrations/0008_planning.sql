@@ -273,6 +273,8 @@ CREATE TRIGGER budget_mappings_no_active_overlap
 GRANT USAGE ON SCHEMA operations, accounting TO plus_one_planning;
 GRANT SELECT ON operations.households, operations.currency_metadata TO plus_one_planning;
 GRANT SELECT ON accounting.accounts TO plus_one_planning;
+GRANT EXECUTE ON FUNCTION operations.claim_mutation_command(text,text) TO plus_one_planning;
+GRANT EXECUTE ON FUNCTION operations.commit_mutation_command(text,text,text,jsonb,jsonb,text) TO plus_one_planning;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA planning TO plus_one_planning;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA planning TO plus_one_planning;
 
