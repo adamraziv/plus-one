@@ -8,6 +8,7 @@ const resolveConfig = {
     '@plus-one/database': resolve('packages/database/src/index.ts'),
     '@plus-one/ingestion': resolve('packages/ingestion/src/index.ts'),
     '@plus-one/mutations': resolve('packages/mutations/src/index.ts'),
+    '@plus-one/planning': resolve('packages/planning/src/index.ts'),
     '@plus-one/runtime': resolve('packages/runtime/src/index.ts'),
   },
 };
