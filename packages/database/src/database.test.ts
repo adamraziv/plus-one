@@ -66,6 +66,7 @@ describe('migration discovery', () => {
       '0005_checked_mutations.sql',
       '0006_ingestion_reconciliation.sql',
       '0007_source_scoped_fingerprints.sql',
+      '0008_planning.sql',
     ]);
 
     for (const migration of migrations) {
