@@ -58,14 +58,14 @@ describe('reporting schema', () => {
     }
   });
 
-  it('keeps query role unable to read reporting relations until Plan 10 grants the allowlist', async () => {
+  it('grants query role reporting reads after the Plan 10 allowlist migration', async () => {
     const { Pool } = await import('pg');
     const owner = new Pool({ connectionString: context.migratorUrl });
     try {
       const privileges = await owner.query<{ can_select: boolean }>(
         `SELECT has_table_privilege('plus_one_query','reporting.account_current_balances','SELECT') AS can_select`,
       );
-      expect(privileges.rows[0]?.can_select).toBe(false);
+      expect(privileges.rows[0]?.can_select).toBe(true);
     } finally {
       await owner.end();
     }
