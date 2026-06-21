@@ -13,6 +13,7 @@ export * from './json.js';
 export * from './money.js';
 export * from './mutations.js';
 export * from './planning.js';
+export * from './query.js';
 export * from './reporting.js';
 export * from './runtime.js';
 export * from './team-results.js';
