@@ -129,6 +129,8 @@ export async function seedPostedJournalInput(owner: Pool) {
     householdId,
     householdDbId,
     cashAccountDbId: cash.rows[0]!.id,
+    cashAccountId,
+    foodAccountId,
     postingService: (projection: CurrentBalanceProjectionHook) => new JournalPostingService(projection),
     commandContext: {
       householdId,
