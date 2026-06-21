@@ -68,6 +68,7 @@ describe('migration discovery', () => {
       '0007_source_scoped_fingerprints.sql',
       '0008_planning.sql',
       '0009_reporting.sql',
+      '0010_query_role.sql',
     ]);
 
     for (const migration of migrations) {

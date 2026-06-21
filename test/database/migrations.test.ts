@@ -33,6 +33,7 @@ describe('platform migrations', () => {
       '0007_source_scoped_fingerprints.sql',
       '0008_planning.sql',
       '0009_reporting.sql',
+      '0010_query_role.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();
