@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { Pool, type PoolClient } from 'pg';
 import {
+  EvidencePackageAnalystSectionSchemaV1,
   EvidencePackageSchemaV1,
   QueryResultSchemaV1,
   type EvidencePackageV1,
+  type EvidencePackageAnalystSectionV1,
   type EvidenceRequestV1,
   type QueryResultV1,
   type QuerySpecificationV1,
@@ -31,6 +33,7 @@ export interface EvidenceSessionConfig {
 export interface EvidencePackageInput {
   request: EvidenceRequestV1;
   querySpecification: QuerySpecificationV1;
+  analyst?: EvidencePackageAnalystSectionV1;
 }
 
 export class EvidenceSession {
@@ -103,7 +106,20 @@ export class EvidenceHandle {
 
   async buildEvidencePackage(input: EvidencePackageInput): Promise<EvidencePackageV1> {
     const result = await this.runFlexibleQuery(input.querySpecification);
+    if (input.request.requiredCalculations.length > 0 && input.analyst === undefined) {
+      throw new PlusOneError({
+        category: 'validation_rejected',
+        code: 'analyst_outputs_required',
+        message: 'Evidence packages with required calculations must include analyst outputs',
+        retry: 'never',
+        receiptLookupRequired: false,
+        details: { requiredCalculations: input.request.requiredCalculations.length },
+      });
+    }
     const interpretation = `Interpreted evidence request for ${input.request.intendedUse}.`;
+    const analyst = input.analyst === undefined
+      ? undefined
+      : EvidencePackageAnalystSectionSchemaV1.parse(input.analyst);
     return EvidencePackageSchemaV1.parse({
       schemaName: 'evidence-package',
       schemaVersion: 1,
@@ -127,6 +143,7 @@ export class EvidenceHandle {
         checkedQueryResultArtifactId: 'artifact_00000000000000000000000000',
         findings: [],
       },
+      analyst,
       stopCondition: 'verified',
       completionReason: 'Reporting query executed under repeatable-read read-only evidence session.',
     });

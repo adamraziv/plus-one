@@ -166,12 +166,90 @@ describe('evidence session', () => {
       filters: [],
       limit: 5,
     };
+    await expect(session.withSession(async (handle) => handle.buildEvidencePackage({
+      request,
+      querySpecification: spec,
+    }))).rejects.toThrow(/analyst outputs/i);
+  });
+
+  it('attaches analyst outputs when calculations were requested', async () => {
+    context = await createPostgresTestContext('evidence_session_package_with_analyst');
+    owner = new Pool({ connectionString: context.migratorUrl });
+    queryPool = new Pool({ connectionString: context.roleUrls.query });
+    const seeded = await seedReportingAccounts(owner);
+    const { session, runner: r } = buildSession(queryPool);
+    runner = r;
+
+    const request = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: seeded.householdId,
+      requestId: id('evidence', 201),
+      businessQuestion: 'list accounts?',
+      intendedUse: 'reporting-review',
+      timeframe: { start: '2026-06-01', end: '2026-06-30' },
+      desiredGrain: ['household', 'account'],
+      filters: [],
+      requiredFreshness: 'ledger freshness',
+      requiredCalculations: ['count accounts'],
+      coverage: ['reporting.accounts'],
+    });
+    const spec: QuerySpecificationV1 = {
+      schemaName: 'query-specification',
+      schemaVersion: 1,
+      relationNames: ['reporting.accounts'],
+      sql: `SELECT account_id, name FROM reporting.accounts WHERE household_id = '${seeded.householdId}' LIMIT 5`,
+      filters: [],
+      limit: 5,
+    };
     const evidencePackage = await session.withSession(async (handle) => handle.buildEvidencePackage({
       request,
       querySpecification: spec,
+      analyst: {
+        task: {
+          schemaName: 'analyst-task',
+          schemaVersion: 1,
+          evidencePackageId: request.requestId,
+          request,
+          queryResult: {
+            schemaName: 'query-result',
+            schemaVersion: 1,
+            relationName: 'reporting.accounts',
+            grain: ['household', 'account'],
+            rows: [{ account_id: seeded.accountId, name: 'Cash' }],
+            fieldDefinitions: ['account_id', 'name'],
+            sourceReferences: ['relation=reporting.accounts'],
+            freshness: 'ledger freshness',
+            coverageWarnings: [],
+          },
+        },
+        result: {
+          schemaName: 'analyst-calculation-artifact',
+          schemaVersion: 1,
+          pythonSource: 'result = {"count": 1}',
+          inputPayload: { rows: [{ account_id: seeded.accountId }] },
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          result: { count: 1 },
+          calculations: ['count rows'],
+          assumptions: [],
+          interpretation: 'One account exists.',
+        },
+        makerArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        checkerArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        checkerOutput: {
+          schemaName: 'analyst-checker-output',
+          schemaVersion: 1,
+          accepted: true,
+          checkedAnalystArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          findings: [],
+        },
+      },
     }));
     expect(evidencePackage.schemaName).toBe('evidence-package');
     expect(evidencePackage.queryResults).toHaveLength(1);
     expect(evidencePackage.queryResults[0]?.rows.length).toBeGreaterThan(0);
+    expect(evidencePackage.analyst?.result.result).toEqual({ count: 1 });
   });
 });
