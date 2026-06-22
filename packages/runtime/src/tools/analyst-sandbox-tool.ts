@@ -1,0 +1,119 @@
+import { createTool } from '@mastra/core/tools';
+import { DockerSandbox } from '@mastra/docker';
+import {
+  AnalystCalculationArtifactSchemaV1,
+  PlusOneError,
+} from '@plus-one/contracts';
+import { ulid } from 'ulid';
+import { z } from 'zod';
+
+export const analystSandboxToolId = 'query.analyst_sandbox';
+
+const AnalystSandboxInputSchema = z.object({
+  pythonSource: z.string().min(1).max(20_000),
+  inputPayload: z.record(z.string(), z.unknown()),
+}).strict();
+
+const runnerSource = `
+import base64
+import json
+import sys
+
+payload = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+source = base64.b64decode(sys.argv[2]).decode("utf-8")
+namespace = {"input_payload": payload}
+exec(source, namespace, namespace)
+artifact = {
+  "schemaName": "analyst-calculation-artifact",
+  "schemaVersion": 1,
+  "pythonSource": source,
+  "inputPayload": payload,
+  "stdout": "",
+  "stderr": "",
+  "exitCode": 0,
+  "result": namespace.get("result"),
+  "calculations": namespace.get("calculations", []),
+  "assumptions": namespace.get("assumptions", []),
+  "interpretation": namespace.get("interpretation", ""),
+}
+print(json.dumps(artifact))
+`.trim();
+
+type AnalystSandboxInput = z.infer<typeof AnalystSandboxInputSchema>;
+type AnalystSandboxOutput = z.infer<typeof AnalystCalculationArtifactSchemaV1>;
+
+type SandboxLike = {
+  start(): Promise<void>;
+  executeCommand(
+    command: string,
+    args?: string[],
+    options?: { timeout?: number; cwd?: string; env?: Record<string, string> },
+  ): Promise<{ stdout: string; stderr?: string; exitCode?: number }>;
+  destroy(): Promise<void>;
+};
+
+type SandboxFactory = (options: ConstructorParameters<typeof DockerSandbox>[0]) => SandboxLike;
+
+export async function runAnalystSandbox(
+  input: AnalystSandboxInput & {
+    sandboxFactory?: SandboxFactory;
+    sandboxIdFactory?: () => string;
+  },
+): Promise<AnalystSandboxOutput> {
+  const parsed = AnalystSandboxInputSchema.parse({
+    pythonSource: input.pythonSource,
+    inputPayload: input.inputPayload,
+  });
+  const sandboxId = input.sandboxIdFactory?.() ?? `sandbox_${ulid()}`;
+  const factory = input.sandboxFactory ?? ((options) => new DockerSandbox(options));
+  const sandbox = factory({
+    id: sandboxId,
+    image: 'python:3.12-slim',
+    command: ['sleep', 'infinity'],
+    env: {},
+    network: 'none',
+    memory: 128 * 1024 * 1024,
+    memorySwap: 128 * 1024 * 1024,
+    cpuPeriod: 100_000,
+    cpuQuota: 100_000,
+    pidsLimit: 64,
+    readonlyRootfs: true,
+    capDrop: ['ALL'],
+    securityOpt: ['no-new-privileges:true'],
+    tmpfs: { '/tmp': 'rw,noexec,nosuid,size=64m' },
+    timeout: 30_000,
+  });
+
+  try {
+    await sandbox.start();
+    const payload = Buffer.from(JSON.stringify(parsed.inputPayload), 'utf8').toString('base64');
+    const source = Buffer.from(parsed.pythonSource, 'utf8').toString('base64');
+    const result = await sandbox.executeCommand('python', ['-c', runnerSource, payload, source], {
+      timeout: 30_000,
+      cwd: '/workspace',
+      env: {},
+    });
+    return AnalystCalculationArtifactSchemaV1.parse(JSON.parse(result.stdout));
+  } catch (error) {
+    if (error instanceof PlusOneError) throw error;
+    throw new PlusOneError({
+      category: 'runtime_failure',
+      code: 'analyst_sandbox_execution_failed',
+      message: error instanceof Error ? error.message : 'Analyst sandbox execution failed',
+      retry: 'safe',
+      receiptLookupRequired: false,
+      details: { sandboxId },
+      cause: error,
+    });
+  } finally {
+    await sandbox.destroy().catch(() => undefined);
+  }
+}
+
+export const createAnalystSandboxTool = () => createTool({
+  id: analystSandboxToolId,
+  description: 'Run checked Python analysis over checked query data in a fresh isolated sandbox.',
+  inputSchema: AnalystSandboxInputSchema,
+  outputSchema: AnalystCalculationArtifactSchemaV1,
+  execute: async (inputData) => runAnalystSandbox(inputData),
+});
