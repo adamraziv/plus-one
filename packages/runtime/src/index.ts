@@ -11,6 +11,7 @@ export * from './execution/team-result-assembler.js';
 export * from './delivery/final-delivery-handler.js';
 export * from './delivery/transport-adapters.js';
 export * from './ledger/ports.js';
+export * from './orchestrator/orchestrator-ingress.js';
 export * from './policy/output-processors.js';
 export * from './runtime-policy.js';
 export * from './scheduler/application-scheduler.js';
