@@ -44,16 +44,20 @@ describe('query team definition', () => {
     expect(queryTeamDefinition.team).toBe('query');
     expect(queryTeamDefinition.lead.identity.roleName).toBe('query-lead');
     expect(queryRoles.map((entry) => entry.identity.roleName).sort())
-      .toEqual(['query-checker', 'query-lead', 'query-maker']);
+      .toEqual(['analyst-checker', 'analyst-maker', 'query-checker', 'query-lead', 'query-maker']);
   });
 
   it('grants query tool permission identity only to the query maker', () => {
     const maker = queryToolPermissions.find((entry) => entry.roleName === 'query-maker');
     const checker = queryToolPermissions.find((entry) => entry.roleName === 'query-checker');
     const lead = queryToolPermissions.find((entry) => entry.roleName === 'query-lead');
+    const analystMaker = queryToolPermissions.find((entry) => entry.roleName === 'analyst-maker');
+    const analystChecker = queryToolPermissions.find((entry) => entry.roleName === 'analyst-checker');
     expect(maker?.toolIds.length).toBeGreaterThan(0);
     expect(checker?.toolIds).toEqual([]);
     expect(lead?.toolIds).toEqual([]);
+    expect(analystMaker?.toolIds).toEqual(['query.analyst_sandbox']);
+    expect(analystChecker?.toolIds).toEqual(['query.analyst_sandbox']);
   });
 
   it('requires the checker rubric to verify scope, grain, filters, freshness, provenance, completeness', () => {
@@ -109,5 +113,13 @@ describe('query team definition', () => {
     expect(cell!.evaluateStopCondition({
       condition, maker: bad, verdict: verdict('accepted'), permittedEvidence: [],
     }).status).toBe('insufficient_evidence');
+  });
+
+  it('exposes a second analyst work cell with its own checker rubric', () => {
+    const analyst = queryWorkCells.find((entry) => entry.workCellId === 'query-analyst');
+    expect(analyst?.maker.identity.roleName).toBe('analyst-maker');
+    expect(analyst?.checker.identity.roleName).toBe('analyst-checker');
+    expect(analyst?.allowedSkillNames).toEqual(['query-analyst']);
+    expect(analyst?.checkerRubric.instructions.join(' ').toLowerCase()).toContain('reproduce');
   });
 });

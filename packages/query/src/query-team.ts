@@ -1,4 +1,6 @@
 import {
+  AnalystCalculationArtifactSchemaV1,
+  AnalystTaskSchemaV1,
   QueryResultSchemaV1,
   type CheckerVerdictV1,
   type MakerArtifactV1,
@@ -20,6 +22,8 @@ export const queryRoles = [
   role('query-lead', 'lead', 'query-lead', 'query-lead'),
   role('query-maker', 'maker', 'query-maker', 'query-maker'),
   role('query-checker', 'checker', 'query-checker', 'query-checker'),
+  role('analyst-maker', 'maker', 'analyst-maker', 'analyst-maker'),
+  role('analyst-checker', 'checker', 'analyst-checker', 'analyst-checker'),
 ] as const;
 
 export const queryToolPermissions = [
@@ -29,6 +33,10 @@ export const queryToolPermissions = [
       'query.budget_variance', 'query.savings_goal_progress', 'query.debt_progress',
       'query.reconciliation_status', 'query.source_freshness'] },
   { team: 'query', roleName: 'query-checker', roleVersion: 1, toolIds: [] as const },
+  { team: 'query', roleName: 'analyst-maker', roleVersion: 1,
+    toolIds: ['query.analyst_sandbox'] as const },
+  { team: 'query', roleName: 'analyst-checker', roleVersion: 1,
+    toolIds: ['query.analyst_sandbox'] as const },
 ] as const;
 
 function evaluateQueryStopCondition({ maker, verdict }: {
@@ -65,6 +73,33 @@ function evaluateQueryStopCondition({ maker, verdict }: {
   };
 }
 
+function evaluateAnalystStopCondition({ maker, verdict }: {
+  maker: MakerArtifactV1;
+  verdict: CheckerVerdictV1;
+  permittedEvidence: ReadonlyArray<unknown>;
+}): StopConditionEvaluation {
+  const result = AnalystCalculationArtifactSchemaV1.safeParse(maker.output);
+  if (!result.success) {
+    return {
+      status: 'insufficient_evidence',
+      reason: 'Maker output is not a valid AnalystCalculationArtifactV1',
+      outstanding: ['analyst_result_schema_identity'],
+    };
+  }
+  if (verdict.verdict !== 'accepted') {
+    return {
+      status: 'insufficient_evidence',
+      reason: 'Analyst checker did not accept the calculation artifact',
+      outstanding: ['analyst_checker_acceptance'],
+    };
+  }
+  return {
+    status: 'verified',
+    reason: 'Analyst checker accepted an independently reproduced calculation artifact',
+    outstanding: [],
+  };
+}
+
 const queryWorkCell: WorkCellDefinition = {
   workCellId: 'query-evidence',
   maker: queryRoles.find((entry) => entry.identity.roleName === 'query-maker') as WorkCellDefinition['maker'],
@@ -89,7 +124,29 @@ const queryWorkCell: WorkCellDefinition = {
   evaluateStopCondition: evaluateQueryStopCondition,
 };
 
-export const queryWorkCells = [queryWorkCell] as const;
+const analystWorkCell: WorkCellDefinition = {
+  workCellId: 'query-analyst',
+  maker: queryRoles.find((entry) => entry.identity.roleName === 'analyst-maker') as WorkCellDefinition['maker'],
+  checker: queryRoles.find((entry) => entry.identity.roleName === 'analyst-checker') as WorkCellDefinition['checker'],
+  makerInputSchema: AnalystTaskSchemaV1,
+  makerOutputSchema: AnalystCalculationArtifactSchemaV1,
+  inputSchemaIdentity: { schemaName: 'analyst-task', schemaVersion: 1 },
+  outputSchemaIdentity: { schemaName: 'analyst-calculation-artifact', schemaVersion: 1 },
+  checkerRubric: {
+    rubricName: 'query-analyst-rubric',
+    rubricVersion: 1,
+    instructions: [
+      'Verify the checked query input matches the requested calculation scope.',
+      'Verify the Python code uses only the declared input payload.',
+      'Reproduce or challenge material calculations in a separate clean sandbox.',
+      'Reject outputs whose interpretation, calculations, or assumptions do not match the code and result payload.',
+    ],
+  },
+  allowedSkillNames: ['query-analyst'],
+  evaluateStopCondition: evaluateAnalystStopCondition,
+};
+
+export const queryWorkCells = [queryWorkCell, analystWorkCell] as const;
 
 const lead = queryRoles.find((entry) => entry.identity.roleName === 'query-lead');
 if (lead === undefined) throw new Error('query-lead role is missing');
