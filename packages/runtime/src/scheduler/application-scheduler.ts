@@ -1,7 +1,13 @@
 import type {
   OrchestratorFinalResponseV1,
   ScheduledRunV1,
+  TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
+import {
+  OrchestratorFinalResponseSchemaV1,
+  TeamResultEnvelopeSchemaV1,
+} from '@plus-one/contracts';
+import { ZodError } from 'zod';
 import type { DeliveryResult } from '../delivery/final-delivery-handler.js';
 
 export interface SchedulerClaim extends ScheduledRunV1 {
@@ -33,7 +39,7 @@ export class ApplicationScheduler {
       orchestrator(input: { claim: SchedulerClaim; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
       teamLead(input: { claim: SchedulerClaim; signal: AbortSignal }): Promise<unknown>;
       orchestratorReconciler: {
-        reconcile(input: { claim: SchedulerClaim; teamResult: unknown; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
+        reconcile(input: { claim: SchedulerClaim; teamResult: TeamResultEnvelopeV1; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
       };
     };
     delivery: { deliver(response: OrchestratorFinalResponseV1): Promise<DeliveryResult> };
@@ -75,11 +81,14 @@ export class ApplicationScheduler {
       });
     } catch (error) {
       const timedOut = error instanceof DOMException && error.name === 'TimeoutError';
+      const schemaFailed = error instanceof ZodError;
       return this.dependencies.repository.completeRun({
         householdId: claim.householdId,
         occurrenceId: claim.occurrenceId,
         status: timedOut ? 'timed_out' : 'failed',
-        failureCategory: timedOut ? 'timeout' : 'runtime_failure',
+        failureCategory: timedOut ? 'timeout'
+          : schemaFailed ? 'target_schema_validation'
+          : 'runtime_failure',
       });
     }
   }
@@ -90,14 +99,16 @@ export class ApplicationScheduler {
       const signal = AbortSignal.timeout(claim.timeoutMs);
       try {
         if (claim.target.kind === 'orchestrator') {
-          return await this.dependencies.targets.orchestrator({ claim, signal });
+          return OrchestratorFinalResponseSchemaV1.parse(
+            await this.dependencies.targets.orchestrator({ claim, signal }),
+          );
         }
-        const teamResult = await this.dependencies.targets.teamLead({ claim, signal });
-        return await this.dependencies.targets.orchestratorReconciler.reconcile({
-          claim,
-          teamResult,
-          signal,
-        });
+        const teamResult = TeamResultEnvelopeSchemaV1.parse(
+          await this.dependencies.targets.teamLead({ claim, signal }),
+        );
+        return OrchestratorFinalResponseSchemaV1.parse(
+          await this.dependencies.targets.orchestratorReconciler.reconcile({ claim, teamResult, signal }),
+        );
       } catch (error) {
         if (error instanceof DOMException && error.name === 'TimeoutError') throw error;
         lastError = error;

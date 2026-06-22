@@ -281,6 +281,15 @@ export class PostgresSchedulerRepository {
          FROM operations.scheduled_jobs job
          JOIN operations.households household ON household.id = job.household_id
          WHERE job.enabled AND job.next_eligible_run_at <= $1::timestamptz
+           AND (
+             job.overlap_policy = 'allow'
+             OR NOT EXISTS (
+               SELECT 1 FROM operations.scheduled_runs active
+               WHERE active.household_id = job.household_id
+                 AND active.job_id = job.job_id
+                 AND active.status IN ('claimed', 'running')
+             )
+           )
          ORDER BY job.next_eligible_run_at, job.id
          LIMIT $2
          FOR UPDATE SKIP LOCKED`,

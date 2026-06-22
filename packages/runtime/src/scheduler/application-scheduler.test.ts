@@ -4,6 +4,7 @@ import {
   DeliveryRecordSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   ScheduledRunSchemaV1,
+  TeamResultEnvelopeSchemaV1,
 } from '@plus-one/contracts';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -49,6 +50,33 @@ function deliveryRecord() {
   });
 }
 
+function teamResult() {
+  return TeamResultEnvelopeSchemaV1.parse({
+    schemaName: 'team-result',
+    schemaVersion: 1,
+    householdId,
+    taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    team: 'query',
+    status: 'failed',
+    claims: [],
+    assumptions: [],
+    uncertainty: [],
+    freshness: [],
+    coverage: [],
+    makerArtifacts: [],
+    checkerVerdicts: [],
+    selectedSkill: {
+      skillName: 'scheduled-brief',
+      skillVersion: 1,
+      contentHash: 'a'.repeat(64),
+    },
+    strategyName: 'single-maker-checker',
+    stopCondition: { code: 'scheduled-brief', description: 'Produce a scheduled briefing.' },
+    completionReason: 'Team result requires orchestrator reconciliation.',
+    outstanding: ['orchestrator_reconciliation'],
+  });
+}
+
 function claim(overrides: {
   scheduledFor?: string;
   target?: SchedulerClaim['target'];
@@ -87,7 +115,7 @@ describe('ApplicationScheduler', () => {
       claimDueRuns: vi.fn(async () => [claim()]),
       completeRun: vi.fn(async (_input) => ({ ...claim(), status: _input.status })),
     };
-    const teamLead = vi.fn(async () => ({ schemaName: 'team-result', schemaVersion: 1, status: 'verified' }));
+    const teamLead = vi.fn(async () => teamResult());
     const reconcile = vi.fn(async () => finalResponse);
     const deliver = vi.fn(async () => ({
       status: 'delivered' as const,
@@ -183,6 +211,34 @@ describe('ApplicationScheduler', () => {
       occurrenceId,
       status: 'timed_out',
       failureCategory: 'timeout',
+    });
+  });
+
+  it('rejects invalid team-lead results before orchestrator reconciliation', async () => {
+    const repository = {
+      claimDueRuns: vi.fn(async () => [claim()]),
+      completeRun: vi.fn(async (_input) => ({ ...claim(), status: _input.status })),
+    };
+    const reconcile = vi.fn(async () => finalResponse);
+    const deliver = vi.fn();
+    const scheduler = new ApplicationScheduler({
+      repository,
+      targets: {
+        orchestrator: vi.fn(),
+        teamLead: vi.fn(async () => ({ status: 'verified' })),
+        orchestratorReconciler: { reconcile },
+      },
+      delivery: { deliver },
+    });
+
+    await scheduler.dispatchDue(now, 5);
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
+    expect(repository.completeRun).toHaveBeenCalledWith({
+      householdId,
+      occurrenceId,
+      status: 'failed',
+      failureCategory: 'target_schema_validation',
     });
   });
 });

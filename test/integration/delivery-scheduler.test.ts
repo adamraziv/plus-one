@@ -15,6 +15,7 @@ const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const deliveryId = 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const jobId = 'job_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const occurrenceId = 'occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+const overlappingOccurrenceId = 'occurrence_01JNZQ4A9B8C7D6E5F4G3H2J2K';
 const now = '2026-06-22T10:00:00.000Z';
 
 async function seedHousehold(pool: Pool): Promise<void> {
@@ -161,6 +162,30 @@ describe('delivery and scheduler repositories', () => {
         occurrenceId,
         status: 'succeeded',
       })).resolves.toMatchObject({ status: 'succeeded', occurrenceId });
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('does not claim another run for a skip-overlap job with active work', async () => {
+    context = await createPostgresTestContext('scheduler_overlap_skip');
+    const pool = new Pool({ connectionString: context.roleUrls.operations });
+    try {
+      await seedHousehold(pool);
+      await seedJob(pool);
+      await pool.query(
+        `INSERT INTO operations.scheduled_runs
+         (occurrence_id, household_id, job_id, job_version, run_key, scheduled_for,
+          status, attempt_count)
+         SELECT $1, id, $2, 1, $3, '2026-06-22T09:00:00.000Z', 'claimed', 1
+         FROM operations.households WHERE household_id = $4`,
+        [overlappingOccurrenceId, jobId, `${jobId}:1:2026-06-22T09:00:00.000Z`, householdId],
+      );
+      const repository = new PostgresSchedulerRepository(pool, {
+        nextOccurrenceId: () => occurrenceId,
+      });
+
+      await expect(repository.claimDueRuns(now, 5)).resolves.toEqual([]);
     } finally {
       await pool.end();
     }
