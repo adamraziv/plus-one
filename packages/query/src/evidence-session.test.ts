@@ -5,7 +5,9 @@ import {
 import { QueryToolRegistry } from './query-tool-registry.js';
 import { ReadOnlySqlValidator } from './sql-validator.js';
 import {
-  EvidenceRequestSchemaV1, type QuerySpecificationV1,
+  ArtifactIdSchema,
+  EvidenceRequestSchemaV1,
+  type QuerySpecificationV1,
 } from '@plus-one/contracts';
 
 const allowedRelations = [
@@ -91,6 +93,8 @@ const sampleFlexibleSpec: QuerySpecificationV1 = {
   limit: 5,
 };
 
+const sampleArtifactId = ArtifactIdSchema.parse('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+
 describe('EvidenceSession', () => {
   it('opens a repeatable-read read-only transaction and runs a typed tool', async () => {
     const { session } = buildSessionConfig();
@@ -111,10 +115,52 @@ describe('EvidenceSession', () => {
     const evidencePackage = await session.withSession(async (handle) => handle.buildEvidencePackage({
       request: sampleRequest,
       querySpecification: sampleFlexibleSpec,
+      analyst: {
+        task: {
+          schemaName: 'analyst-task',
+          schemaVersion: 1,
+          evidencePackageId: sampleRequest.requestId,
+          request: sampleRequest,
+          queryResult: {
+            schemaName: 'query-result',
+            schemaVersion: 1,
+            relationName: 'reporting.accounts',
+            grain: ['household', 'account'],
+            rows: [{ account_id: 1, name: 'Cash' }],
+            fieldDefinitions: ['account_id', 'name'],
+            sourceReferences: ['relation=reporting.accounts'],
+            freshness: 'ledger freshness',
+            coverageWarnings: [],
+          },
+        },
+        result: {
+          schemaName: 'analyst-calculation-artifact',
+          schemaVersion: 1,
+          pythonSource: 'result = {"count": 1}',
+          inputPayload: { rows: [{ account_id: 1 }] },
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          result: { count: 1 },
+          calculations: ['count rows'],
+          assumptions: [],
+          interpretation: 'One account exists.',
+        },
+        makerArtifactId: sampleArtifactId,
+        checkerArtifactId: sampleArtifactId,
+        checkerOutput: {
+          schemaName: 'analyst-checker-output',
+          schemaVersion: 1,
+          accepted: true,
+          checkedAnalystArtifactId: sampleArtifactId,
+          findings: [],
+        },
+      },
     }));
     expect(evidencePackage.schemaName).toBe('evidence-package');
     expect(evidencePackage.queryResults[0]?.relationName).toBe('reporting.accounts');
     expect(evidencePackage.evidencePackageId).toBe(sampleRequest.requestId);
+    expect(evidencePackage.analyst?.result.result).toEqual({ count: 1 });
   });
 
   it('rejects flexible SQL targeting more than one relation', async () => {

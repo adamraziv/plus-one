@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import {
-  EvidenceRequestSchemaV1, type QuerySpecificationV1,
+  ArtifactIdSchema,
+  EvidenceRequestSchemaV1,
+  type QuerySpecificationV1,
 } from '@plus-one/contracts';
 import {
   EvidenceSession, QueryToolRegistry, ReadOnlySqlValidator, pgRunner,
@@ -16,6 +18,8 @@ let owner: Pool | undefined;
 let queryPool: Pool | undefined;
 let runner: QueryRunner | undefined;
 let client: PoolClient | undefined;
+
+const artifactId = ArtifactIdSchema.parse('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K');
 
 afterEach(async () => {
   runner?.release?.();
@@ -236,13 +240,13 @@ describe('evidence session', () => {
           assumptions: [],
           interpretation: 'One account exists.',
         },
-        makerArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-        checkerArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        makerArtifactId: artifactId,
+        checkerArtifactId: artifactId,
         checkerOutput: {
           schemaName: 'analyst-checker-output',
           schemaVersion: 1,
           accepted: true,
-          checkedAnalystArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          checkedAnalystArtifactId: artifactId,
           findings: [],
         },
       },

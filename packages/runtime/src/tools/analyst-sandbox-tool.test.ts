@@ -68,4 +68,32 @@ describe('runAnalystSandbox', () => {
     })).rejects.toThrow(/boom/);
     expect(destroy).toHaveBeenCalledTimes(1);
   });
+
+  it('rejects payloads larger than the configured byte limit before sandbox start', async () => {
+    const sandboxFactory = vi.fn();
+    await expect(runAnalystSandbox({
+      pythonSource: 'result = {"ok": True}',
+      inputPayload: { blob: 'x'.repeat(70_000) },
+      sandboxFactory: sandboxFactory as never,
+      sandboxIdFactory: () => 'sandbox_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    })).rejects.toThrow(/payload/i);
+    expect(sandboxFactory).not.toHaveBeenCalled();
+  });
+
+  it('rejects command output larger than the configured byte limit', async () => {
+    await expect(runAnalystSandbox({
+      pythonSource: 'result = {"ok": True}',
+      inputPayload: { rows: [] },
+      sandboxFactory: () => ({
+        start: async () => undefined,
+        executeCommand: async () => ({
+          stdout: 'x'.repeat(200_000),
+          stderr: '',
+          exitCode: 0,
+        }),
+        destroy: async () => undefined,
+      }),
+      sandboxIdFactory: () => 'sandbox_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    })).rejects.toThrow(/output/i);
+  });
 });
