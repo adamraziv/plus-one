@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AnalystCalculationArtifactSchemaV1,
   EvidencePackageSchemaV1,
   EvidenceRequestSchemaV1,
   QueryResultSchemaV1,
@@ -39,5 +40,21 @@ describe('query evidence contracts', () => {
       status: 'verified',
       queryResults: [],
     }).success).toBe(false);
+  });
+
+  it('re-exports analyst calculation artifacts through the query package boundary', () => {
+    expect(AnalystCalculationArtifactSchemaV1.safeParse({
+      schemaName: 'analyst-calculation-artifact',
+      schemaVersion: 1,
+      pythonSource: 'result = {"sum": 3}',
+      inputPayload: { rows: [{ value: 1 }, { value: 2 }] },
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      result: { sum: 3 },
+      calculations: ['sum rows'],
+      assumptions: [],
+      interpretation: 'The sum is 3.',
+    }).success).toBe(true);
   });
 });

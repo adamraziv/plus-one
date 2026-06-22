@@ -13,6 +13,12 @@ export * from './json.js';
 export * from './money.js';
 export * from './mutations.js';
 export * from './planning.js';
+export {
+  AnalystCalculationArtifactSchemaV1,
+  AnalystCheckerOutputSchemaV1,
+  AnalystTaskSchemaV1,
+  EvidencePackageAnalystSectionSchemaV1,
+} from './query.js';
 export * from './query.js';
 export * from './reporting.js';
 export * from './runtime.js';

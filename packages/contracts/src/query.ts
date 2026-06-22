@@ -61,7 +61,45 @@ export const QueryCheckerOutputSchemaV1 = z.object({
   findings: z.array(z.string().min(1).max(2_000)),
 }).strict();
 
-export const EvidencePackageSchemaV1 = z.object({
+export const AnalystTaskSchemaV1 = z.object({
+  schemaName: z.literal('analyst-task'),
+  schemaVersion: z.literal(1),
+  evidencePackageId: EvidencePackageIdSchema,
+  request: EvidenceRequestSchemaV1,
+  queryResult: QueryResultSchemaV1,
+}).strict();
+
+export const AnalystCalculationArtifactSchemaV1 = z.object({
+  schemaName: z.literal('analyst-calculation-artifact'),
+  schemaVersion: z.literal(1),
+  pythonSource: z.string().min(1).max(20_000),
+  inputPayload: JsonValueSchema,
+  stdout: z.string().max(16_000),
+  stderr: z.string().max(16_000),
+  exitCode: z.number().int().min(0).max(255),
+  result: JsonObjectSchema,
+  calculations: z.array(z.string().min(1).max(1_000)).min(1).max(64),
+  assumptions: z.array(z.string().min(1).max(1_000)).max(64),
+  interpretation: z.string().min(1).max(4_000),
+}).strict();
+
+export const AnalystCheckerOutputSchemaV1 = z.object({
+  schemaName: z.literal('analyst-checker-output'),
+  schemaVersion: z.literal(1),
+  accepted: z.boolean(),
+  checkedAnalystArtifactId: ArtifactIdSchema,
+  findings: z.array(z.string().min(1).max(2_000)),
+}).strict();
+
+export const EvidencePackageAnalystSectionSchemaV1 = z.object({
+  task: AnalystTaskSchemaV1,
+  result: AnalystCalculationArtifactSchemaV1,
+  makerArtifactId: ArtifactIdSchema,
+  checkerArtifactId: ArtifactIdSchema,
+  checkerOutput: AnalystCheckerOutputSchemaV1,
+}).strict();
+
+const EvidencePackageSchemaBaseV1 = z.object({
   schemaName: z.literal('evidence-package'),
   schemaVersion: z.literal(1),
   evidencePackageId: EvidencePackageIdSchema,
@@ -78,12 +116,27 @@ export const EvidencePackageSchemaV1 = z.object({
   queryMakerArtifactId: ArtifactIdSchema,
   queryCheckerArtifactId: ArtifactIdSchema,
   queryCheckerOutput: QueryCheckerOutputSchemaV1,
+  analyst: EvidencePackageAnalystSectionSchemaV1.optional(),
   stopCondition: z.string().min(1).max(1_000),
   completionReason: z.string().min(1).max(1_000),
 }).strict();
+
+export const EvidencePackageSchemaV1 = EvidencePackageSchemaBaseV1.superRefine((value, context) => {
+  if (value.request.requiredCalculations.length > 0 && value.analyst === undefined) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Evidence packages with required calculations must include analyst outputs',
+      path: ['analyst'],
+    });
+  }
+});
 
 export type EvidenceRequestV1 = z.infer<typeof EvidenceRequestSchemaV1>;
 export type QuerySpecificationV1 = z.infer<typeof QuerySpecificationSchemaV1>;
 export type QueryResultV1 = z.infer<typeof QueryResultSchemaV1>;
 export type QueryCheckerOutputV1 = z.infer<typeof QueryCheckerOutputSchemaV1>;
+export type AnalystTaskV1 = z.infer<typeof AnalystTaskSchemaV1>;
+export type AnalystCalculationArtifactV1 = z.infer<typeof AnalystCalculationArtifactSchemaV1>;
+export type AnalystCheckerOutputV1 = z.infer<typeof AnalystCheckerOutputSchemaV1>;
+export type EvidencePackageAnalystSectionV1 = z.infer<typeof EvidencePackageAnalystSectionSchemaV1>;
 export type EvidencePackageV1 = z.infer<typeof EvidencePackageSchemaV1>;
