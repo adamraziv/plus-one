@@ -35,6 +35,7 @@ describe('platform migrations', () => {
       '0009_reporting.sql',
       '0010_query_role.sql',
       '0011_mastra_memory_storage.sql',
+      '0012_policy_delivery_scheduler.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();

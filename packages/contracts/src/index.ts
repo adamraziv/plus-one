@@ -6,6 +6,7 @@ export {
 } from './accounting.js';
 export * from './accounting.js';
 export * from './artifacts.js';
+export * from './channels.js';
 export * from './errors.js';
 export * from './ids.js';
 export * from './invocations.js';
