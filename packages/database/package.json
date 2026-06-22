@@ -6,6 +6,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@mastra/core": "1.42.0",
+    "@mastra/pg": "1.13.0",
     "@plus-one/contracts": "workspace:*",
     "dotenv": "17.2.3",
     "pg": "8.16.3",

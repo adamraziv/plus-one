@@ -18,7 +18,7 @@ interface BootstrapDependencies {
 export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const config = loadConfig(dependencies.environment ?? process.env);
   const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
-  const mastra = (dependencies.createMastraInstance ?? createMastra)();
+  const mastra = (dependencies.createMastraInstance ?? createMastra)(config.database.poolUrls.memory);
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);
 

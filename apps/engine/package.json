@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@mastra/core": "1.42.0",
+    "@mastra/pg": "1.13.0",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
     "zod": "4.1.12"
