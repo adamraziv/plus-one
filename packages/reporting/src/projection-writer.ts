@@ -15,8 +15,10 @@ export class ProjectionWriter {
          sum(CASE WHEN posting.direction = account.normal_balance
            THEN posting.account_native_amount ELSE -posting.account_native_amount END),
          account.native_currency,
-         sum(CASE WHEN posting.direction = account.normal_balance
-           THEN posting.account_native_amount ELSE -posting.account_native_amount END),
+         sum(CASE
+           WHEN account.native_currency <> household.reporting_currency THEN 0
+           WHEN posting.direction = account.normal_balance THEN posting.account_native_amount
+           ELSE -posting.account_native_amount END),
          household.reporting_currency,
          journal.id
        FROM accounting.postings posting

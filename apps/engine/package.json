@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@mastra/core": "1.42.0",
+    "@mastra/core": "1.45.0",
+    "@mastra/pg": "1.14.0",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
     "zod": "4.1.12"

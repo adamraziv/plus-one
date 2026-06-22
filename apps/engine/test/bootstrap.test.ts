@@ -28,20 +28,30 @@ describe('engine scaffold', () => {
     expect(config.database.poolUrls.operations).toContain('operations');
   });
 
-  it('constructs Mastra without initializing storage domains', () => {
-    expect(createMastra()).toBeInstanceOf(Mastra);
+  it('constructs Mastra with a configured memory storage URL', () => {
+    const mastra = createMastra(environment.DATABASE_MEMORY_URL);
+    const storage = mastra.getStorage();
+
+    expect(mastra).toBeInstanceOf(Mastra);
+    expect(storage?.stores?.memory).toBeDefined();
   });
 
-  it('verifies pools and closes them through the runtime handle', async () => {
+  it('passes the memory URL to the Mastra factory and closes pools through the runtime handle', async () => {
     const pools = {} as never;
     const close = vi.fn(async () => undefined);
+    const mastra = createMastra(environment.DATABASE_MEMORY_URL);
+    const createMastraInstance = vi.fn((memoryConnectionString?: string) => {
+      expect(memoryConnectionString).toBe(environment.DATABASE_MEMORY_URL);
+      return mastra;
+    });
     const runtime = await bootstrap({
       environment,
       createPools: () => pools,
       verifyPools: vi.fn(async () => undefined),
       closePools: close,
-      createMastraInstance: createMastra,
+      createMastraInstance,
     });
+    expect(createMastraInstance).toHaveBeenCalledTimes(1);
     await runtime.close();
     expect(close).toHaveBeenCalledWith(pools);
   });
