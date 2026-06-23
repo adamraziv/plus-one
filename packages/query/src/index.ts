@@ -10,4 +10,4 @@ export type { EvidenceSessionConfig, EvidencePackageInput, QueryRunner } from '.
 export {
   queryTeamDefinition, queryRoles, queryToolPermissions, queryWorkCells,
 } from './query-team.js';
-export * from './query-agents.js';
+export * from './query-runtime.js';

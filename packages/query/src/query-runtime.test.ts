@@ -7,7 +7,7 @@ import {
   registerQueryAgents,
 } from './index.js';
 
-describe('Query Team agent registrations', () => {
+describe('Query Team runtime registrations', () => {
   it('registers immutable query skills for lead, query cell, and analyst cell roles', () => {
     const skills = new SkillRegistry(querySkills);
 
