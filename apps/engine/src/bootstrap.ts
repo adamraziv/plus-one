@@ -24,9 +24,16 @@ interface BootstrapDependencies {
 export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const config = loadConfig(dependencies.environment ?? process.env);
   const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
+  const queryTools = dependencies.queryTools ?? {};
+  if (config.nodeEnv === 'production' && Object.keys(queryTools).length === 0) {
+    throw new Error('Production bootstrap requires configured Query tools.');
+  }
+  if (config.nodeEnv === 'production' && dependencies.orchestratorAgent === undefined) {
+    throw new Error('Production bootstrap requires a configured orchestrator agent.');
+  }
   const agentSystem = (dependencies.createAgentSystemInstance ?? createAgentSystem)({
     models: config.models,
-    queryTools: dependencies.queryTools ?? {},
+    queryTools,
     ...(dependencies.orchestratorAgent === undefined ? {} : { orchestratorAgent: dependencies.orchestratorAgent }),
   });
   const mastra = (dependencies.createMastraInstance ?? createMastra)(

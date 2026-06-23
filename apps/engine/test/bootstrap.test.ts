@@ -107,4 +107,19 @@ describe('engine scaffold', () => {
 
     expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent }));
   });
+
+  it('does not production-bootstrap without Query tools and an orchestrator agent', async () => {
+    const production = { ...environment, NODE_ENV: 'production', LLM_API_KEY: 'test-api-key' };
+
+    await expect(bootstrap({
+      environment: production,
+      createPools: () => ({} as never),
+    })).rejects.toThrow('Production bootstrap requires configured Query tools.');
+
+    await expect(bootstrap({
+      environment: production,
+      createPools: () => ({} as never),
+      queryTools: { 'query.account_list': {} },
+    })).rejects.toThrow('Production bootstrap requires a configured orchestrator agent.');
+  });
 });

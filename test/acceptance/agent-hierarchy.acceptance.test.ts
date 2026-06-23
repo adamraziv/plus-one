@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   CheckerVerdictSchemaV1,
+  EvidenceRequestSchemaV1,
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -133,7 +134,7 @@ describe('agent hierarchy acceptance', () => {
             schemaName: 'team-lead-plan',
             schemaVersion: 1,
             recommendedStrategyName: 'single-maker-checker',
-            work: [{ workCellId: 'query-evidence', makerInput: queryResult([]) }],
+            work: [{ workCellId: 'query-evidence', makerInput: evidenceRequest() }],
             stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
           }) };
         }
@@ -324,5 +325,22 @@ function queryResult(rows: Record<string, unknown>[]) {
     sourceReferences: ['relation=reporting.accounts'],
     freshness: 'fresh',
     coverageWarnings: [],
+  });
+}
+
+function evidenceRequest() {
+  return EvidenceRequestSchemaV1.parse({
+    schemaName: 'evidence-request',
+    schemaVersion: 1,
+    householdId,
+    requestId: 'evidence_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    businessQuestion: 'List accounts.',
+    intendedUse: 'household_finance_answer',
+    timeframe: { start: '2026-06-01', end: '2026-06-23' },
+    desiredGrain: ['household', 'account'],
+    filters: [],
+    requiredFreshness: 'fresh',
+    requiredCalculations: [],
+    coverage: ['account list'],
   });
 }

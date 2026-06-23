@@ -8,6 +8,7 @@ import {
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../src/agents/orchestrator.js';
+import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -139,6 +140,69 @@ describe('OrchestratorAgent', () => {
     expect((orchestrator.agent as unknown as { description: string }).description).toContain('single entrypoint');
     expect(orchestrator.agentTools.delegateTeam.description).toContain('specialist team lead');
     expect(response.body).toContain('one account row');
+  });
+
+  it('keeps delegate context isolated across concurrent runs', async () => {
+    const runTeamLead = vi.fn(async (_input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
+      void _input;
+      return teamResult();
+    });
+    let secondDelegated!: () => void;
+    const secondDelegatedPromise = new Promise<void>((resolve) => {
+      secondDelegated = resolve;
+    });
+    let firstEntered!: () => void;
+    const firstEnteredPromise = new Promise<void>((resolve) => {
+      firstEntered = resolve;
+    });
+    const generate = vi.fn(async (messages: string) => {
+      const body = messages.includes('first') ? 'first' : 'second';
+      if (body === 'first') {
+        firstEntered();
+        await secondDelegatedPromise;
+      } else {
+        await firstEnteredPromise;
+      }
+      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: { businessQuestion: body },
+      });
+      if (body === 'second') secondDelegated();
+      return {
+        object: OrchestratorFinalResponseSchemaV1.parse({
+          schemaName: 'orchestrator-final-response',
+          schemaVersion: 1,
+          responseId: `response-${body}`,
+          householdId,
+          conversationId,
+          body: result.claims[0]!.text + '\n\nPlus One is an AI assistant, not a licensed financial professional.',
+          policyBoundary: 'personalized_finance',
+          citations: [{ label: 'query:accounts-listed', artifactId }],
+          assumptions: [],
+          freshness: result.freshness,
+          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+          unsupportedCapabilities: [],
+          recommendationActions: [],
+          delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+          responseHash: 'c'.repeat(64),
+          createdAt: now,
+        }),
+      };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    await Promise.all([
+      orchestrator.run({ message: message('first') }),
+      orchestrator.run({ message: message('second') }),
+    ]);
+
+    expect(runTeamLead.mock.calls.map(([input]) => input.message.body).sort())
+      .toEqual(['first', 'second']);
   });
 });
 

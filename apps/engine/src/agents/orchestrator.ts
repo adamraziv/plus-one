@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
 import {
   InboundChannelMessageSchemaV1,
@@ -20,7 +21,10 @@ const orchestratorInstructions = [
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
-  private activeInvocation: { message: InboundChannelMessageV1; signal: AbortSignal } | undefined;
+  private readonly activeInvocation = new AsyncLocalStorage<{
+    message: InboundChannelMessageV1;
+    signal: AbortSignal;
+  }>();
   readonly agent: Agent<string, ToolsInput, unknown>;
   readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
 
@@ -36,7 +40,7 @@ export class OrchestratorAgent {
       delegateTeam: createDelegateTeamTool({
         teams: this.teams,
         teamRuntime: dependencies.teamRuntime,
-        getActiveInvocation: () => this.activeInvocation,
+        getActiveInvocation: () => this.activeInvocation.getStore(),
       }),
     };
     this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
@@ -52,18 +56,14 @@ export class OrchestratorAgent {
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const signal = input.signal ?? AbortSignal.timeout(60_000);
-    this.activeInvocation = { message, signal };
-    try {
+    return this.activeInvocation.run({ message, signal }, async () => {
       const result = await this.agent.generate([
-        `householdId: ${message.householdId}`,
-        `conversationId: ${message.conversationId}`,
-        `message: ${message.body}`,
+        'InboundChannelMessageV1 context:',
+        JSON.stringify(message),
       ].join('\n'), {
         structuredOutput: { schema: OrchestratorFinalResponseSchemaV1 },
       });
       return OrchestratorFinalResponseSchemaV1.parse(result.object);
-    } finally {
-      this.activeInvocation = undefined;
-    }
+    });
   }
 }
