@@ -22,10 +22,26 @@ const environment = {
 };
 
 describe('engine scaffold', () => {
-  it('loads engine and database configuration together', () => {
-    const config = loadConfig(environment);
+  it('loads engine, database, and model configuration together', () => {
+    const config = loadConfig({
+      ...environment,
+      LLM_ENDPOINT: 'https://llm.example.test/v1',
+      LLM_API_KEY: 'test-api-key',
+      ORCHESTRATOR_MODEL: 'openai/gpt-5',
+      LEAD_MODEL: 'openai/gpt-5',
+      MAKER_MODEL: 'openai/gpt-5-mini',
+      CHECKER_MODEL: 'openai/gpt-5',
+      RESEARCH_MODEL: 'openai/gpt-5',
+    });
     expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
     expect(config.database.poolUrls.operations).toContain('operations');
+    expect(config.models).toEqual({
+      orchestrator: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      lead: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      maker: { id: 'openai/gpt-5-mini', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      checker: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      research: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+    });
   });
 
   it('constructs Mastra with a configured memory storage URL', () => {

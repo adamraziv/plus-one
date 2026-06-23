@@ -5,13 +5,41 @@ const EngineEnvironmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   ENGINE_HOST: z.string().min(1).default('127.0.0.1'),
   ENGINE_PORT: z.coerce.number().int().min(1).max(65_535).default(4111),
+  LLM_ENDPOINT: z.string().url().default('https://api.openai.com/v1'),
+  LLM_API_KEY: z.string().min(1).optional(),
+  ORCHESTRATOR_MODEL: z.string().min(3).default('openai/gpt-5'),
+  LEAD_MODEL: z.string().min(3).default('openai/gpt-5'),
+  MAKER_MODEL: z.string().min(3).default('openai/gpt-5-mini'),
+  CHECKER_MODEL: z.string().min(3).default('openai/gpt-5'),
+  RESEARCH_MODEL: z.string().min(3).default('openai/gpt-5'),
+}).superRefine((environment, context) => {
+  if (environment.NODE_ENV !== 'test' && environment.LLM_API_KEY === undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['LLM_API_KEY'],
+      message: 'LLM_API_KEY is required outside test',
+    });
+  }
 });
+
+export interface EngineLlmModelConfig {
+  id: string;
+  endpoint: string;
+  apiKey: string;
+}
 
 export interface EngineConfig {
   nodeEnv: 'development' | 'test' | 'production';
   host: string;
   port: number;
   database: DatabaseConfig;
+  models: {
+    orchestrator: EngineLlmModelConfig;
+    lead: EngineLlmModelConfig;
+    maker: EngineLlmModelConfig;
+    checker: EngineLlmModelConfig;
+    research: EngineLlmModelConfig;
+  };
 }
 
 export function loadConfig(
@@ -24,5 +52,20 @@ export function loadConfig(
     host: engine.ENGINE_HOST,
     port: engine.ENGINE_PORT,
     database: loadDatabaseConfig(environment),
+    models: {
+      orchestrator: model(engine.ORCHESTRATOR_MODEL, engine),
+      lead: model(engine.LEAD_MODEL, engine),
+      maker: model(engine.MAKER_MODEL, engine),
+      checker: model(engine.CHECKER_MODEL, engine),
+      research: model(engine.RESEARCH_MODEL, engine),
+    },
+  };
+}
+
+function model(id: string, environment: z.infer<typeof EngineEnvironmentSchema>): EngineLlmModelConfig {
+  return {
+    id,
+    endpoint: environment.LLM_ENDPOINT,
+    apiKey: environment.LLM_API_KEY ?? 'test-api-key',
   };
 }
