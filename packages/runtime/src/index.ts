@@ -5,6 +5,7 @@ export * from './canonical-json.js';
 export * from './artifacts/artifact-store.js';
 export * from './context/role-context-builder.js';
 export * from './execution/agent-invocation-runner.js';
+export * from './execution/team-lead-planner.js';
 export * from './execution/team-execution-coordinator.js';
 export * from './execution/team-executor.js';
 export * from './execution/team-result-assembler.js';
