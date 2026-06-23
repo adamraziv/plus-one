@@ -4,6 +4,7 @@ import {
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV1,
+  type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../src/agents/orchestrator.js';
@@ -97,10 +98,9 @@ describe('OrchestratorAgent', () => {
       expect(input.request).toEqual({ businessQuestion: 'List our accounts.' });
       return teamResult();
     });
-    let orchestrator!: OrchestratorAgent;
     const generate = vi.fn(async (messages) => {
       expect(messages).toContain('List our accounts.');
-      const result = await orchestrator.agentTools.delegateTeam.execute({
+      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: { businessQuestion: 'List our accounts.' },
       });
@@ -125,7 +125,7 @@ describe('OrchestratorAgent', () => {
         }),
       };
     });
-    orchestrator = new OrchestratorAgent({
+    const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
@@ -136,8 +136,16 @@ describe('OrchestratorAgent', () => {
 
     expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({ team: queryTeam }));
     expect(generate).toHaveBeenCalledTimes(1);
-    expect(orchestrator.agent.description).toContain('single entrypoint');
+    expect((orchestrator.agent as unknown as { description: string }).description).toContain('single entrypoint');
     expect(orchestrator.agentTools.delegateTeam.description).toContain('specialist team lead');
     expect(response.body).toContain('one account row');
   });
 });
+
+async function executeDelegate(
+  tool: typeof OrchestratorAgent.prototype.agentTools.delegateTeam,
+  input: { team: string; request: unknown },
+): Promise<TeamResultEnvelopeV1> {
+  const execute = tool.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
+  return TeamResultEnvelopeSchemaV1.parse(await execute(input, {}));
+}

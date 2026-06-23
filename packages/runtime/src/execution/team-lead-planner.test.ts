@@ -5,6 +5,7 @@ import {
   AgentInvocationRunner,
   RuntimePolicyRegistry,
   SkillRegistry,
+  type StructuredAgentPort,
   ToolPermissionRegistry,
   createSkillRegistration,
 } from '../index.js';
@@ -91,7 +92,7 @@ describe('TeamLeadPlanner', () => {
       stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     }));
     const runner = new AgentInvocationRunner({
-      agents: { generate },
+      agents: { generate } as StructuredAgentPort,
       policies: new RuntimePolicyRegistry({
         models: { 'provider/lead': ['structured_output'] },
         policies: [policy],

@@ -1,4 +1,4 @@
-import { Agent } from '@mastra/core/agent';
+import { Agent, type ToolsInput } from '@mastra/core/agent';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -20,15 +20,16 @@ const orchestratorInstructions = [
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
-  private activeInvocation?: { message: InboundChannelMessageV1; signal: AbortSignal };
-  readonly agent: Agent;
-  readonly agentTools: NonNullable<ConstructorParameters<typeof Agent>[0]['tools']>;
+  private activeInvocation: { message: InboundChannelMessageV1; signal: AbortSignal } | undefined;
+  readonly agent: Agent<string, ToolsInput, unknown>;
+  readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
 
   constructor(private readonly dependencies: {
     model: EngineLlmModelConfig;
     teams: readonly TeamDefinition[];
     teamRuntime: OrchestratorTeamRuntime;
-    agentFactory?: (config: ConstructorParameters<typeof Agent>[0]) => Agent;
+    agentFactory?: (config: ConstructorParameters<typeof Agent<string, ToolsInput, unknown>>[0]) =>
+      Agent<string, ToolsInput, unknown>;
   }) {
     this.teams = new Map(dependencies.teams.map((team) => [team.team, team]));
     this.agentTools = {

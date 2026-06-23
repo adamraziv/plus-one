@@ -5,9 +5,11 @@ import {
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   QueryResultSchemaV1,
+  TeamResultEnvelopeSchemaV1,
   TeamLeadPlanSchemaV1,
   type ArtifactEnvelopeV1,
   type CheckerVerdictV1,
+  type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import { querySkills, queryTeamDefinition } from '@plus-one/query';
 import {
@@ -78,10 +80,11 @@ class MemoryLedger implements VerificationLedgerPort {
     const updated: VerificationTaskSnapshot = {
       ...task,
       status: input.to,
-      failureCategory: input.failureCategory ?? task.failureCategory,
       resumable: input.resumable ?? task.resumable,
       updatedAt: now,
     };
+    if (input.failureCategory !== undefined) updated.failureCategory = input.failureCategory;
+    else if (task.failureCategory !== undefined) updated.failureCategory = task.failureCategory;
     this.tasks.set(input.taskId, updated);
     return updated;
   }
@@ -246,10 +249,9 @@ describe('agent hierarchy acceptance', () => {
         });
       }),
     };
-    let orchestrator!: OrchestratorAgent;
     const generate = vi.fn(async (messages) => {
       expect(messages).toContain('List accounts.');
-      const result = await orchestrator.agentTools.delegateTeam.execute({
+      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: { businessQuestion: 'List accounts.' },
       });
@@ -273,7 +275,7 @@ describe('agent hierarchy acceptance', () => {
         createdAt: now,
       }) };
     });
-    orchestrator = new OrchestratorAgent({
+    const orchestrator = new OrchestratorAgent({
       model: models.orchestrator,
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeamDefinition],
@@ -300,6 +302,14 @@ describe('agent hierarchy acceptance', () => {
     expect(verificationLedger.createTask).toHaveBeenCalled();
   });
 });
+
+async function executeDelegate(
+  tool: typeof OrchestratorAgent.prototype.agentTools.delegateTeam,
+  input: { team: string; request: unknown },
+): Promise<TeamResultEnvelopeV1> {
+  const execute = tool.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
+  return TeamResultEnvelopeSchemaV1.parse(await execute(input, {}));
+}
 
 function queryResult(rows: Record<string, unknown>[]) {
   return QueryResultSchemaV1.parse({
