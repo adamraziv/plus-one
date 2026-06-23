@@ -125,47 +125,49 @@ class MemoryLedger implements VerificationLedgerPort {
 describe('agent hierarchy acceptance', () => {
   it('runs inbound orchestrator delegation into checked Query maker/checker execution', async () => {
     const calls: string[] = [];
+    const fakeAgent = (agentId: string) => ({
+      generate: vi.fn(async (messages: readonly { content: string }[]) => {
+        calls.push(agentId);
+        if (agentId === 'query-lead') {
+          return { object: TeamLeadPlanSchemaV1.parse({
+            schemaName: 'team-lead-plan',
+            schemaVersion: 1,
+            recommendedStrategyName: 'single-maker-checker',
+            work: [{ workCellId: 'query-evidence', makerInput: queryResult([]) }],
+            stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+          }) };
+        }
+        if (agentId === 'query-maker') {
+          return { object: MakerArtifactSchemaV1.parse({
+            schemaName: 'maker-artifact',
+            schemaVersion: 1,
+            outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+            output: queryResult([{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K', name: 'Cash' }]),
+            claims: [{
+              claimId: 'accounts-listed',
+              text: 'The checked evidence includes one account row.',
+              evidenceArtifactIds: [],
+            }],
+            assumptions: [],
+            uncertainty: [],
+          }) };
+        }
+        const verificationTask = JSON.parse(messages[0]!.content) as {
+          makerArtifact: { artifactId: string; artifactHash: string };
+        };
+        return { object: CheckerVerdictSchemaV1.parse({
+          verdict: 'accepted',
+          coveredArtifactId: verificationTask.makerArtifact.artifactId,
+          coveredArtifactHash: verificationTask.makerArtifact.artifactHash,
+          findings: [],
+        }) };
+      }),
+    } as never);
     const system = createAgentSystem({
       models,
       queryTools: {},
-      agentFactory: ({ agentId }) => ({
-        generate: vi.fn(async (messages: readonly { content: string }[]) => {
-          calls.push(agentId);
-          if (agentId === 'query-lead') {
-            return { object: TeamLeadPlanSchemaV1.parse({
-              schemaName: 'team-lead-plan',
-              schemaVersion: 1,
-              recommendedStrategyName: 'single-maker-checker',
-              work: [{ workCellId: 'query-evidence', makerInput: queryResult([]) }],
-              stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-            }) };
-          }
-          if (agentId === 'query-maker') {
-            return { object: MakerArtifactSchemaV1.parse({
-              schemaName: 'maker-artifact',
-              schemaVersion: 1,
-              outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
-              output: queryResult([{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K', name: 'Cash' }]),
-              claims: [{
-                claimId: 'accounts-listed',
-                text: 'The checked evidence includes one account row.',
-                evidenceArtifactIds: [],
-              }],
-              assumptions: [],
-              uncertainty: [],
-            }) };
-          }
-          const verificationTask = JSON.parse(messages[0]!.content) as {
-            makerArtifact: { artifactId: string; artifactHash: string };
-          };
-          return { object: CheckerVerdictSchemaV1.parse({
-            verdict: 'accepted',
-            coveredArtifactId: verificationTask.makerArtifact.artifactId,
-            coveredArtifactHash: verificationTask.makerArtifact.artifactHash,
-            findings: [],
-          }) };
-        }),
-      } as never),
+      agentFactory: ({ agentId }) => fakeAgent(agentId),
+      queryAgentFactory: (config) => fakeAgent(String(config.id)),
     });
     const verificationLedger = new MemoryLedger();
     const runtime = new VerificationRuntime({
