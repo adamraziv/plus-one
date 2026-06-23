@@ -41,12 +41,12 @@ describe('engine Mastra helper', () => {
     expect(Object.keys(tools).sort()).toEqual(['query.account_list', 'query.analyst_sandbox']);
   });
 
-  it('creates a Mastra agent with code-owned instructions and role tools', () => {
+  it('creates a generic non-Query Mastra role agent with code-owned instructions', () => {
     const agent = createRoleAgent({
-      agentId: 'query-maker',
-      roleName: 'query-maker',
+      agentId: 'accounting-lead',
+      roleName: 'accounting-lead',
       model: {
-        id: 'openai/gpt-5-mini',
+        id: 'openai/gpt-5',
         endpoint: 'https://llm.example.test/v1',
         apiKey: 'test-api-key',
       },
