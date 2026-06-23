@@ -20,8 +20,9 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     const structuredOutput = {
       schema: call.outputSchema,
       errorStrategy: 'strict' as const,
+      jsonPromptInjection: true,
     };
-    const agent = registration.agent as unknown as { generate: (messages: readonly { role: string; content: string }[], options: Record<string, unknown>) => Promise<{ object: unknown }> }; const result = await agent.generate([...call.messages], {
+    const agent = registration.agent as unknown as { generate: (messages: readonly { role: string; content: string }[], options: Record<string, unknown>) => Promise<{ object?: unknown; text?: unknown }> }; const options = {
       instructions: call.systemPrompt,
       structuredOutput,
       activeTools: [...call.activeTools],
@@ -32,8 +33,15 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       runId: call.runId,
       abortSignal: call.abortSignal,
       telemetry: { isEnabled: false },
-    });
-    const parsed = call.outputSchema.parse(result.object);
+    };
+    const fallback = async () => agent.generate([
+      ...call.messages,
+      { role: 'user', content: 'Return only valid JSON matching the requested output contract.' },
+    ], { ...options, structuredOutput: undefined });
+    const result = call.modelId.includes('/')
+      ? await agent.generate([...call.messages], options).catch(fallback)
+      : await fallback();
+    const parsed = call.outputSchema.parse(result.object ?? parseJsonObject(result.text));
     const outputBytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
     if (outputBytes > call.maxOutputBytes) {
       throw new PlusOneError({ category: 'validation_rejected', code: 'structured_output_too_large',
@@ -42,4 +50,13 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     }
     return parsed;
   }
+}
+
+function parseJsonObject(text: unknown): unknown {
+  if (typeof text !== 'string') return undefined;
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) return undefined;
+  return JSON.parse(trimmed.slice(start, end + 1));
 }

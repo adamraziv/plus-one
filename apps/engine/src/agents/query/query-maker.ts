@@ -1,4 +1,5 @@
 import { splitQueryRoleTools } from './tools.js';
+import { toMastraModel } from '../../mastra/role-agent.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -12,7 +13,7 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
     id: 'query-maker',
     name: 'Query Maker',
     description: 'Uses governed read-only Query tools to produce structured household evidence.',
-    model: input.models.maker.id,
+    model: toMastraModel(input.models.maker),
     tools: splitQueryRoleTools(input.tools, 'query-maker'),
     instructions: [
       'Role: Query Maker for Plus One.',

@@ -1,4 +1,5 @@
 import { splitQueryRoleTools } from './tools.js';
+import { toMastraModel } from '../../mastra/role-agent.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -12,7 +13,7 @@ export function createAnalystMakerAgent(input: QueryRoleAgentInput): QueryRoleAg
     id: 'analyst-maker',
     name: 'Analyst Maker',
     description: 'Runs sandboxed Python over checked Query data and returns structured calculations.',
-    model: input.models.maker.id,
+    model: toMastraModel(input.models.maker),
     tools: splitQueryRoleTools(input.tools, 'analyst-maker'),
     instructions: [
       'Role: Analyst Maker for Plus One.',

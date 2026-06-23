@@ -204,6 +204,57 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead.mock.calls.map(([input]) => input.message.body).sort())
       .toEqual(['first', 'second']);
   });
+
+  it('falls back to JSON text when native structured output is unavailable', async () => {
+    const response = {
+      schemaName: 'orchestrator-final-response',
+      schemaVersion: 1,
+      responseId: 'response-fallback',
+      householdId,
+      conversationId,
+      body: 'I can help explain household finance workflows.',
+      policyBoundary: 'informational_only',
+      citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+      assumptions: [],
+      freshness: ['current invocation only'],
+      disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+      unsupportedCapabilities: [],
+      recommendationActions: [],
+      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+      responseHash: 'd'.repeat(64),
+      createdAt: now,
+    };
+    const generate = vi.fn()
+      .mockRejectedValueOnce(new Error('structured output unavailable'))
+      .mockResolvedValueOnce({ text: JSON.stringify(response) });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://api.openai.com/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    await expect(orchestrator.run({ message: message('What can you help with?') }))
+      .resolves.toMatchObject({ responseId: 'response-fallback' });
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it('wraps non-contract fallback output in an orchestrator response envelope', async () => {
+    const generate = vi.fn().mockResolvedValueOnce({ text: '{"reply":"I cannot execute trades for you."}' });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    await expect(orchestrator.run({ message: message('Can you execute a stock trade?') }))
+      .resolves.toMatchObject({
+        body: 'I cannot execute trades for you.',
+        policyBoundary: 'unsupported_capability',
+      });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function executeDelegate(

@@ -3,6 +3,19 @@ import type { EngineLlmModelConfig } from '../config.js';
 
 export type { EngineLlmModelConfig } from '../config.js';
 export type RoleAgentTools = NonNullable<ConstructorParameters<typeof Agent>[0]['tools']>;
+export type RoleAgentModel = ConstructorParameters<typeof Agent>[0]['model'];
+
+export function toMastraModel(model: EngineLlmModelConfig): RoleAgentModel {
+  return {
+    id: normalizeModelId(model.id),
+    url: model.endpoint,
+    apiKey: model.apiKey,
+  };
+}
+
+function normalizeModelId(id: string): `${string}/${string}` {
+  return id.includes('/') ? id as `${string}/${string}` : `custom/${id}`;
+}
 
 export function createRoleAgent(input: {
   agentId: string;
@@ -13,7 +26,7 @@ export function createRoleAgent(input: {
   return new Agent({
     id: input.agentId,
     name: input.roleName,
-    model: input.model.id,
+    model: toMastraModel(input.model),
     tools: input.tools,
     instructions: [
       `You are ${input.roleName} in Plus One.`,

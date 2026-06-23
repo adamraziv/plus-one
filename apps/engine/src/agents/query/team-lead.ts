@@ -1,4 +1,5 @@
 import { splitQueryRoleTools } from './tools.js';
+import { toMastraModel } from '../../mastra/role-agent.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -12,7 +13,7 @@ export function createQueryTeamLeadAgent(input: QueryRoleAgentInput): QueryRoleA
     id: 'query-lead',
     name: 'Query Team Lead',
     description: 'Plans checked Query Team work and selects the correct Query work cell.',
-    model: input.models.lead.id,
+    model: toMastraModel(input.models.lead),
     tools: splitQueryRoleTools(input.tools, 'lead'),
     instructions: [
       'Role: Query Team Lead for Plus One.',

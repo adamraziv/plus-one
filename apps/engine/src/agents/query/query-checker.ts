@@ -1,4 +1,5 @@
 import { splitQueryRoleTools } from './tools.js';
+import { toMastraModel } from '../../mastra/role-agent.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -12,7 +13,7 @@ export function createQueryCheckerAgent(input: QueryRoleAgentInput): QueryRoleAg
     id: 'query-checker',
     name: 'Query Checker',
     description: 'Checks Query Maker outputs without database tools or parent conversation memory.',
-    model: input.models.checker.id,
+    model: toMastraModel(input.models.checker),
     tools: splitQueryRoleTools(input.tools, 'query-checker'),
     instructions: [
       'Role: Query Checker for Plus One.',

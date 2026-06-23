@@ -61,7 +61,11 @@ describe('Query Mastra role agents', () => {
     ]);
     expect(configs.find((config) => config.id === 'query-lead')).toMatchObject({
       name: 'Query Team Lead',
-      model: 'provider/lead',
+      model: {
+        id: 'provider/lead',
+        url: 'https://llm.example.test/v1',
+        apiKey: 'test-api-key',
+      },
       tools: {},
     });
     expect(String(configs.find((config) => config.id === 'query-lead')?.instructions))

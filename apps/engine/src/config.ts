@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { loadDatabaseConfig, type DatabaseConfig } from '@plus-one/database';
 import { z } from 'zod';
 

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
 import {
   InboundChannelMessageSchemaV1,
@@ -7,7 +8,7 @@ import {
   type OrchestratorFinalResponseV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
-import type { EngineLlmModelConfig } from '../mastra/role-agent.js';
+import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
 
 const orchestratorInstructions = [
@@ -48,7 +49,7 @@ export class OrchestratorAgent {
       name: 'Orchestrator',
       description: 'The single entrypoint agent that responds to users and delegates specialized work to team leads.',
       instructions: orchestratorInstructions,
-      model: dependencies.model.id,
+      model: toMastraModel(dependencies.model),
       tools: this.agentTools,
     });
   }
@@ -57,13 +58,84 @@ export class OrchestratorAgent {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const signal = input.signal ?? AbortSignal.timeout(60_000);
     return this.activeInvocation.run({ message, signal }, async () => {
-      const result = await this.agent.generate([
+      const prompt = [
         'InboundChannelMessageV1 context:',
         JSON.stringify(message),
-      ].join('\n'), {
-        structuredOutput: { schema: OrchestratorFinalResponseSchemaV1 },
-      });
-      return OrchestratorFinalResponseSchemaV1.parse(result.object);
+      ].join('\n');
+      const result = this.dependencies.model.endpoint === 'https://api.openai.com/v1'
+        ? await this.agent.generate(prompt, {
+          structuredOutput: { schema: OrchestratorFinalResponseSchemaV1, jsonPromptInjection: true },
+        }).catch(async () => this.generatePlain(message))
+        : await this.generatePlain(message);
+      const candidate = result.object ?? parseJsonObject(result.text);
+      const parsed = OrchestratorFinalResponseSchemaV1.safeParse(candidate);
+      if (parsed.success) return parsed.data;
+      return fallbackResponse(message, candidate, result.text);
     });
   }
+
+  private async generatePlain(message: InboundChannelMessageV1): Promise<{ object?: unknown; text?: unknown }> {
+    return this.agent.generate([
+        'Answer the inbound message body in plain text.',
+        'Do not return JSON.',
+        'InboundChannelMessageV1 context:',
+        JSON.stringify(message),
+    ].join('\n'));
+  }
+}
+
+function parseJsonObject(text: unknown): unknown {
+  if (typeof text !== 'string') return undefined;
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) return undefined;
+  return JSON.parse(trimmed.slice(start, end + 1));
+}
+
+function fallbackResponse(message: InboundChannelMessageV1, candidate: unknown, text: unknown): OrchestratorFinalResponseV1 {
+  const body = fallbackBody(candidate, text);
+  const now = new Date().toISOString();
+  return OrchestratorFinalResponseSchemaV1.parse({
+    schemaName: 'orchestrator-final-response',
+    schemaVersion: 1,
+    responseId: 'response-' + createHash('sha256').update(message.externalMessageId).digest('hex').slice(0, 16),
+    householdId: message.householdId,
+    conversationId: message.conversationId,
+    body,
+    policyBoundary: fallbackPolicyBoundary(message.body),
+    citations: [{ label: 'orchestrator-response', sourceRef: 'model-output' }],
+    assumptions: ['Structured provider output was unavailable; response envelope was assembled by the runtime.'],
+    freshness: ['current invocation'],
+    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+    unsupportedCapabilities: [],
+    recommendationActions: [],
+    delivery: {
+      channel: message.channel,
+      destination: typeof message.metadata.destination === 'object' && message.metadata.destination !== null
+        ? message.metadata.destination
+        : {},
+      format: message.channel === 'slack' ? 'mrkdwn' : 'plain_text',
+    },
+    responseHash: createHash('sha256').update(body).digest('hex'),
+    createdAt: now,
+  });
+}
+
+function fallbackBody(candidate: unknown, text: unknown): string {
+  if (typeof candidate === 'object' && candidate !== null) {
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.body === 'string') return record.body;
+    if (typeof record.reply === 'string') return record.reply;
+  }
+  return typeof text === 'string' && text.trim().length > 0
+    ? text.trim()
+    : 'I could not produce a response.';
+}
+
+function fallbackPolicyBoundary(body: string): OrchestratorFinalResponseV1['policyBoundary'] {
+  // ponytail: fallback heuristic, replace with checked classifier if unsupported-provider fallback grows.
+  return /\b(execute|trade|payment|transfer|file\s+tax|buy|sell)\b/i.test(body)
+    ? 'unsupported_capability'
+    : 'informational_only';
 }

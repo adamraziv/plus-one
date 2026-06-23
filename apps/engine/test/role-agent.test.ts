@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { QueryToolRegistry, ReadOnlySqlValidator } from '@plus-one/query';
 import { createAnalystSandboxTool } from '@plus-one/runtime';
-import { createRoleAgent } from '../src/mastra/role-agent.js';
+import { createRoleAgent, toMastraModel } from '../src/mastra/role-agent.js';
 import { createQueryTools } from '../src/tools/query.js';
 
 describe('engine Mastra helper', () => {
@@ -55,5 +55,13 @@ describe('engine Mastra helper', () => {
 
     expect(agent).toBeDefined();
     expect(typeof agent.generate).toBe('function');
+  });
+
+  it('normalizes bare custom model ids for Mastra', () => {
+    expect(toMastraModel({
+      id: 'deepseek-v4-flash',
+      endpoint: 'https://llm.example.test/v1',
+      apiKey: 'test-api-key',
+    })).toMatchObject({ id: 'custom/deepseek-v4-flash' });
   });
 });
