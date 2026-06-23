@@ -1,9 +1,10 @@
-import { Agent, type ToolsInput } from '@mastra/core/agent';
+import { Agent } from '@mastra/core/agent';
 import type { EngineLlmModelConfig } from '../../config.js';
+import type { RoleAgentTools } from '../../mastra/role-agent.js';
 
-export type QueryRoleAgent = Agent<string, ToolsInput, unknown>;
+export type QueryRoleAgent = Agent;
 export type QueryRoleAgentFactory = (
-  config: ConstructorParameters<typeof Agent<string, ToolsInput, unknown>>[0],
+  config: ConstructorParameters<typeof Agent>[0],
 ) => QueryRoleAgent;
 
 export interface QueryRoleAgentModels {
@@ -14,8 +15,8 @@ export interface QueryRoleAgentModels {
 
 export interface QueryRoleAgentInput {
   models: QueryRoleAgentModels;
-  tools: ToolsInput;
+  tools: RoleAgentTools;
   agentFactory?: QueryRoleAgentFactory;
 }
 
-export const defaultQueryRoleAgentFactory: QueryRoleAgentFactory = (config) => new Agent(config);
+export const defaultQueryRoleAgentFactory: QueryRoleAgentFactory = (config) => new Agent(config) as QueryRoleAgent;

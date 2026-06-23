@@ -1,5 +1,5 @@
-import type { ToolsInput } from '@mastra/core/agent';
 import { analystSandboxToolId } from '@plus-one/runtime';
+import type { RoleAgentTools } from '../../mastra/role-agent.js';
 
 export type QueryRoleToolSurface =
   | 'lead'
@@ -8,14 +8,14 @@ export type QueryRoleToolSurface =
   | 'analyst-maker'
   | 'analyst-checker';
 
-export function splitQueryRoleTools(tools: ToolsInput, role: QueryRoleToolSurface): ToolsInput {
+export function splitQueryRoleTools(tools: RoleAgentTools, role: QueryRoleToolSurface): RoleAgentTools {
   const entries = Object.entries(tools as Record<string, unknown>);
   if (role === 'query-maker') {
     return Object.fromEntries(entries.filter(([toolId]) =>
-      toolId.startsWith('query.') && toolId !== analystSandboxToolId)) as ToolsInput;
+      toolId.startsWith('query.') && toolId !== analystSandboxToolId)) as RoleAgentTools;
   }
   if (role === 'analyst-maker' || role === 'analyst-checker') {
-    return Object.fromEntries(entries.filter(([toolId]) => toolId === analystSandboxToolId)) as ToolsInput;
+    return Object.fromEntries(entries.filter(([toolId]) => toolId === analystSandboxToolId)) as RoleAgentTools;
   }
   return {};
 }
