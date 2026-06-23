@@ -22,10 +22,26 @@ const environment = {
 };
 
 describe('engine scaffold', () => {
-  it('loads engine and database configuration together', () => {
-    const config = loadConfig(environment);
+  it('loads engine, database, and model configuration together', () => {
+    const config = loadConfig({
+      ...environment,
+      LLM_ENDPOINT: 'https://llm.example.test/v1',
+      LLM_API_KEY: 'test-api-key',
+      ORCHESTRATOR_MODEL: 'openai/gpt-5',
+      LEAD_MODEL: 'openai/gpt-5',
+      MAKER_MODEL: 'openai/gpt-5-mini',
+      CHECKER_MODEL: 'openai/gpt-5',
+      RESEARCH_MODEL: 'openai/gpt-5',
+    });
     expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
     expect(config.database.poolUrls.operations).toContain('operations');
+    expect(config.models).toEqual({
+      orchestrator: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      lead: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      maker: { id: 'openai/gpt-5-mini', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      checker: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      research: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+    });
   });
 
   it('constructs Mastra with a configured memory storage URL', () => {
@@ -40,8 +56,10 @@ describe('engine scaffold', () => {
     const pools = {} as never;
     const close = vi.fn(async () => undefined);
     const mastra = createMastra(environment.DATABASE_MEMORY_URL);
-    const createMastraInstance = vi.fn((memoryConnectionString?: string) => {
+    const agentSystem = { teams: [], mastraAgents: { orchestrator: {} } };
+    const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown) => {
       expect(memoryConnectionString).toBe(environment.DATABASE_MEMORY_URL);
+      expect(agents).toBe(agentSystem.mastraAgents);
       return mastra;
     });
     const runtime = await bootstrap({
@@ -50,9 +68,58 @@ describe('engine scaffold', () => {
       verifyPools: vi.fn(async () => undefined),
       closePools: close,
       createMastraInstance,
+      createAgentSystemInstance: vi.fn(() => agentSystem as never),
     });
+    expect(runtime.agentSystem).toBe(agentSystem);
     expect(createMastraInstance).toHaveBeenCalledTimes(1);
     await runtime.close();
     expect(close).toHaveBeenCalledWith(pools);
+  });
+
+  it('passes configured Query tools into the agent system', async () => {
+    const queryTools = { 'query.account_list': {} };
+    const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: {} }) as never);
+
+    await bootstrap({
+      environment,
+      createPools: () => ({} as never),
+      verifyPools: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance,
+      queryTools,
+    });
+
+    expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ queryTools }));
+  });
+
+  it('passes a configured orchestrator agent into the agent system', async () => {
+    const orchestratorAgent = { generate: vi.fn() };
+    const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: { orchestrator: orchestratorAgent } }) as never);
+
+    await bootstrap({
+      environment,
+      createPools: () => ({} as never),
+      verifyPools: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance,
+      orchestratorAgent: orchestratorAgent as never,
+    });
+
+    expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent }));
+  });
+
+  it('does not production-bootstrap without Query tools and an orchestrator agent', async () => {
+    const production = { ...environment, NODE_ENV: 'production', LLM_API_KEY: 'test-api-key' };
+
+    await expect(bootstrap({
+      environment: production,
+      createPools: () => ({} as never),
+    })).rejects.toThrow('Production bootstrap requires configured Query tools.');
+
+    await expect(bootstrap({
+      environment: production,
+      createPools: () => ({} as never),
+      queryTools: { 'query.account_list': {} },
+    })).rejects.toThrow('Production bootstrap requires a configured orchestrator agent.');
   });
 });

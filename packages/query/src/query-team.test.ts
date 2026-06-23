@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ArtifactIdSchema,
+  EvidenceRequestSchemaV1,
   QueryResultSchemaV1,
   type CheckerVerdictV1,
   type MakerArtifactV1,
@@ -10,6 +11,20 @@ import {
 } from './query-team.js';
 
 const ARTIFACT_ID = ArtifactIdSchema.parse('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+const evidenceRequest = EvidenceRequestSchemaV1.parse({
+  schemaName: 'evidence-request',
+  schemaVersion: 1,
+  householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  requestId: 'evidence_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  businessQuestion: 'List accounts.',
+  intendedUse: 'household_finance_answer',
+  timeframe: { start: '2026-06-01', end: '2026-06-23' },
+  desiredGrain: ['household', 'account'],
+  filters: [],
+  requiredFreshness: 'latest projection',
+  requiredCalculations: [],
+  coverage: ['account list'],
+});
 
 const makerArtifact = (overrides: Partial<MakerArtifactV1> = {}): MakerArtifactV1 => ({
   schemaName: 'maker-artifact',
@@ -67,6 +82,15 @@ describe('query team definition', () => {
     for (const keyword of ['scope', 'grain', 'filters', 'freshness', 'provenance', 'completeness']) {
       expect(instructions).toContain(keyword);
     }
+  });
+
+  it('takes an EvidenceRequestV1 as query maker input and returns QueryResultV1 output', () => {
+    const [cell] = queryWorkCells;
+
+    expect(cell!.inputSchemaIdentity).toEqual({ schemaName: 'evidence-request', schemaVersion: 1 });
+    expect(cell!.outputSchemaIdentity).toEqual({ schemaName: 'query-result', schemaVersion: 1 });
+    expect(cell!.makerInputSchema.parse(evidenceRequest)).toEqual(evidenceRequest);
+    expect(() => cell!.makerInputSchema.parse(makerArtifact().output)).toThrow();
   });
 
   it('returns verified only for accepted verdicts with no outstanding coverage warnings', () => {

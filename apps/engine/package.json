@@ -5,8 +5,14 @@
   "dependencies": {
     "@mastra/core": "1.45.0",
     "@mastra/pg": "1.14.0",
+    "@plus-one/accounting": "workspace:*",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
+    "@plus-one/ingestion": "workspace:*",
+    "@plus-one/planning": "workspace:*",
+    "@plus-one/query": "workspace:*",
+    "@plus-one/reporting": "workspace:*",
+    "@plus-one/runtime": "workspace:*",
     "zod": "4.1.12"
   }
 }

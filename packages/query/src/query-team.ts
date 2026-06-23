@@ -1,6 +1,7 @@
 import {
   AnalystCalculationArtifactSchemaV1,
   AnalystTaskSchemaV1,
+  EvidenceRequestSchemaV1,
   QueryResultSchemaV1,
   type CheckerVerdictV1,
   type MakerArtifactV1,
@@ -104,9 +105,9 @@ const queryWorkCell: WorkCellDefinition = {
   workCellId: 'query-evidence',
   maker: queryRoles.find((entry) => entry.identity.roleName === 'query-maker') as WorkCellDefinition['maker'],
   checker: queryRoles.find((entry) => entry.identity.roleName === 'query-checker') as WorkCellDefinition['checker'],
-  makerInputSchema: QueryResultSchemaV1,
+  makerInputSchema: EvidenceRequestSchemaV1,
   makerOutputSchema: QueryResultSchemaV1,
-  inputSchemaIdentity: { schemaName: 'query-result', schemaVersion: 1 },
+  inputSchemaIdentity: { schemaName: 'evidence-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'query-result', schemaVersion: 1 },
   checkerRubric: {
     rubricName: 'query-evidence-rubric',

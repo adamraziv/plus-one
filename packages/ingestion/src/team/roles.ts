@@ -1,4 +1,4 @@
-import type { AgentRegistry, AgentRoleDefinition } from '@plus-one/runtime';
+import type { AgentRegistration, AgentRegistry, AgentRoleDefinition } from '@plus-one/runtime';
 
 const role = (roleName: string, kind: 'maker' | 'checker', skillName: string): AgentRoleDefinition & {
   skillName: string;
@@ -26,7 +26,7 @@ export const ingestionToolPermissions = ingestionRoles.map((entry) => ({
 
 export function registerIngestionAgents(registry: AgentRegistry, input: {
   models: { maker: string; checker: string };
-  agents: Record<string, never>;
+  agents: Record<string, AgentRegistration['agent']>;
 }): void {
   for (const entry of ingestionRoles) {
     const agent = input.agents[entry.agentId];
