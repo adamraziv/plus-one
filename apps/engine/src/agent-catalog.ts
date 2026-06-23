@@ -25,7 +25,6 @@ import {
 } from '@plus-one/planning';
 import {
   createQueryRuntimePolicies,
-  queryRoles,
   querySkills,
   queryTeamDefinition,
   queryToolPermissions,
@@ -50,6 +49,10 @@ import {
   type AgentRoleDefinition,
   type TeamDefinition,
 } from '@plus-one/runtime';
+import {
+  createQueryRoleAgents,
+  type QueryRoleAgentFactory,
+} from './agents/query/index.js';
 import { createRoleAgent, type EngineLlmModelConfig, type RoleAgentTools } from './mastra/role-agent.js';
 
 export interface AgentModelConfig {
@@ -73,6 +76,7 @@ export interface AgentSystem {
 export function createAgentSystem(input: {
   models: AgentModelConfig;
   queryTools: RoleAgentTools;
+  queryAgentFactory?: QueryRoleAgentFactory;
   agentFactory?: (input: {
     agentId: string;
     roleName: string;
@@ -82,7 +86,15 @@ export function createAgentSystem(input: {
 }): AgentSystem {
   const factory = input.agentFactory ?? createRoleAgent;
   const agents = new AgentRegistry();
-  const queryAgents = makeAgents(queryRoles, input.models, input.queryTools, factory);
+  const queryAgents = createQueryRoleAgents({
+    models: {
+      lead: input.models.lead,
+      maker: input.models.maker,
+      checker: input.models.checker,
+    },
+    tools: input.queryTools,
+    ...(input.queryAgentFactory === undefined ? {} : { agentFactory: input.queryAgentFactory }),
+  });
   const accountingAgents = makeAgents(accountingRoles, input.models, {}, factory);
   const ingestionAgents = makeAgents(ingestionRoles, input.models, {}, factory);
   const planningAgents = makeAgents(planningRoles, input.models, {}, factory);

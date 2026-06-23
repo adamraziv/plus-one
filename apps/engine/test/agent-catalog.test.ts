@@ -12,10 +12,15 @@ const models = {
 describe('engine agent catalog', () => {
   it('registers every in-scope team role and keeps checkers memory-disabled', () => {
     const created: string[] = [];
+    const queryCreated: string[] = [];
     const system = createAgentSystem({
       models,
       agentFactory: ({ agentId }) => {
         created.push(agentId);
+        return { generate: vi.fn() } as unknown as Agent;
+      },
+      queryAgentFactory: (config) => {
+        queryCreated.push(String(config.id));
         return { generate: vi.fn() } as unknown as Agent;
       },
       queryTools: {},
@@ -25,7 +30,14 @@ describe('engine agent catalog', () => {
       team.lead,
       ...team.workCells.flatMap((cell) => [cell.maker, cell.checker]),
     ]).map((role) => role.agentId));
-    expect(new Set(created).size).toBe(uniqueRoleIds.size);
+    expect(new Set([...created, ...queryCreated]).size).toBe(uniqueRoleIds.size);
+    expect(queryCreated.sort()).toEqual([
+      'analyst-checker',
+      'analyst-maker',
+      'query-checker',
+      'query-lead',
+      'query-maker',
+    ]);
     expect(system.teams.map((team) => team.team).sort()).toEqual([
       'accounting',
       'budgeting',
