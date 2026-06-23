@@ -26,8 +26,8 @@ export function createQueryTools(input: {
       description: definition.description,
       inputSchema: QueryToolInputSchema,
       outputSchema: QueryResultSchemaV1,
-      execute: async ({ context }) => {
-        const parsed = QueryToolInputSchema.parse(context);
+      execute: async (inputData) => {
+        const parsed = QueryToolInputSchema.parse(inputData);
         return input.withEvidenceHandle((handle) =>
           handle.runTool(definition.toolName, parsed.parameters));
       },

@@ -56,8 +56,10 @@ describe('engine scaffold', () => {
     const pools = {} as never;
     const close = vi.fn(async () => undefined);
     const mastra = createMastra(environment.DATABASE_MEMORY_URL);
-    const createMastraInstance = vi.fn((memoryConnectionString?: string) => {
+    const agentSystem = { teams: [], mastraAgents: { orchestrator: {} } };
+    const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown) => {
       expect(memoryConnectionString).toBe(environment.DATABASE_MEMORY_URL);
+      expect(agents).toBe(agentSystem.mastraAgents);
       return mastra;
     });
     const runtime = await bootstrap({
@@ -66,7 +68,9 @@ describe('engine scaffold', () => {
       verifyPools: vi.fn(async () => undefined),
       closePools: close,
       createMastraInstance,
+      createAgentSystemInstance: vi.fn(() => agentSystem as never),
     });
+    expect(runtime.agentSystem).toBe(agentSystem);
     expect(createMastraInstance).toHaveBeenCalledTimes(1);
     await runtime.close();
     expect(close).toHaveBeenCalledWith(pools);

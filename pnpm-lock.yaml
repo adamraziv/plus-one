@@ -57,12 +57,30 @@ importers:
       '@mastra/pg':
         specifier: 1.14.0
         version: 1.14.0(@mastra/core@1.45.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+      '@plus-one/accounting':
+        specifier: workspace:*
+        version: link:../../packages/accounting
       '@plus-one/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@plus-one/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@plus-one/ingestion':
+        specifier: workspace:*
+        version: link:../../packages/ingestion
+      '@plus-one/planning':
+        specifier: workspace:*
+        version: link:../../packages/planning
+      '@plus-one/query':
+        specifier: workspace:*
+        version: link:../../packages/query
+      '@plus-one/reporting':
+        specifier: workspace:*
+        version: link:../../packages/reporting
+      '@plus-one/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       zod:
         specifier: 4.1.12
         version: 4.1.12
