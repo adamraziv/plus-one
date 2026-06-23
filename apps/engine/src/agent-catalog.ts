@@ -76,6 +76,7 @@ export interface AgentSystem {
 export function createAgentSystem(input: {
   models: AgentModelConfig;
   queryTools: RoleAgentTools;
+  orchestratorAgent?: Agent;
   queryAgentFactory?: QueryRoleAgentFactory;
   agentFactory?: (input: {
     agentId: string;
@@ -102,6 +103,7 @@ export function createAgentSystem(input: {
     lead: input.models.research,
   });
   const mastraAgents = {
+    ...(input.orchestratorAgent === undefined ? {} : { orchestrator: input.orchestratorAgent }),
     ...queryAgents,
     ...accountingAgents,
     ...ingestionAgents,

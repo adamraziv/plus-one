@@ -75,4 +75,36 @@ describe('engine scaffold', () => {
     await runtime.close();
     expect(close).toHaveBeenCalledWith(pools);
   });
+
+  it('passes configured Query tools into the agent system', async () => {
+    const queryTools = { 'query.account_list': {} };
+    const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: {} }) as never);
+
+    await bootstrap({
+      environment,
+      createPools: () => ({} as never),
+      verifyPools: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance,
+      queryTools,
+    });
+
+    expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ queryTools }));
+  });
+
+  it('passes a configured orchestrator agent into the agent system', async () => {
+    const orchestratorAgent = { generate: vi.fn() };
+    const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: { orchestrator: orchestratorAgent } }) as never);
+
+    await bootstrap({
+      environment,
+      createPools: () => ({} as never),
+      verifyPools: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance,
+      orchestratorAgent: orchestratorAgent as never,
+    });
+
+    expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent }));
+  });
 });

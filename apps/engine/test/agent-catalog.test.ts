@@ -75,4 +75,16 @@ describe('engine agent catalog', () => {
     expect(system.tools.resolve({ team: 'records-reporting', roleName: 'records-maker', roleVersion: 1 }))
       .toEqual([]);
   });
+
+  it('includes a configured orchestrator in the Mastra agent map', () => {
+    const orchestratorAgent = { generate: vi.fn() } as unknown as Agent;
+    const system = createAgentSystem({
+      models,
+      agentFactory: () => ({ generate: vi.fn() } as unknown as Agent),
+      queryTools: {},
+      orchestratorAgent,
+    });
+
+    expect(system.mastraAgents.orchestrator).toBe(orchestratorAgent);
+  });
 });

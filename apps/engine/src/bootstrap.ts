@@ -1,3 +1,4 @@
+import type { Agent } from '@mastra/core/agent';
 import {
   closeDatabasePools,
   createDatabasePools,
@@ -7,6 +8,7 @@ import {
 import { createAgentSystem } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
+import type { RoleAgentTools } from './mastra/role-agent.js';
 
 interface BootstrapDependencies {
   environment?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -15,6 +17,8 @@ interface BootstrapDependencies {
   closePools?: typeof closeDatabasePools;
   createMastraInstance?: typeof createMastra;
   createAgentSystemInstance?: typeof createAgentSystem;
+  queryTools?: RoleAgentTools;
+  orchestratorAgent?: Agent;
 }
 
 export async function bootstrap(dependencies: BootstrapDependencies = {}) {
@@ -22,7 +26,8 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
   const agentSystem = (dependencies.createAgentSystemInstance ?? createAgentSystem)({
     models: config.models,
-    queryTools: {},
+    queryTools: dependencies.queryTools ?? {},
+    ...(dependencies.orchestratorAgent === undefined ? {} : { orchestratorAgent: dependencies.orchestratorAgent }),
   });
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
     config.database.poolUrls.memory,
