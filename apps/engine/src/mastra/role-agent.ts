@@ -7,14 +7,18 @@ export type RoleAgentModel = ConstructorParameters<typeof Agent>[0]['model'];
 
 export function toMastraModel(model: EngineLlmModelConfig): RoleAgentModel {
   return {
-    id: normalizeModelId(model.id),
+    id: canonicalModelId(model.id),
     url: model.endpoint,
     apiKey: model.apiKey,
   };
 }
 
-function normalizeModelId(id: string): `${string}/${string}` {
-  return id.includes('/') ? id as `${string}/${string}` : `custom/${id}`;
+function canonicalModelId(id: string): `${string}/${string}` {
+  if (!/^[a-z][a-z0-9-]*\/[A-Za-z0-9._:-]+$/.test(id)) {
+    throw new Error('Model id must be provider/model');
+  }
+
+  return id as `${string}/${string}`;
 }
 
 export function createRoleAgent(input: {

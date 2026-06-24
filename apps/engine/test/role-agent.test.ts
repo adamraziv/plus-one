@@ -57,11 +57,20 @@ describe('engine Mastra helper', () => {
     expect(typeof agent.generate).toBe('function');
   });
 
-  it('normalizes bare custom model ids for Mastra', () => {
-    expect(toMastraModel({
+  it('requires canonical provider/model ids for Mastra', () => {
+    expect(() => toMastraModel({
       id: 'deepseek-v4-flash',
       endpoint: 'https://llm.example.test/v1',
       apiKey: 'test-api-key',
-    })).toMatchObject({ id: 'custom/deepseek-v4-flash' });
+    })).toThrow(/provider\/model/);
+
+    expect(toMastraModel({
+      id: 'deepseek/deepseek-v4-flash',
+      endpoint: 'https://llm.example.test/v1',
+      apiKey: 'test-api-key',
+    })).toMatchObject({
+      id: 'deepseek/deepseek-v4-flash',
+      url: 'https://llm.example.test/v1',
+    });
   });
 });

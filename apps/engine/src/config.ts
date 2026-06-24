@@ -2,17 +2,20 @@ import 'dotenv/config';
 import { loadDatabaseConfig, type DatabaseConfig } from '@plus-one/database';
 import { z } from 'zod';
 
+const ModelIdSchema = z.string()
+  .regex(/^[a-z][a-z0-9-]*\/[A-Za-z0-9._:-]+$/, 'Model id must be provider/model');
+
 const EngineEnvironmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   ENGINE_HOST: z.string().min(1).default('127.0.0.1'),
   ENGINE_PORT: z.coerce.number().int().min(1).max(65_535).default(4111),
   LLM_ENDPOINT: z.string().url().default('https://api.openai.com/v1'),
   LLM_API_KEY: z.string().min(1).optional(),
-  ORCHESTRATOR_MODEL: z.string().min(3).default('openai/gpt-5'),
-  LEAD_MODEL: z.string().min(3).default('openai/gpt-5'),
-  MAKER_MODEL: z.string().min(3).default('openai/gpt-5-mini'),
-  CHECKER_MODEL: z.string().min(3).default('openai/gpt-5'),
-  RESEARCH_MODEL: z.string().min(3).default('openai/gpt-5'),
+  ORCHESTRATOR_MODEL: ModelIdSchema.default('openai/gpt-5'),
+  LEAD_MODEL: ModelIdSchema.default('openai/gpt-5'),
+  MAKER_MODEL: ModelIdSchema.default('openai/gpt-5-mini'),
+  CHECKER_MODEL: ModelIdSchema.default('openai/gpt-5'),
+  RESEARCH_MODEL: ModelIdSchema.default('openai/gpt-5'),
 }).superRefine((environment, context) => {
   if (environment.NODE_ENV !== 'test' && environment.LLM_API_KEY === undefined) {
     context.addIssue({
