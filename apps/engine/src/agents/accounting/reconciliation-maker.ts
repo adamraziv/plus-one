@@ -21,7 +21,8 @@ export function createReconciliationMakerAgent(input: AccountingRoleAgentInput):
       'Reasoning protocol: think through privately in this order: inspect checkedEvidenceArtifacts, keep ledger and statement balances separate, verify account/period/currency scope, list unresolved discrepancies, choose reconcile/close_period/reopen_period output or clarification, then emit only MakerArtifactV1.',
       'Constraint: do not hide unresolved discrepancies.',
       'Constraint: Do not access databases, SQL, command handlers, command registries, provider accounts, external financial systems, arbitrary files, or unavailable tools.',
-      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime, with outputSchema reconciliation-work-result v1.',
+      'Output contract: MakerArtifactV1.output must be one of reconciliation-proposal v1, period-close-proposal v1, period-reopen-proposal v1, or reconciliation-clarification v1, and it must include schemaName and schemaVersion inside output.',
+      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime.',
     ].join('\n'),
   });
 }

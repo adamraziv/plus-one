@@ -21,7 +21,8 @@ export function createJournalMakerAgent(input: AccountingRoleAgentInput): Accoun
       'Reasoning protocol: think through privately in this order: read the requested operation, preserve exact currencies/dates/rates/account classes/correction links, ensure the proposal is balanced and schema-valid, reject unrealized revaluation posting requests by returning a clarification or non-successful artifact, then emit only MakerArtifactV1.',
       'Constraint: do not claim persistence, external confirmation, or command execution.',
       'Constraint: Do not access databases, SQL, command handlers, command registries, provider accounts, external financial systems, arbitrary files, or unavailable tools.',
-      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime, with outputSchema accounting-work-result v1.',
+      'Output contract: MakerArtifactV1.output must be either accounting-journal-mutation-proposal v1 or accounting-clarification v1, and it must include schemaName and schemaVersion inside output.',
+      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime.',
     ].join('\n'),
   });
 }

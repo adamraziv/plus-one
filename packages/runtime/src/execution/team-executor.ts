@@ -80,6 +80,13 @@ export class TeamExecutor {
       }
       makerOrdinal += 1;
       let makerOutput: MakerArtifactV1;
+      const makerArtifactSchema: z.ZodType<MakerArtifactV1> = MakerArtifactSchemaV1.extend({
+        outputSchema: z.object({
+          schemaName: z.literal(input.workCell.outputSchemaIdentity.schemaName),
+          schemaVersion: z.literal(input.workCell.outputSchemaIdentity.schemaVersion),
+        }).strict(),
+        output: input.workCell.makerOutputSchema as z.ZodType<JsonValue>,
+      });
       try {
         const invocation = MakerInvocationSchemaV1.parse({
           schemaName: 'maker-invocation', schemaVersion: 1,
@@ -97,7 +104,7 @@ export class TeamExecutor {
             team: input.team, role: input.workCell.maker.identity,
             selectedSkill: input.selectedSkill, invocation,
           }),
-          outputSchema: MakerArtifactSchemaV1, abortSignal: teamAbortSignal,
+          outputSchema: makerArtifactSchema, abortSignal: teamAbortSignal,
         });
         assertMakerOutputSchemaIdentity(makerOutput.outputSchema,
           input.workCell.outputSchemaIdentity);

@@ -22,7 +22,8 @@ export function createIngestionMakerAgent(input: AccountingRoleAgentInput): Acco
       'Constraint: Never auto-post probable duplicates as verified journals.',
       'Constraint: preserve source values, row identity, source lineage, and fingerprints.',
       'Constraint: Do not access databases, SQL, command handlers, command registries, provider accounts, external financial systems, arbitrary files, or unavailable tools.',
-      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime, with outputSchema ingestion-work-result v1.',
+      'Output contract: MakerArtifactV1.output must be either confirm-import-batch-proposal v1 or ingestion-clarification v1, and it must include schemaName and schemaVersion inside output.',
+      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime.',
     ].join('\n'),
   });
 }

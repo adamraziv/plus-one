@@ -21,7 +21,8 @@ export function createChartMakerAgent(input: AccountingRoleAgentInput): Accounti
       'Reasoning protocol: think through privately in this order: read the chart instruction, identify exactly one chart action, preserve household/book/account/source-mapping identity, avoid claiming confirmation or authority, then emit only MakerArtifactV1.',
       'Constraint: do not claim persistence, external confirmation, authorization, or command execution.',
       'Constraint: Do not access databases, SQL, command handlers, command registries, provider accounts, external financial systems, arbitrary files, or unavailable tools.',
-      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime, with outputSchema chart-of-accounts-proposal v1.',
+      'Output contract: MakerArtifactV1.output must be chart-of-accounts-proposal v1, and it must include schemaName, schemaVersion, and one valid action.',
+      'Output contract: Return only the structured MakerArtifactV1 requested by the runtime.',
     ].join('\n'),
   });
 }
