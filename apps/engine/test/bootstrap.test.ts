@@ -55,11 +55,13 @@ describe('engine scaffold', () => {
   it('passes the memory URL to the Mastra factory and closes pools through the runtime handle', async () => {
     const pools = {} as never;
     const close = vi.fn(async () => undefined);
+    const validateModels = vi.fn(async () => undefined);
     const mastra = createMastra(environment.DATABASE_MEMORY_URL);
     const agentSystem = { teams: [], mastraAgents: { orchestrator: {} } };
-    const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown) => {
+    const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown, apiRoutes?: unknown[]) => {
       expect(memoryConnectionString).toBe(environment.DATABASE_MEMORY_URL);
       expect(agents).toBe(agentSystem.mastraAgents);
+      expect(Array.isArray(apiRoutes)).toBe(true);
       return mastra;
     });
     const runtime = await bootstrap({
@@ -67,6 +69,7 @@ describe('engine scaffold', () => {
       createPools: () => pools,
       verifyPools: vi.fn(async () => undefined),
       closePools: close,
+      validateModels,
       createMastraInstance,
       createAgentSystemInstance: vi.fn(() => agentSystem as never),
     });
@@ -82,6 +85,7 @@ describe('engine scaffold', () => {
 
     await bootstrap({
       environment,
+      validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
       verifyPools: vi.fn(async () => undefined),
       createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
@@ -98,6 +102,7 @@ describe('engine scaffold', () => {
 
     await bootstrap({
       environment,
+      validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
       verifyPools: vi.fn(async () => undefined),
       createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
@@ -113,13 +118,37 @@ describe('engine scaffold', () => {
 
     await expect(bootstrap({
       environment: production,
+      validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
     })).rejects.toThrow('Production bootstrap requires configured Query tools.');
 
     await expect(bootstrap({
       environment: production,
+      validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
       queryTools: { 'query.account_list': {} },
     })).rejects.toThrow('Production bootstrap requires a configured orchestrator agent.');
+  });
+
+  it('validates configured models before creating database pools', async () => {
+    const callOrder: string[] = [];
+    const validateModels = vi.fn(async () => {
+      callOrder.push('validate');
+    });
+    const createPools = vi.fn(() => {
+      callOrder.push('pools');
+      return {} as never;
+    });
+
+    await bootstrap({
+      environment,
+      validateModels,
+      createPools,
+      verifyPools: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => ({}) as never),
+      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+    });
+
+    expect(callOrder.slice(0, 2)).toEqual(['validate', 'pools']);
   });
 });

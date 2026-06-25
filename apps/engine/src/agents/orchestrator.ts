@@ -4,6 +4,8 @@ import { Agent, type ToolsInput } from '@mastra/core/agent';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  type TeamResultEnvelopeV1,
+  type ChannelKindV1,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
 } from '@plus-one/contracts';
@@ -15,7 +17,14 @@ const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
   'You are the only user-facing entrypoint.',
   'Answer only from verified context or checked team results.',
-  'Delegate financial read questions to the Query Team.',
+  'When calling delegateTeam, use exact team ids, never display names: query, accounting, budgeting, cash-flow, investments-retirement, records-reporting.',
+  'delegateTeam input must always be strict JSON, and request must be a JSON object, never a quoted JSON string.',
+  'Delegate financial read questions to team id query.',
+  'Delegate transaction capture, journal, chart-of-accounts, ingestion, and reconciliation requests to team id accounting.',
+  'A request to add, record, capture, import, reconcile, or change accounting data is accounting, not query.',
+  'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
+  'For query, request must be a full EvidenceRequestV1 object; do not invent one unless the user is actually asking a read question.',
+  'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested TransactionCaptureRequestV1 JSON.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
   'Return the requested OrchestratorFinalResponseV1 object.',
 ].join('\n');
@@ -25,6 +34,7 @@ export class OrchestratorAgent {
   private readonly activeInvocation = new AsyncLocalStorage<{
     message: InboundChannelMessageV1;
     signal: AbortSignal;
+    teamResults: TeamResultEnvelopeV1[];
   }>();
   readonly agent: Agent<string, ToolsInput, unknown>;
   readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
@@ -37,10 +47,17 @@ export class OrchestratorAgent {
       Agent<string, ToolsInput, unknown>;
   }) {
     this.teams = new Map(dependencies.teams.map((team) => [team.team, team]));
+    const teamRuntime: OrchestratorTeamRuntime = {
+      runTeamLead: async (input) => {
+        const result = await dependencies.teamRuntime.runTeamLead(input);
+        this.activeInvocation.getStore()?.teamResults.push(result);
+        return result;
+      },
+    };
     this.agentTools = {
       delegateTeam: createDelegateTeamTool({
         teams: this.teams,
-        teamRuntime: dependencies.teamRuntime,
+        teamRuntime,
         getActiveInvocation: () => this.activeInvocation.getStore(),
       }),
     };
@@ -57,30 +74,22 @@ export class OrchestratorAgent {
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const signal = input.signal ?? AbortSignal.timeout(60_000);
-    return this.activeInvocation.run({ message, signal }, async () => {
+    const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
+    return this.activeInvocation.run(invocation, async () => {
       const prompt = [
         'InboundChannelMessageV1 context:',
         JSON.stringify(message),
       ].join('\n');
-      const result = this.dependencies.model.endpoint === 'https://api.openai.com/v1'
-        ? await this.agent.generate(prompt, {
+      try {
+        const result = await this.agent.generate(prompt, {
           structuredOutput: { schema: OrchestratorFinalResponseSchemaV1, jsonPromptInjection: true },
-        }).catch(async () => this.generatePlain(message))
-        : await this.generatePlain(message);
-      const candidate = result.object ?? parseJsonObject(result.text);
-      const parsed = OrchestratorFinalResponseSchemaV1.safeParse(candidate);
-      if (parsed.success) return parsed.data;
-      return fallbackResponse(message, candidate, result.text);
+        });
+        return OrchestratorFinalResponseSchemaV1.parse(result.object ?? parseJsonObject(result.text));
+      } catch (error) {
+        if (invocation.teamResults.length === 0) throw error;
+        return responseFromTeamResults(message, invocation.teamResults);
+      }
     });
-  }
-
-  private async generatePlain(message: InboundChannelMessageV1): Promise<{ object?: unknown; text?: unknown }> {
-    return this.agent.generate([
-        'Answer the inbound message body in plain text.',
-        'Do not return JSON.',
-        'InboundChannelMessageV1 context:',
-        JSON.stringify(message),
-    ].join('\n'));
   }
 }
 
@@ -93,49 +102,61 @@ function parseJsonObject(text: unknown): unknown {
   return JSON.parse(trimmed.slice(start, end + 1));
 }
 
-function fallbackResponse(message: InboundChannelMessageV1, candidate: unknown, text: unknown): OrchestratorFinalResponseV1 {
-  const body = fallbackBody(candidate, text);
-  const now = new Date().toISOString();
-  return OrchestratorFinalResponseSchemaV1.parse({
+function responseFromTeamResults(message: InboundChannelMessageV1,
+  teamResults: readonly TeamResultEnvelopeV1[]): OrchestratorFinalResponseV1 {
+  const [teamResult] = teamResults;
+  if (teamResult === undefined) throw new Error('Missing team result for fallback response');
+  const body = responseBody(teamResult);
+  const response = OrchestratorFinalResponseSchemaV1.parse({
     schemaName: 'orchestrator-final-response',
     schemaVersion: 1,
-    responseId: 'response-' + createHash('sha256').update(message.externalMessageId).digest('hex').slice(0, 16),
+    responseId: `response_${Date.now()}`,
     householdId: message.householdId,
     conversationId: message.conversationId,
     body,
-    policyBoundary: fallbackPolicyBoundary(message.body),
-    citations: [{ label: 'orchestrator-response', sourceRef: 'model-output' }],
-    assumptions: ['Structured provider output was unavailable; response envelope was assembled by the runtime.'],
-    freshness: ['current invocation'],
+    policyBoundary: 'personalized_finance',
+    citations: citationsFor(teamResult),
+    assumptions: teamResult.assumptions,
+    freshness: teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
     disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
     unsupportedCapabilities: [],
     recommendationActions: [],
     delivery: {
       channel: message.channel,
-      destination: typeof message.metadata.destination === 'object' && message.metadata.destination !== null
-        ? message.metadata.destination
-        : {},
+      destination: destinationFor(message.channel, message.metadata.destination),
       format: message.channel === 'slack' ? 'mrkdwn' : 'plain_text',
     },
-    responseHash: createHash('sha256').update(body).digest('hex'),
-    createdAt: now,
+    responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
+    createdAt: new Date().toISOString(),
   });
+  return response;
 }
 
-function fallbackBody(candidate: unknown, text: unknown): string {
-  if (typeof candidate === 'object' && candidate !== null) {
-    const record = candidate as Record<string, unknown>;
-    if (typeof record.body === 'string') return record.body;
-    if (typeof record.reply === 'string') return record.reply;
+function responseBody(teamResult: TeamResultEnvelopeV1): string {
+  const heading = `${labelForTeam(teamResult.team)} status: ${teamResult.status}`;
+  const details = [teamResult.completionReason, ...teamResult.outstanding].filter((value) => value.length > 0);
+  return details.length === 0 ? heading : `${heading}\n\n${details.join('\n')}`;
+}
+
+function citationsFor(teamResult: TeamResultEnvelopeV1) {
+  if (teamResult.claims.length === 0) {
+    return [{ label: `${teamResult.team}:team-result`, sourceRef: `team-result:${teamResult.status}` }];
   }
-  return typeof text === 'string' && text.trim().length > 0
-    ? text.trim()
-    : 'I could not produce a response.';
+  return teamResult.claims.map((claim) => ({
+    label: `${teamResult.team}:${claim.claimId}`,
+    artifactId: claim.checkedMakerArtifactIds[0]!,
+  }));
 }
 
-function fallbackPolicyBoundary(body: string): OrchestratorFinalResponseV1['policyBoundary'] {
-  // ponytail: fallback heuristic, replace with checked classifier if unsupported-provider fallback grows.
-  return /\b(execute|trade|payment|transfer|file\s+tax|buy|sell)\b/i.test(body)
-    ? 'unsupported_capability'
-    : 'informational_only';
+function labelForTeam(team: string): string {
+  if (team === 'accounting') return 'Accounting team';
+  if (team === 'query') return 'Query team';
+  return `${team} team`;
+}
+
+function destinationFor(channel: ChannelKindV1, destination: unknown): Record<string, unknown> {
+  if (destination !== null && typeof destination === 'object' && !Array.isArray(destination)) {
+    return destination as Record<string, unknown>;
+  }
+  return channel === 'telegram' ? { chatId: '' } : { channelId: '' };
 }

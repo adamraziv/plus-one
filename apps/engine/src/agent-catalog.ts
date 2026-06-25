@@ -1,6 +1,5 @@
 import type { Agent } from '@mastra/core/agent';
 import {
-  accountingRoles,
   accountingSkills,
   accountingTeamDefinition,
   accountingToolPermissions,
@@ -9,7 +8,6 @@ import {
 } from '@plus-one/accounting';
 import {
   createIngestionRuntimePolicies,
-  ingestionRoles,
   ingestionSkills,
   ingestionToolPermissions,
   registerIngestionAgents,
@@ -50,6 +48,10 @@ import {
   type TeamDefinition,
 } from '@plus-one/runtime';
 import {
+  createAccountingRoleAgents,
+  type AccountingRoleAgentFactory,
+} from './agents/accounting/index.js';
+import {
   createQueryRoleAgents,
   type QueryRoleAgentFactory,
 } from './agents/query/index.js';
@@ -78,6 +80,7 @@ export function createAgentSystem(input: {
   queryTools: RoleAgentTools;
   orchestratorAgent?: Agent;
   queryAgentFactory?: QueryRoleAgentFactory;
+  accountingAgentFactory?: AccountingRoleAgentFactory;
   agentFactory?: (input: {
     agentId: string;
     roleName: string;
@@ -96,8 +99,16 @@ export function createAgentSystem(input: {
     tools: input.queryTools,
     ...(input.queryAgentFactory === undefined ? {} : { agentFactory: input.queryAgentFactory }),
   });
-  const accountingAgents = makeAgents(accountingRoles, input.models, {}, factory);
-  const ingestionAgents = makeAgents(ingestionRoles, input.models, {}, factory);
+  const accountingAgents = createAccountingRoleAgents({
+    models: {
+      lead: input.models.lead,
+      maker: input.models.maker,
+      checker: input.models.checker,
+    },
+    tools: {},
+    ...(input.accountingAgentFactory === undefined ? {} : { agentFactory: input.accountingAgentFactory }),
+  });
+  const ingestionAgents = accountingAgents;
   const planningAgents = makeAgents(planningRoles, input.models, {}, factory);
   const reportingAgents = makeAgents(reportingRoles, input.models, {}, factory, {
     lead: input.models.research,

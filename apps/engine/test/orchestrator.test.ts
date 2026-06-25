@@ -96,7 +96,7 @@ function teamResult() {
 describe('OrchestratorAgent', () => {
   it('lets the orchestrator agent delegate through the existing team lead runtime', async () => {
     const runTeamLead = vi.fn(async (input) => {
-      expect(input.request).toEqual({ businessQuestion: 'List our accounts.' });
+      expect(input.request).toMatchObject({ businessQuestion: 'List our accounts.' });
       return teamResult();
     });
     const generate = vi.fn(async (messages) => {
@@ -205,55 +205,71 @@ describe('OrchestratorAgent', () => {
       .toEqual(['first', 'second']);
   });
 
-  it('falls back to JSON text when native structured output is unavailable', async () => {
-    const response = {
-      schemaName: 'orchestrator-final-response',
-      schemaVersion: 1,
-      responseId: 'response-fallback',
-      householdId,
-      conversationId,
-      body: 'I can help explain household finance workflows.',
-      policyBoundary: 'informational_only',
-      citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-      assumptions: [],
-      freshness: ['current invocation only'],
-      disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-      unsupportedCapabilities: [],
-      recommendationActions: [],
-      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-      responseHash: 'd'.repeat(64),
-      createdAt: now,
-    };
-    const generate = vi.fn()
-      .mockRejectedValueOnce(new Error('structured output unavailable'))
-      .mockResolvedValueOnce({ text: JSON.stringify(response) });
+  it('uses structured output for custom provider endpoints', async () => {
+    const generate = vi.fn(async () => ({
+      object: OrchestratorFinalResponseSchemaV1.parse({
+        schemaName: 'orchestrator-final-response',
+        schemaVersion: 1,
+        responseId: 'response-structured',
+        householdId,
+        conversationId,
+        body: 'Structured response.',
+        policyBoundary: 'informational_only',
+        citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+        assumptions: [],
+        freshness: ['current invocation only'],
+        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+        unsupportedCapabilities: [],
+        recommendationActions: [],
+        delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+        responseHash: 'd'.repeat(64),
+        createdAt: now,
+      }),
+    }));
     const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://api.openai.com/v1', apiKey: 'test-api-key' },
+      model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
       teamRuntime: { runTeamLead: vi.fn() },
     });
 
-    await expect(orchestrator.run({ message: message('What can you help with?') }))
-      .resolves.toMatchObject({ responseId: 'response-fallback' });
-    expect(generate).toHaveBeenCalledTimes(2);
+    await expect(orchestrator.run({ message: message('add $10 of buying a burger') }))
+      .resolves.toMatchObject({ body: 'Structured response.' });
+    expect(generate).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      structuredOutput: expect.objectContaining({ schema: OrchestratorFinalResponseSchemaV1 }),
+    }));
   });
 
-  it('wraps non-contract fallback output in an orchestrator response envelope', async () => {
-    const generate = vi.fn().mockResolvedValueOnce({ text: '{"reply":"I cannot execute trades for you."}' });
+  it('fails instead of wrapping non-contract model output', async () => {
+    const generate = vi.fn(async () => ({ text: 'I recorded it.' }));
     const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
       teamRuntime: { runTeamLead: vi.fn() },
     });
 
-    await expect(orchestrator.run({ message: message('Can you execute a stock trade?') }))
-      .resolves.toMatchObject({
-        body: 'I cannot execute trades for you.',
-        policyBoundary: 'unsupported_capability',
-      });
+    await expect(orchestrator.run({ message: message('add $10 of buying a burger') }))
+      .rejects.toThrow();
     expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects non-canonical delegate tool input before team execution', async () => {
+    const runTeamLead = vi.fn();
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate: vi.fn() }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const execute = orchestrator.agentTools.delegateTeam.execute as unknown as (
+      input: unknown,
+      options: unknown,
+    ) => Promise<unknown>;
+    await expect(execute({ team: 'Query Team', request: 'test' }, {})).resolves.toMatchObject({ error: true });
+    await expect(execute({ team: 'query', request: '\"test\"' }, {})).resolves.toMatchObject({ error: true });
+    expect(runTeamLead).not.toHaveBeenCalled();
   });
 });
 

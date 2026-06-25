@@ -94,6 +94,7 @@ export class RoleContextBuilder {
           + ' sha256:' + skill.identity.contentHash + '.',
         'Selected skill guidance: ' + skill.content,
         ...skill.makerInstructions,
+        'The inner MakerArtifactV1.output must be a complete schema-valid V1 object with its own schemaName and schemaVersion; never return shorthand domain objects.',
         'Do not claim access to evidence or tools absent from the typed invocation.',
       ].join('\n'),
       messages: [{ role: 'user', content: JSON.stringify(invocation) }],

@@ -11,16 +11,21 @@ const models = {
 
 describe('engine agent catalog', () => {
   it('registers every in-scope team role and keeps checkers memory-disabled', () => {
-    const created: string[] = [];
+    const genericCreated: string[] = [];
     const queryCreated: string[] = [];
+    const accountingCreated: string[] = [];
     const system = createAgentSystem({
       models,
       agentFactory: ({ agentId }) => {
-        created.push(agentId);
+        genericCreated.push(agentId);
         return { generate: vi.fn() } as unknown as Agent;
       },
       queryAgentFactory: (config) => {
         queryCreated.push(String(config.id));
+        return { generate: vi.fn() } as unknown as Agent;
+      },
+      accountingAgentFactory: (config) => {
+        accountingCreated.push(String(config.id));
         return { generate: vi.fn() } as unknown as Agent;
       },
       queryTools: {},
@@ -30,7 +35,7 @@ describe('engine agent catalog', () => {
       team.lead,
       ...team.workCells.flatMap((cell) => [cell.maker, cell.checker]),
     ]).map((role) => role.agentId));
-    expect(new Set([...created, ...queryCreated]).size).toBe(uniqueRoleIds.size);
+    expect(new Set([...genericCreated, ...queryCreated, ...accountingCreated]).size).toBe(uniqueRoleIds.size);
     expect(queryCreated.sort()).toEqual([
       'analyst-checker',
       'analyst-maker',
@@ -38,6 +43,20 @@ describe('engine agent catalog', () => {
       'query-lead',
       'query-maker',
     ]);
+    expect(accountingCreated.sort()).toEqual([
+      'accounting-lead',
+      'chart-checker',
+      'chart-maker',
+      'ingestion-checker',
+      'ingestion-maker',
+      'journal-checker',
+      'journal-maker',
+      'reconciliation-checker',
+      'reconciliation-maker',
+      'transaction-capture-checker',
+      'transaction-capture-maker',
+    ]);
+    expect(genericCreated).not.toEqual(expect.arrayContaining(accountingCreated));
     expect(system.teams.map((team) => team.team).sort()).toEqual([
       'accounting',
       'budgeting',
