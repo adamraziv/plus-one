@@ -1,11 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { QueryResultSchemaV1 } from '@plus-one/contracts';
 import { QueryToolRegistry, ReadOnlySqlValidator } from '@plus-one/query';
 import { createAnalystSandboxTool } from '@plus-one/runtime';
 import { createRoleAgent, toMastraModel } from '../src/mastra/role-agent.js';
 import { createQueryTools } from '../src/tools/query.js';
 
 describe('engine Mastra helper', () => {
-  it('creates Query tools with permission ids used by the Query Team definition', () => {
+  it('creates Query tools with permission ids used by the Query Team definition', async () => {
     const registry = new QueryToolRegistry({
       allowedRelations: ['reporting.accounts'],
       maxRows: 100,
@@ -20,25 +21,38 @@ describe('engine Mastra helper', () => {
       description: 'List accounts.',
     });
 
+    const runTool = vi.fn(async (_toolName: string, parameters: readonly unknown[]) => {
+      void parameters;
+      return QueryResultSchemaV1.parse({
+        schemaName: 'query-result',
+        schemaVersion: 1,
+        relationName: 'reporting.accounts',
+        grain: ['household', 'account'],
+        rows: [],
+        fieldDefinitions: ['account_id'],
+        sourceReferences: ['relation=reporting.accounts'],
+        freshness: 'fresh',
+        coverageWarnings: [],
+      });
+    });
     const tools = createQueryTools({
       registry,
-      withEvidenceHandle: async (work) => work({
-        runTool: async () => ({
-          schemaName: 'query-result',
-          schemaVersion: 1,
-          relationName: 'reporting.accounts',
-          grain: ['household', 'account'],
-          rows: [],
-          fieldDefinitions: ['account_id'],
-          sourceReferences: ['relation=reporting.accounts'],
-          freshness: 'fresh',
-          coverageWarnings: [],
-        }),
-      }),
+      withEvidenceHandle: async (work) => work({ runTool }),
       analystSandboxTool: createAnalystSandboxTool(),
     });
 
-    expect(Object.keys(tools).sort()).toEqual(['query.account_list', 'query.analyst_sandbox']);
+    expect(Object.keys(tools).sort()).toEqual(['query_account_list', 'query_analyst_sandbox']);
+    const accountList = tools.query_account_list as unknown as {
+      execute: (input: unknown, options: unknown) => Promise<unknown>;
+    };
+    await accountList.execute({
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    }, {});
+
+    expect(runTool).toHaveBeenCalledWith(
+      'account_list',
+      ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K'],
+    );
   });
 
   it('creates a generic non-Query Mastra role agent with code-owned instructions', () => {

@@ -109,6 +109,7 @@ export class TeamExecutor {
         assertMakerOutputSchemaIdentity(makerOutput.outputSchema,
           input.workCell.outputSchemaIdentity);
         input.workCell.makerOutputSchema.parse(makerOutput.output);
+        assertMakerClaimsUsePermittedEvidence(makerOutput, input.permittedEvidence, input.taskId);
       } catch (error) {
         if (error instanceof PlusOneError && error.code === 'agent_call_cancelled') {
           await this.dependencies.runtime.fail({ householdId: input.householdId, taskId: input.taskId,
@@ -136,6 +137,7 @@ export class TeamExecutor {
           schemaName: 'verification-task', schemaVersion: 1,
           householdId: input.householdId, taskId: input.taskId,
           checkerRole: input.workCell.checker.identity, makerArtifact,
+          makerInput: input.makerInput,
           permittedEvidence: input.permittedEvidence, selectedSkill: input.selectedSkill,
           rubric: input.workCell.checkerRubric, policyLabels: input.policyLabels,
           requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
@@ -242,4 +244,23 @@ export class TeamExecutor {
     return { status: 'failed', reason: 'The checker rejected the artifact or revision attempts were exhausted.',
       outstanding: verdict.findings.map((finding) => finding.message) };
   }
+}
+
+function assertMakerClaimsUsePermittedEvidence(
+  makerOutput: MakerArtifactV1,
+  permittedEvidence: readonly ArtifactEnvelopeV1[],
+  taskId: string,
+): void {
+  const permitted = new Set(permittedEvidence.map((artifact) => artifact.artifactId));
+  const invalid = makerOutput.claims.flatMap((claim) =>
+    claim.evidenceArtifactIds.filter((artifactId) => !permitted.has(artifactId)));
+  if (invalid.length === 0) return;
+  throw new PlusOneError({
+    category: 'validation_rejected',
+    code: 'maker_claim_evidence_not_permitted',
+    message: 'Maker claim references evidence outside permittedEvidence',
+    retry: 'safe',
+    receiptLookupRequired: false,
+    details: { taskId, artifactIds: [...new Set(invalid)].join(',') },
+  });
 }

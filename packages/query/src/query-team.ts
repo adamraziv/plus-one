@@ -30,14 +30,14 @@ export const queryRoles = [
 export const queryToolPermissions = [
   { team: 'query', roleName: 'query-lead', roleVersion: 1, toolIds: [] as const },
   { team: 'query', roleName: 'query-maker', roleVersion: 1,
-    toolIds: ['query.account_list', 'query.current_balances', 'query.categorized_transactions',
-      'query.budget_variance', 'query.savings_goal_progress', 'query.debt_progress',
-      'query.reconciliation_status', 'query.source_freshness'] },
+    toolIds: ['query_account_list', 'query_current_balances', 'query_categorized_transactions',
+      'query_budget_variance', 'query_savings_goal_progress', 'query_debt_progress',
+      'query_reconciliation_status', 'query_source_freshness'] },
   { team: 'query', roleName: 'query-checker', roleVersion: 1, toolIds: [] as const },
   { team: 'query', roleName: 'analyst-maker', roleVersion: 1,
-    toolIds: ['query.analyst_sandbox'] as const },
+    toolIds: ['query_analyst_sandbox'] as const },
   { team: 'query', roleName: 'analyst-checker', roleVersion: 1,
-    toolIds: ['query.analyst_sandbox'] as const },
+    toolIds: ['query_analyst_sandbox'] as const },
 ] as const;
 
 function evaluateQueryStopCondition({ maker, verdict }: {

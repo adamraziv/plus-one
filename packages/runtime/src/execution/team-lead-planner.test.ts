@@ -116,7 +116,7 @@ describe('TeamLeadPlanner', () => {
       }]),
       tools: new ToolPermissionRegistry([
         { team: 'query', roleName: 'query-lead', roleVersion: 1, toolIds: [] },
-        { team: 'query', roleName: 'query-maker', roleVersion: 1, toolIds: ['query.account_list'] },
+        { team: 'query', roleName: 'query-maker', roleVersion: 1, toolIds: ['query_account_list'] },
       ]),
     });
     const planner = new TeamLeadPlanner({

@@ -12,7 +12,7 @@ export function splitQueryRoleTools(tools: RoleAgentTools, role: QueryRoleToolSu
   const entries = Object.entries(tools as Record<string, unknown>);
   if (role === 'query-maker') {
     return Object.fromEntries(entries.filter(([toolId]) =>
-      toolId.startsWith('query.') && toolId !== analystSandboxToolId)) as RoleAgentTools;
+      toolId.startsWith('query_') && toolId !== analystSandboxToolId)) as RoleAgentTools;
   }
   if (role === 'analyst-maker' || role === 'analyst-checker') {
     return Object.fromEntries(entries.filter(([toolId]) => toolId === analystSandboxToolId)) as RoleAgentTools;

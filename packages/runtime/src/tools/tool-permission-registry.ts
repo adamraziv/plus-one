@@ -1,5 +1,7 @@
 import { PlusOneError } from '@plus-one/contracts';
 
+const ProviderToolIdSchema = /^[A-Za-z0-9_-]{1,64}$/;
+
 export interface ToolPermissionRegistration {
   team: string;
   roleName: string;
@@ -13,11 +15,26 @@ export interface ToolPermissionQuery {
   roleVersion: number;
 }
 
+export function assertProviderToolId(toolId: string): void {
+  if (ProviderToolIdSchema.test(toolId)) return;
+  throw new PlusOneError({
+    category: 'validation_rejected',
+    code: 'provider_tool_id_invalid',
+    message: 'Tool id must contain only letters, numbers, underscores, or dashes and be 1-64 characters long',
+    retry: 'never',
+    receiptLookupRequired: false,
+    details: { toolId },
+  });
+}
+
 export class ToolPermissionRegistry {
   private readonly registrations = new Map<string, ToolPermissionRegistration>();
 
   constructor(initial: readonly ToolPermissionRegistration[] = []) {
     for (const registration of initial) {
+      for (const toolId of registration.toolIds) {
+        assertProviderToolId(toolId);
+      }
       const key = this.key(registration);
       if (this.registrations.has(key)) {
         throw new PlusOneError({ category: 'policy_rejected', code: 'duplicate_tool_permission',

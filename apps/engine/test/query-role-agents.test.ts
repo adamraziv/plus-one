@@ -10,8 +10,8 @@ const models = {
 };
 
 const tools = {
-  'query.account_list': { execute: vi.fn() } as never,
-  'query.current_balances': { execute: vi.fn() } as never,
+  'query_account_list': { execute: vi.fn() } as never,
+  'query_current_balances': { execute: vi.fn() } as never,
   [analystSandboxToolId]: { execute: vi.fn() } as never,
 };
 
@@ -19,8 +19,8 @@ describe('Query Mastra role agents', () => {
   it('splits Query tools by role instead of giving every Query agent every tool', () => {
     expect(Object.keys(splitQueryRoleTools(tools, 'lead'))).toEqual([]);
     expect(Object.keys(splitQueryRoleTools(tools, 'query-maker')).sort()).toEqual([
-      'query.account_list',
-      'query.current_balances',
+      'query_account_list',
+      'query_current_balances',
     ]);
     expect(Object.keys(splitQueryRoleTools(tools, 'query-checker'))).toEqual([]);
     expect(Object.keys(splitQueryRoleTools(tools, 'analyst-maker'))).toEqual([analystSandboxToolId]);
@@ -68,10 +68,18 @@ describe('Query Mastra role agents', () => {
       },
       tools: {},
     });
-    expect(String(configs.find((config) => config.id === 'query-lead')?.instructions))
-      .toContain('select the correct Query work cell');
+    const queryLeadInstructions = String(configs.find((config) => config.id === 'query-lead')?.instructions);
+    expect(queryLeadInstructions).toContain('select the correct Query work cell');
+    expect(queryLeadInstructions).toContain('single-maker-checker');
+    expect(queryLeadInstructions).toContain('query-answer');
     expect(Object.keys(configs.find((config) => config.id === 'query-maker')?.tools ?? {}).sort())
-      .toEqual(['query.account_list', 'query.current_balances']);
+      .toEqual(['query_account_list', 'query_current_balances']);
+    const queryMakerInstructions = String(configs.find((config) => config.id === 'query-maker')?.instructions);
+    expect(queryMakerInstructions).toContain('householdId');
+    expect(queryMakerInstructions).toContain('evidenceArtifactIds must be empty when permittedEvidence is empty');
+    const queryCheckerInstructions = String(configs.find((config) => config.id === 'query-checker')?.instructions);
+    expect(queryCheckerInstructions).toContain('filter=household_id:eq:<id>');
+    expect(queryCheckerInstructions).toContain('VerificationTaskV1.makerInput');
     expect(Object.keys(configs.find((config) => config.id === 'query-checker')?.tools ?? {}))
       .toEqual([]);
     expect(Object.keys(configs.find((config) => config.id === 'analyst-maker')?.tools ?? {}))

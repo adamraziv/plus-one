@@ -80,7 +80,7 @@ describe('engine scaffold', () => {
   });
 
   it('passes configured Query tools into the agent system', async () => {
-    const queryTools = { 'query.account_list': {} };
+    const queryTools = { query_account_list: {} };
     const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: {} }) as never);
 
     await bootstrap({
@@ -126,7 +126,7 @@ describe('engine scaffold', () => {
       environment: production,
       validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
-      queryTools: { 'query.account_list': {} },
+      queryTools: { query_account_list: {} },
     })).rejects.toThrow('Production bootstrap requires a configured orchestrator agent.');
   });
 

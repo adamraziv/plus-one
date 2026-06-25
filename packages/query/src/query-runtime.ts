@@ -32,11 +32,15 @@ export const querySkills = [
     allowedRoles: ['query-maker', 'query-checker'],
     makerInstructions: [
       'Use only active query tools exposed in the invocation context.',
+      'For a read request with active query tools, you must call exactly one matching active query tool before returning MakerArtifactV1.',
+      'When permittedEvidence is empty, MakerArtifactV1.claims[].evidenceArtifactIds must be [] exactly; never invent evidence_* or artifact_* ids for tool outputs.',
       'Return QueryResultSchemaV1 through MakerArtifactSchemaV1.output.',
       'Cite reporting relations in sourceReferences.',
     ],
     checkerRubric: [
       'Verify relation, household filter, grain, freshness, field definitions, and provenance.',
+      'Use verificationTask.makerInput as the original typed request context for request-specific checks.',
+      'Treat sourceReferences entries like filter=household_id:eq:<id> as household-scope provenance for filtered read results.',
       'Reject outputs with unresolved coverage warnings for verified results.',
     ],
   }),

@@ -69,7 +69,7 @@ describe('team execution contracts', () => {
     const parsed = VerificationTaskSchemaV1.parse({
       schemaName: 'verification-task', schemaVersion: 1, ...identity,
       checkerRole: { roleName: 'query-checker', roleVersion: 1 },
-      makerArtifact, permittedEvidence: [], selectedSkill: skill,
+      makerArtifact, makerInput: { question: 'What is the value?' }, permittedEvidence: [], selectedSkill: skill,
       rubric: { rubricName: 'lookup-rubric', rubricVersion: 1, instructions: ['Check the evidence and claim.'] },
       policyLabels: ['financial-data'],
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },

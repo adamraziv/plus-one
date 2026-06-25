@@ -11,7 +11,7 @@ const skill = createSkillRegistration({
 });
 
 const tools = new ToolPermissionRegistry([
-  { team: 'query', roleName: 'query-maker', roleVersion: 1, toolIds: ['web.lookup'] },
+  { team: 'query', roleName: 'query-maker', roleVersion: 1, toolIds: ['web_lookup'] },
   { team: 'query', roleName: 'query-checker', roleVersion: 1, toolIds: [] },
   { team: 'query', roleName: 'query-lead', roleVersion: 1, toolIds: [] },
 ]);
@@ -68,7 +68,7 @@ describe('RoleContextBuilder', () => {
       selectedSkill: skill.identity, invocation,
     });
     expect(context.systemPrompt).toContain('query-maker -> query-checker');
-    expect(context.systemPrompt).toContain('web.lookup');
+    expect(context.systemPrompt).toContain('web_lookup');
     expect(context.systemPrompt).toContain(skill.identity.contentHash);
   });
 

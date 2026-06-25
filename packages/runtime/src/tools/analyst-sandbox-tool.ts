@@ -7,7 +7,7 @@ import {
 import { ulid } from 'ulid';
 import { z } from 'zod';
 
-export const analystSandboxToolId = 'query.analyst_sandbox';
+export const analystSandboxToolId = 'query_analyst_sandbox';
 
 const AnalystSandboxInputSchema = z.object({
   pythonSource: z.string().min(1).max(20_000),

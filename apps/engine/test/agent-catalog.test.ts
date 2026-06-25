@@ -86,7 +86,7 @@ describe('engine agent catalog', () => {
     });
 
     expect(system.tools.resolve({ team: 'query', roleName: 'query-maker', roleVersion: 1 }))
-      .toEqual(expect.arrayContaining(['query.account_list']));
+      .toEqual(expect.arrayContaining(['query_account_list']));
     expect(system.tools.resolve({ team: 'accounting', roleName: 'journal-maker', roleVersion: 1 }))
       .toEqual([]);
     expect(system.tools.resolve({ team: 'budgeting', roleName: 'budget-maker', roleVersion: 1 }))

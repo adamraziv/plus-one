@@ -90,8 +90,10 @@ describe('Accounting Mastra role agents', () => {
       expect(instructions).toContain('Do not access databases, SQL, command handlers, command registries, provider accounts, external financial systems, arbitrary files, or unavailable tools.');
       expect(instructions).toContain('Return only');
     }
-    expect(String(configs.find((config) => config.id === 'accounting-lead')?.instructions))
-      .toContain('transaction_capture -> transaction-capture');
+    const accountingLeadInstructions = String(configs.find((config) => config.id === 'accounting-lead')?.instructions);
+    expect(accountingLeadInstructions).toContain('transaction_capture -> transaction-capture');
+    expect(accountingLeadInstructions).toContain('single-maker-checker');
+    expect(accountingLeadInstructions).toContain('checked-transaction-capture');
     expect(String(configs.find((config) => config.id === 'transaction-capture-maker')?.instructions))
       .toContain('accounting-clarification');
     expect(String(configs.find((config) => config.id === 'ingestion-maker')?.instructions))

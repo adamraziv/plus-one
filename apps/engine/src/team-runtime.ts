@@ -12,6 +12,7 @@ import {
 } from '@plus-one/accounting';
 import {
   PlusOneError,
+  EvidenceRequestSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
 } from '@plus-one/contracts';
@@ -87,7 +88,9 @@ export function createTeamRuntime(input: {
       const leadPolicy = input.agentSystem.policies.resolve(runtimeInput.team.lead.runtimePolicy);
       const request = runtimeInput.team.team === 'accounting'
         ? await normalizeAccountingLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
-        : runtimeInput.request;
+        : runtimeInput.team.team === 'query'
+          ? normalizeQueryLeadRequest(runtimeInput.message, runtimeInput.request)
+          : runtimeInput.request;
       await runtime.createTask({
         householdId: runtimeInput.message.householdId,
         taskId: leadTaskId,
@@ -107,7 +110,7 @@ export function createTeamRuntime(input: {
       const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
         householdId: runtimeInput.message.householdId,
         parentTaskId: leadTaskId,
-        makerInput: item.makerInput,
+        makerInput: makerInputForLeadWorkItem(runtimeInput.team, item.workCellId, item.makerInput, request),
         stopCondition: plan.stopCondition,
         strategyName: plan.recommendedStrategyName,
         abortSignal: runtimeInput.signal,
@@ -153,6 +156,47 @@ export async function normalizeAccountingLeadRequest(
     }),
   });
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
+}
+
+export function normalizeQueryLeadRequest(
+  message: InboundChannelMessageV1,
+  request: JsonValue,
+): JsonValue {
+  const parsed = EvidenceRequestSchemaV1.safeParse(request);
+  if (parsed.success) return JSON.parse(JSON.stringify(parsed.data)) as JsonValue;
+
+  const businessQuestion = queryBusinessQuestion(message, request);
+  if (!isAccountListQuestion(businessQuestion)) return request;
+
+  const date = message.receivedAt.slice(0, 10);
+  return JSON.parse(JSON.stringify(EvidenceRequestSchemaV1.parse({
+    schemaName: 'evidence-request',
+    schemaVersion: 1,
+    householdId: message.householdId,
+    requestId: nextId('evidence'),
+    businessQuestion,
+    intendedUse: 'household_finance_answer',
+    timeframe: { start: date, end: date },
+    desiredGrain: ['household', 'account'],
+    filters: [],
+    requiredFreshness: 'latest available reporting projection',
+    requiredCalculations: [],
+    coverage: ['account list'],
+  }))) as JsonValue;
+}
+
+export function makerInputForLeadWorkItem(
+  team: TeamDefinition,
+  workCellId: string,
+  planMakerInput: JsonValue,
+  normalizedRequest: JsonValue,
+): JsonValue {
+  if (team.team === 'query'
+    && workCellId === 'query-evidence'
+    && EvidenceRequestSchemaV1.safeParse(normalizedRequest).success) {
+    return normalizedRequest;
+  }
+  return planMakerInput;
 }
 
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {
@@ -203,6 +247,22 @@ function currencyFrom(body: string, request: AccountingLeadRequestV1): string | 
     if (typeof currency === 'string' && currency.length > 0) return currency;
   }
   return body.includes('$') ? 'USD' : undefined;
+}
+
+function queryBusinessQuestion(message: InboundChannelMessageV1, request: JsonValue): string {
+  if (typeof request === 'object' && request !== null && !Array.isArray(request)) {
+    const businessQuestion = request.businessQuestion;
+    if (typeof businessQuestion === 'string' && businessQuestion.trim().length > 0) {
+      return businessQuestion.trim();
+    }
+  }
+  return message.body.trim();
+}
+
+function isAccountListQuestion(question: string): boolean {
+  const normalized = question.trim().toLowerCase();
+  return /(?:^|\b)(list|show|what|which)\b[\s\w]*\baccounts?\b/.test(normalized)
+    && !/\bbalances?\b/.test(normalized);
 }
 
 function workInputFor(
@@ -257,7 +317,7 @@ function findSkill(predicate: (skill: SkillRegistration) => boolean): SkillRegis
   return skill;
 }
 
-function nextId(prefix: 'artifact' | 'run' | 'task'): string {
+function nextId(prefix: 'artifact' | 'evidence' | 'run' | 'task'): string {
   return `${prefix}_${ulid()}`;
 }
 
