@@ -96,6 +96,32 @@ describe('engine scaffold', () => {
     expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ queryTools }));
   });
 
+  it('builds the spec query toolset by default when no Query tools are injected', async () => {
+    const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: {} }) as never);
+
+    await bootstrap({
+      environment,
+      validateModels: vi.fn(async () => undefined),
+      verifyPools: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance,
+    });
+
+    expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({
+      queryTools: expect.objectContaining({
+        query_account_list: expect.any(Object),
+        query_current_balances: expect.any(Object),
+        query_categorized_transactions: expect.any(Object),
+        query_budget_variance: expect.any(Object),
+        query_savings_goal_progress: expect.any(Object),
+        query_debt_progress: expect.any(Object),
+        query_reconciliation_status: expect.any(Object),
+        query_source_freshness: expect.any(Object),
+        query_analyst_sandbox: expect.any(Object),
+      }),
+    }));
+  });
+
   it('passes a configured orchestrator agent into the agent system', async () => {
     const orchestratorAgent = { generate: vi.fn() };
     const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: { orchestrator: orchestratorAgent } }) as never);
@@ -113,20 +139,13 @@ describe('engine scaffold', () => {
     expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent }));
   });
 
-  it('does not production-bootstrap without Query tools and an orchestrator agent', async () => {
+  it('does not production-bootstrap without an orchestrator agent', async () => {
     const production = { ...environment, NODE_ENV: 'production', LLM_API_KEY: 'test-api-key' };
 
     await expect(bootstrap({
       environment: production,
       validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
-    })).rejects.toThrow('Production bootstrap requires configured Query tools.');
-
-    await expect(bootstrap({
-      environment: production,
-      validateModels: vi.fn(async () => undefined),
-      createPools: () => ({} as never),
-      queryTools: { query_account_list: {} },
     })).rejects.toThrow('Production bootstrap requires a configured orchestrator agent.');
   });
 
