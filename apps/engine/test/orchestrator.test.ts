@@ -4,6 +4,7 @@ import {
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV1,
+  type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
@@ -90,6 +91,27 @@ function teamResult() {
     stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     completionReason: 'Ready for orchestrator reconciliation.',
     outstanding: [],
+  });
+}
+
+function finalResponse(body = 'Structured response.'): OrchestratorFinalResponseV1 {
+  return OrchestratorFinalResponseSchemaV1.parse({
+    schemaName: 'orchestrator-final-response',
+    schemaVersion: 1,
+    responseId: 'response-structured',
+    householdId,
+    conversationId,
+    body,
+    policyBoundary: 'informational_only',
+    citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+    assumptions: [],
+    freshness: ['current invocation only'],
+    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+    unsupportedCapabilities: [],
+    recommendationActions: [],
+    delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+    responseHash: 'd'.repeat(64),
+    createdAt: now,
   });
 }
 
@@ -205,53 +227,115 @@ describe('OrchestratorAgent', () => {
       .toEqual(['first', 'second']);
   });
 
-  it('uses structured output for custom provider endpoints', async () => {
-    const generate = vi.fn(async () => ({
-      object: OrchestratorFinalResponseSchemaV1.parse({
-        schemaName: 'orchestrator-final-response',
-        schemaVersion: 1,
-        responseId: 'response-structured',
-        householdId,
-        conversationId,
-        body: 'Structured response.',
-        policyBoundary: 'informational_only',
-        citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-        delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-        responseHash: 'd'.repeat(64),
-        createdAt: now,
-      }),
-    }));
+  it('keeps final schema off the reasoning agent and uses a no-tools finalizer', async () => {
+    const mainGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
+      expect(options).toEqual({});
+      return { text: 'Plus One can help with household finance questions.' };
+    });
+    const finalizerGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
+      expect(options).toMatchObject({
+        structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
+        toolChoice: 'none',
+      });
+      return {
+        object: {
+          body: 'Plus One can help with household finance questions.',
+          policyBoundary: 'informational_only',
+          citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+          assumptions: [],
+          freshness: ['current invocation only'],
+          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+          unsupportedCapabilities: [],
+          recommendationActions: [],
+        },
+      };
+    });
+    const configs: Array<{ id?: string; tools: Record<string, unknown> | undefined }> = [];
     const orchestrator = new OrchestratorAgent({
       model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate }) as never,
+      agentFactory: (config) => {
+        configs.push({ id: config.id, tools: config.tools as Record<string, unknown> | undefined });
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
       teams: [queryTeam],
       teamRuntime: { runTeamLead: vi.fn() },
     });
 
-    await expect(orchestrator.run({ message: message('add $10 of buying a burger') }))
-      .resolves.toMatchObject({ body: 'Structured response.' });
-    expect(generate).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
-      structuredOutput: expect.objectContaining({ schema: OrchestratorFinalResponseSchemaV1 }),
-    }));
+    await expect(orchestrator.run({ message: message('What can you do?') }))
+      .resolves.toMatchObject({ body: 'Plus One can help with household finance questions.' });
+    expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
+    expect(configs).toEqual([
+      expect.objectContaining({ id: 'orchestrator', tools: expect.any(Object) }),
+      expect.objectContaining({ id: 'orchestrator-finalizer', tools: {} }),
+    ]);
   });
 
-  it('fails instead of wrapping non-contract model output', async () => {
-    const generate = vi.fn(async () => ({ text: 'I recorded it.' }));
+  it('uses checked team results when a reasoning model returns prose plus fenced JSON after delegation', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const mainGenerate = vi.fn(async () => {
+      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: { businessQuestion: 'List our accounts.' },
+      });
+      return {
+        text: [
+          'Here is the answer.',
+          '```json',
+          JSON.stringify(finalResponse(result.claims[0]!.text)),
+          '```',
+        ].join('\n'),
+      };
+    });
+    const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({
+        ...config,
+        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+          ? finalizerGenerate
+          : mainGenerate,
+      }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
+    expect(runTeamLead).toHaveBeenCalledTimes(1);
+    expect(response).toMatchObject({
+      schemaName: 'orchestrator-final-response',
+      body: expect.stringContaining('Ready for orchestrator reconciliation.'),
+      citations: [{ label: 'query:accounts-listed', artifactId }],
+    });
+  });
+
+  it('fails instead of wrapping invalid no-team model output as plain text', async () => {
+    const mainGenerate = vi.fn(async () => ({ text: 'I recorded it.' }));
+    const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));
     const orchestrator = new OrchestratorAgent({
       model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate }) as never,
+      agentFactory: (config) => ({
+        ...config,
+        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+          ? finalizerGenerate
+          : mainGenerate,
+      }) as never,
       teams: [queryTeam],
       teamRuntime: { runTeamLead: vi.fn() },
     });
 
-    await expect(orchestrator.run({ message: message('add $10 of buying a burger') }))
+    await expect(orchestrator.run({ message: message('What can you do?') }))
       .rejects.toThrow();
-    expect(generate).toHaveBeenCalledTimes(1);
+    expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
   });
 
   it('rejects non-canonical delegate tool input before team execution', async () => {
