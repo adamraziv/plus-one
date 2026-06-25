@@ -250,7 +250,7 @@ describe('OrchestratorAgent', () => {
         },
       };
     });
-    const configs: Array<{ id?: string; tools?: Record<string, unknown> }> = [];
+    const configs: Array<{ id?: string; tools: Record<string, unknown> | undefined }> = [];
     const orchestrator = new OrchestratorAgent({
       model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
       agentFactory: (config) => {
