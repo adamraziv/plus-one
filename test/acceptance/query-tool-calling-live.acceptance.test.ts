@@ -36,8 +36,8 @@ describe('live Mastra adapter tool calling', () => {
     const tools = createQueryTools({
       registry,
       withEvidenceHandle: async (work) => work({
-        runTool: async () => {
-          hits.push(toolId);
+        runTool: async (_toolName, parameters) => {
+          hits.push(`${toolId}:${JSON.stringify(parameters)}`);
           return QueryResultSchemaV1.parse({
             schemaName: 'query-result',
             schemaVersion: 1,
@@ -74,8 +74,9 @@ describe('live Mastra adapter tool calling', () => {
       modelId: config.models.maker.id,
       roleKind: 'maker',
       systemPrompt: [
-        'You have exactly one active tool.',
+        'You have exactly one active Query tool.',
         'You must call that active tool before answering.',
+        'Call it with this exact input JSON: {"householdId":"hh_01JNZQ4A9B8C7D6E5F4G3H2J1K"}.',
         'After the tool call, answer with a non-empty string inside the output schema.',
       ].join('\n'),
       messages: [{ role: 'user', content: 'Use the active tool, then answer.' }],
@@ -93,7 +94,7 @@ describe('live Mastra adapter tool calling', () => {
       abortSignal: AbortSignal.timeout(60_000),
     });
 
-    expect(hits).toEqual([toolId]);
+    expect(hits).toEqual([`${toolId}:[\"hh_01JNZQ4A9B8C7D6E5F4G3H2J1K\"]`]);
     expect(result.answer.length).toBeGreaterThan(0);
   });
 });
