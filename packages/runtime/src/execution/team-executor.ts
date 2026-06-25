@@ -137,6 +137,7 @@ export class TeamExecutor {
           schemaName: 'verification-task', schemaVersion: 1,
           householdId: input.householdId, taskId: input.taskId,
           checkerRole: input.workCell.checker.identity, makerArtifact,
+          makerInput: input.makerInput,
           permittedEvidence: input.permittedEvidence, selectedSkill: input.selectedSkill,
           rubric: input.workCell.checkerRubric, policyLabels: input.policyLabels,
           requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },

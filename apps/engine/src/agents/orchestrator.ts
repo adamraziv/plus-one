@@ -5,10 +5,11 @@ import { z } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
-  type TeamResultEnvelopeV1,
   type ChannelKindV1,
   type InboundChannelMessageV1,
+  type JsonValue,
   type OrchestratorFinalResponseV1,
+  type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
@@ -123,9 +124,9 @@ export class OrchestratorAgent {
       ].join('\n');
       try {
         const result = await this.agent.generate(prompt, {});
-        const requiredTeam = requiredTeamForMessage(message);
-        if (requiredTeam !== undefined && invocation.teamResults.length === 0) {
-          await this.delegateRequiredTeam(message, requiredTeam, signal);
+        const requiredDelegation = requiredTeamForMessage(message);
+        if (requiredDelegation !== undefined && invocation.teamResults.length === 0) {
+          await this.delegateRequiredTeam(message, requiredDelegation, signal);
           return responseFromTeamResults(message, invocation.teamResults);
         }
         const direct = parseFinalResponse(result.object);
@@ -140,15 +141,15 @@ export class OrchestratorAgent {
 
   private async delegateRequiredTeam(
     message: InboundChannelMessageV1,
-    teamId: 'query',
+    requiredDelegation: RequiredDelegation,
     signal: AbortSignal,
   ): Promise<void> {
-    const team = this.teams.get(teamId);
-    if (team === undefined) throw new Error(`Unknown team: ${teamId}`);
+    const team = this.teams.get(requiredDelegation.teamId);
+    if (team === undefined) throw new Error(`Unknown team: ${requiredDelegation.teamId}`);
     await this.teamRuntime.runTeamLead({
       message,
       team,
-      request: { businessQuestion: message.body },
+      request: requiredDelegation.request,
       signal,
     });
   }
@@ -171,7 +172,7 @@ export class OrchestratorAgent {
         toolChoice: 'none',
       });
       const draft = OrchestratorResponseDraftSchema.parse(result.object ?? parseJsonObject(result.text));
-      return responseFromDraft(message, draft);
+      return responseFromDraft(message, draft, teamResults);
     } catch (error) {
       if (teamResults.length === 0) throw error;
       return responseFromTeamResults(message, teamResults);
@@ -226,6 +227,7 @@ function responseFromTeamResults(message: InboundChannelMessageV1,
 function responseFromDraft(
   message: InboundChannelMessageV1,
   draft: OrchestratorResponseDraft,
+  teamResults: readonly TeamResultEnvelopeV1[] = [],
 ): OrchestratorFinalResponseV1 {
   const body = draft.body;
   return OrchestratorFinalResponseSchemaV1.parse({
@@ -236,9 +238,7 @@ function responseFromDraft(
     conversationId: message.conversationId,
     body,
     policyBoundary: draft.policyBoundary,
-    citations: draft.citations.length === 0
-      ? [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }]
-      : draft.citations,
+    citations: citationsFromDraftOrTeamResults(draft.citations, teamResults),
     assumptions: draft.assumptions,
     freshness: draft.freshness.length === 0 ? ['current invocation only'] : draft.freshness,
     disclaimer: draft.disclaimer,
@@ -252,6 +252,25 @@ function responseFromDraft(
     responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
     createdAt: new Date().toISOString(),
   });
+}
+
+function citationsFromDraftOrTeamResults(
+  draftCitations: OrchestratorResponseDraft['citations'],
+  teamResults: readonly TeamResultEnvelopeV1[],
+) {
+  if (draftCitations.length > 0 && !isPolicyOnlyCitationSet(draftCitations)) {
+    return draftCitations;
+  }
+  const [teamResult] = teamResults;
+  if (teamResult !== undefined) return citationsFor(teamResult);
+  return [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }];
+}
+
+function isPolicyOnlyCitationSet(citations: OrchestratorResponseDraft['citations']): boolean {
+  return citations.every((citation) =>
+    citation.artifactId === undefined
+    && citation.sourceRef === 'runtime-instructions'
+    && citation.label === 'orchestrator-policy');
 }
 
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
@@ -276,8 +295,27 @@ function labelForTeam(team: string): string {
   return `${team} team`;
 }
 
-function requiredTeamForMessage(message: InboundChannelMessageV1): 'query' | undefined {
-  return isAccountListQuestion(message.body) ? 'query' : undefined;
+type RequiredDelegation = {
+  teamId: 'accounting' | 'query';
+  request: JsonValue;
+};
+
+function requiredTeamForMessage(message: InboundChannelMessageV1): RequiredDelegation | undefined {
+  if (isAccountListQuestion(message.body)) {
+    return { teamId: 'query', request: { businessQuestion: message.body } };
+  }
+  if (isTransactionCaptureMessage(message.body)) {
+    return {
+      teamId: 'accounting',
+      request: {
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'transaction_capture',
+        request: {},
+      },
+    };
+  }
+  return undefined;
 }
 
 function isAccountListQuestion(question: string): boolean {
@@ -285,6 +323,12 @@ function isAccountListQuestion(question: string): boolean {
   return /\b(list|show|what|which)\b/.test(lower)
     && /\baccounts?\b/.test(lower)
     && !/\bbalances?\b/.test(lower);
+}
+
+function isTransactionCaptureMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return /\b(add|record|capture)\b/.test(lower)
+    && (/\$[0-9]/.test(message) || /\bspent?\b/.test(lower) || /\bbought?\b/.test(lower));
 }
 
 function destinationFor(channel: ChannelKindV1, destination: unknown): Record<string, unknown> {

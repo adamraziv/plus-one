@@ -81,7 +81,14 @@ export class EvidenceHandle {
         details: { toolName, expected: tool.parameters.length, received: parameters.length },
       });
     }
-    return this.runSql(tool.relationNames[0]!, tool.sql, tool.limit, parameters, tool.description);
+    return this.runSql(
+      tool.relationNames[0]!,
+      tool.sql,
+      tool.limit,
+      parameters,
+      tool.description,
+      sourceReferencesForToolCall(tool.relationNames[0]!, parameters),
+    );
   }
 
   async runFlexibleQuery(spec: QuerySpecificationV1): Promise<QueryResultV1> {
@@ -155,6 +162,7 @@ export class EvidenceHandle {
     limit: number,
     parameters: readonly unknown[],
     description: string,
+    sourceReferences: readonly string[] = [`relation=${relationName}`],
   ): Promise<QueryResultV1> {
     const response = await this.runner.query<Record<string, unknown>>(sql, parameters);
     if (response.rows.length > limit) {
@@ -189,11 +197,23 @@ export class EvidenceHandle {
       grain,
       rows: response.rows,
       fieldDefinitions: fields,
-      sourceReferences: [`relation=${relationName}`],
-      freshness: 'projection or ledger freshness',
+      sourceReferences,
+      freshness: 'latest available reporting projection',
       coverageWarnings: [],
     });
   }
+}
+
+function sourceReferencesForToolCall(
+  relationName: string,
+  parameters: readonly unknown[],
+): readonly string[] {
+  const references = [`relation=${relationName}`];
+  const householdId = parameters[0];
+  if (typeof householdId === 'string' && householdId.startsWith('hh_')) {
+    references.push(`filter=household_id:eq:${householdId}`);
+  }
+  return references;
 }
 
 const PoolLikeClientSchema = z.object({

@@ -33,7 +33,7 @@ describe('Mastra team execution framework', () => {
       expect(messages).toHaveLength(1);
       const task = JSON.parse(messages[0]!.content);
       expect(Object.keys(task).sort()).toEqual([
-        'checkerRole', 'householdId', 'makerArtifact', 'permittedEvidence', 'policyLabels',
+        'checkerRole', 'householdId', 'makerArtifact', 'makerInput', 'permittedEvidence', 'policyLabels',
         'requiredOutputSchema', 'rubric', 'schemaName', 'schemaVersion', 'selectedSkill', 'taskId',
       ]);
       expect(task.parentMessages).toBeUndefined();

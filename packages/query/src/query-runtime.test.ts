@@ -21,6 +21,12 @@ describe('Query Team runtime registrations', () => {
     ]);
     expect(skills.assertAllowed(querySkills[0]!.identity, 'query', 'query-lead').identity.skillName)
       .toBe('query-lead-routing');
+    const evidenceSkill = querySkills.find((skill) => skill.identity.skillName === 'query-evidence');
+    expect(evidenceSkill?.makerInstructions.join('\n')).toContain('must call exactly one matching active query tool');
+    expect(evidenceSkill?.makerInstructions.join('\n')).toContain('permittedEvidence is empty');
+    expect(evidenceSkill?.makerInstructions.join('\n')).toContain('evidenceArtifactIds must be [] exactly');
+    expect(evidenceSkill?.checkerRubric.join('\n')).toContain('verificationTask.makerInput');
+    expect(evidenceSkill?.checkerRubric.join('\n')).toContain('filter=household_id:eq:<id>');
   });
 
   it('creates runtime policies with tool calling only where Query roles need tools', () => {

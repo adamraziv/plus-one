@@ -139,19 +139,22 @@ describe('agent hierarchy acceptance', () => {
           }) };
         }
         if (agentId === 'query-maker') {
-          return { object: MakerArtifactSchemaV1.parse({
-            schemaName: 'maker-artifact',
-            schemaVersion: 1,
-            outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
-            output: queryResult([{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K', name: 'Cash' }]),
-            claims: [{
-              claimId: 'accounts-listed',
-              text: 'The checked evidence includes one account row.',
-              evidenceArtifactIds: [],
-            }],
-            assumptions: [],
-            uncertainty: [],
-          }) };
+          return {
+            object: MakerArtifactSchemaV1.parse({
+              schemaName: 'maker-artifact',
+              schemaVersion: 1,
+              outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+              output: queryResult([{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K', name: 'Cash' }]),
+              claims: [{
+                claimId: 'accounts-listed',
+                text: 'The checked evidence includes one account row.',
+                evidenceArtifactIds: [],
+              }],
+              assumptions: [],
+              uncertainty: [],
+            }),
+            toolResults: [{ payload: { toolName: 'query_account_list', result: { ok: true } } }],
+          };
         }
         const verificationTask = JSON.parse(messages[0]!.content) as {
           makerArtifact: { artifactId: string; artifactHash: string };

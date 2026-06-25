@@ -83,6 +83,7 @@ export const VerificationTaskSchemaV1 = z.object({
   taskId: TaskIdSchema,
   checkerRole: RoleIdentitySchemaV1,
   makerArtifact: ArtifactEnvelopeSchemaV1,
+  makerInput: JsonValueSchema,
   permittedEvidence: z.array(ArtifactEnvelopeSchemaV1),
   selectedSkill: SkillIdentitySchemaV1,
   rubric: CheckerRubricSchemaV1,

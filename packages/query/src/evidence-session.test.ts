@@ -98,10 +98,15 @@ const sampleArtifactId = ArtifactIdSchema.parse('artifact_01JNZQ4A9B8C7D6E5F4G3H
 describe('EvidenceSession', () => {
   it('opens a repeatable-read read-only transaction and runs a typed tool', async () => {
     const { session } = buildSessionConfig();
-    const result = await session.withSession(async (handle) => handle.runTool('account_list', [1]));
+    const result = await session.withSession(async (handle) =>
+      handle.runTool('account_list', ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K']));
     expect(result.relationName).toBe('reporting.accounts');
     expect(result.rows).toEqual([{ account_id: 1, name: 'Cash' }]);
     expect(result.fieldDefinitions).toEqual(['account_id', 'name']);
+    expect(result.sourceReferences).toEqual([
+      'relation=reporting.accounts',
+      'filter=household_id:eq:hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    ]);
   });
 
   it('rejects tool calls with the wrong parameter arity', async () => {

@@ -22,6 +22,7 @@ export function makeVerificationTask(selectedSkill: SkillIdentityV1): Verificati
         assumptions: [], uncertainty: [] },
       createdAt: UtcInstantSchema.parse('2026-06-14T10:00:00.000Z'),
     },
+    makerInput: { question: 'What is the value?' },
     permittedEvidence: [], selectedSkill,
     rubric: { rubricName: 'lookup-rubric', rubricVersion: 1, instructions: ['Reject unsupported claims.'] },
     policyLabels: ['financial-data'],
