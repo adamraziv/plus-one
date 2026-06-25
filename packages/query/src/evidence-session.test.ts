@@ -109,6 +109,42 @@ describe('EvidenceSession', () => {
     ]);
   });
 
+  it('keeps field definitions when a typed tool returns zero rows', async () => {
+    const tools = buildToolRegistry();
+    tools.register({
+      toolName: 'account_list',
+      relationNames: ['reporting.accounts'],
+      sql: 'SELECT account_id, name FROM reporting.accounts WHERE household_id = $1 LIMIT 100',
+      parameters: ['$1'],
+      limit: 100,
+      description: 'list accounts',
+    });
+    const runner = {
+      async query<R extends Record<string, unknown> = Record<string, unknown>>(text: string) {
+        if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY') return { rows: [] as readonly R[] };
+        if (text.startsWith('SET LOCAL statement_timeout')) return { rows: [] as readonly R[] };
+        if (text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] as readonly R[] };
+        return {
+          rows: [] as readonly R[],
+          fields: [{ name: 'account_id' }, { name: 'name' }],
+        };
+      },
+    } as QueryRunner;
+    const session = new EvidenceSession(runner, {
+      allowedRelations,
+      maxRows: 500,
+      maxOutputBytes: 1_000_000,
+      statementTimeoutMs: 5_000,
+      validator: new ReadOnlySqlValidator(),
+    }, tools);
+
+    const result = await session.withSession(async (handle) =>
+      handle.runTool('account_list', ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K']));
+
+    expect(result.rows).toEqual([]);
+    expect(result.fieldDefinitions).toEqual(['account_id', 'name']);
+  });
+
   it('rejects tool calls with the wrong parameter arity', async () => {
     const { session } = buildSessionConfig();
     await expect(session.withSession(async (handle) => handle.runTool('account_list', [])))

@@ -18,7 +18,7 @@ export interface QueryRunner {
   query<R extends Record<string, unknown> = Record<string, unknown>>(
     text: string,
     values?: readonly unknown[],
-  ): Promise<{ rows: readonly R[] }>;
+  ): Promise<{ rows: readonly R[]; fields?: readonly { name: string }[] }>;
   release?(): void;
 }
 
@@ -176,9 +176,8 @@ export class EvidenceHandle {
       });
     }
     const grain = ['household', relationName.replace(/^reporting\./, '')];
-    const fields = response.rows[0] === undefined
-      ? []
-      : Object.keys(response.rows[0]).sort();
+    const fields = response.fields?.map((field) => field.name).sort()
+      ?? (response.rows[0] === undefined ? [] : Object.keys(response.rows[0]).sort());
     const serialized = JSON.stringify(response.rows);
     if (serialized.length > this.config.maxOutputBytes) {
       throw new PlusOneError({
@@ -230,10 +229,10 @@ export function pgRunner(pool: Pick<Pool, 'connect'>): QueryRunner {
     async query<R extends Record<string, unknown> = Record<string, unknown>>(
       text: string,
       values?: readonly unknown[],
-    ): Promise<{ rows: readonly R[] }> {
+    ): Promise<{ rows: readonly R[]; fields?: readonly { name: string }[] }> {
       const connection = await acquire();
       const response = await connection.query<R>(text, values as unknown[] | undefined);
-      return { rows: response.rows };
+      return { rows: response.rows, fields: response.fields.map((field) => ({ name: field.name })) };
     },
     release(): void {
       if (client !== undefined) {
