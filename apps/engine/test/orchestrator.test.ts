@@ -317,6 +317,36 @@ describe('OrchestratorAgent', () => {
     });
   });
 
+  it('delegates obvious account-list reads when the main model returns no checked team result', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const mainGenerate = vi.fn(async () => ({
+      object: finalResponse('I can answer directly without a team.'),
+    }));
+    const finalizerGenerate = vi.fn();
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({
+        ...config,
+        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+          ? finalizerGenerate
+          : mainGenerate,
+      }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(finalizerGenerate).not.toHaveBeenCalled();
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: queryTeam,
+      request: { businessQuestion: 'List our accounts.' },
+    }));
+    expect(response.body).toContain('Query team status: verified');
+    expect(response.body).not.toContain('I can answer directly without a team.');
+  });
+
   it('fails instead of wrapping invalid no-team model output as plain text', async () => {
     const mainGenerate = vi.fn(async () => ({ text: 'I recorded it.' }));
     const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));

@@ -61,6 +61,7 @@ type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
+  private readonly teamRuntime: OrchestratorTeamRuntime;
   private readonly activeInvocation = new AsyncLocalStorage<{
     message: InboundChannelMessageV1;
     signal: AbortSignal;
@@ -85,6 +86,7 @@ export class OrchestratorAgent {
         return result;
       },
     };
+    this.teamRuntime = teamRuntime;
     this.agentTools = {
       delegateTeam: createDelegateTeamTool({
         teams: this.teams,
@@ -121,6 +123,11 @@ export class OrchestratorAgent {
       ].join('\n');
       try {
         const result = await this.agent.generate(prompt, {});
+        const requiredTeam = requiredTeamForMessage(message);
+        if (requiredTeam !== undefined && invocation.teamResults.length === 0) {
+          await this.delegateRequiredTeam(message, requiredTeam, signal);
+          return responseFromTeamResults(message, invocation.teamResults);
+        }
         const direct = parseFinalResponse(result.object);
         if (direct !== undefined) return direct;
         return await this.finalizeFromModelResult(message, result.text, invocation.teamResults);
@@ -128,6 +135,21 @@ export class OrchestratorAgent {
         if (invocation.teamResults.length === 0) throw error;
         return responseFromTeamResults(message, invocation.teamResults);
       }
+    });
+  }
+
+  private async delegateRequiredTeam(
+    message: InboundChannelMessageV1,
+    teamId: 'query',
+    signal: AbortSignal,
+  ): Promise<void> {
+    const team = this.teams.get(teamId);
+    if (team === undefined) throw new Error(`Unknown team: ${teamId}`);
+    await this.teamRuntime.runTeamLead({
+      message,
+      team,
+      request: { businessQuestion: message.body },
+      signal,
     });
   }
 
@@ -252,6 +274,17 @@ function labelForTeam(team: string): string {
   if (team === 'accounting') return 'Accounting team';
   if (team === 'query') return 'Query team';
   return `${team} team`;
+}
+
+function requiredTeamForMessage(message: InboundChannelMessageV1): 'query' | undefined {
+  return isAccountListQuestion(message.body) ? 'query' : undefined;
+}
+
+function isAccountListQuestion(question: string): boolean {
+  const lower = question.toLowerCase();
+  return /\b(list|show|what|which)\b/.test(lower)
+    && /\baccounts?\b/.test(lower)
+    && !/\bbalances?\b/.test(lower);
 }
 
 function destinationFor(channel: ChannelKindV1, destination: unknown): Record<string, unknown> {
