@@ -5,7 +5,7 @@ import {
   makerInputForLeadWorkItem,
   normalizeAccountingLeadRequest,
   normalizeQueryLeadRequest,
-} from '../src/team-runtime.ts';
+} from '../src/team-runtime.js';
 
 const message = InboundChannelMessageSchemaV1.parse({
   schemaName: 'inbound-channel-message',
