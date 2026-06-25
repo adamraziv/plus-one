@@ -21,6 +21,17 @@ class MemoryArtifacts implements ArtifactRepository {
   ): Promise<ArtifactEnvelopeV1 | undefined> {
     return this.records.get(id);
   }
+
+  async findByTaskAndHash(input: {
+    householdId: ArtifactEnvelopeV1['householdId'];
+    taskId: ArtifactEnvelopeV1['taskId'];
+    artifactHash: ArtifactEnvelopeV1['artifactHash'];
+  }): Promise<ArtifactEnvelopeV1 | undefined> {
+    return [...this.records.values()].find((artifact) =>
+      artifact.householdId === input.householdId
+      && artifact.taskId === input.taskId
+      && artifact.artifactHash === input.artifactHash);
+  }
 }
 
 class MemoryLedger implements VerificationLedgerPort {

@@ -168,8 +168,6 @@ export function normalizeQueryLeadRequest(
   if (parsed.success) return JSON.parse(JSON.stringify(parsed.data)) as JsonValue;
 
   const businessQuestion = queryBusinessQuestion(message, request);
-  if (!isAccountListQuestion(businessQuestion)) return request;
-
   const date = message.receivedAt.slice(0, 10);
   return JSON.parse(JSON.stringify(EvidenceRequestSchemaV1.parse({
     schemaName: 'evidence-request',
@@ -179,11 +177,11 @@ export function normalizeQueryLeadRequest(
     businessQuestion,
     intendedUse: 'household_finance_answer',
     timeframe: { start: date, end: date },
-    desiredGrain: ['household', 'account'],
+    desiredGrain: desiredGrainForQuestion(businessQuestion),
     filters: [],
     requiredFreshness: 'latest available reporting projection',
     requiredCalculations: [],
-    coverage: ['account list'],
+    coverage: [coverageForQuestion(businessQuestion)],
   }))) as JsonValue;
 }
 
@@ -207,7 +205,7 @@ export function deterministicLeadPlanForRequest(
 ) {
   if (team.team !== 'query') return undefined;
   const parsed = EvidenceRequestSchemaV1.safeParse(request);
-  if (!parsed.success || !isDeterministicQueryEvidenceRequest(parsed.data)) return undefined;
+  if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
   return TeamLeadPlanSchemaV1.parse({
     schemaName: 'team-lead-plan',
     schemaVersion: 1,
@@ -283,13 +281,30 @@ function isAccountListQuestion(question: string): boolean {
     && !/\bbalances?\b/.test(normalized);
 }
 
-function isDeterministicQueryEvidenceRequest(request: {
-  coverage: readonly string[];
-  requiredCalculations: readonly unknown[];
-}): boolean {
-  return request.requiredCalculations.length === 0
-    && request.coverage.length === 1
-    && request.coverage[0] === 'account list';
+function coverageForQuestion(question: string): string {
+  const normalized = question.trim().toLowerCase();
+  if (isAccountListQuestion(normalized)) return 'account list';
+  if (/\bbalances?\b/.test(normalized)) return 'balance snapshot';
+  if (/\btransactions?\b|\bspend(?:ing|s)?\b|\bspent\b/.test(normalized)) return 'categorized transactions';
+  if (/\bbudget\b|\bvariance\b/.test(normalized)) return 'budget variance';
+  if (/\bsavings?\b|\bgoals?\b/.test(normalized)) return 'savings goal progress';
+  if (/\bdebt\b|\bloan\b|\bliabilit(?:y|ies)\b/.test(normalized)) return 'debt progress';
+  if (/\breconcil(?:e|iation)\b|\bstatement\b/.test(normalized)) return 'reconciliation status';
+  if (/\bfreshness\b|\bstale\b|\bsource\b/.test(normalized)) return 'source freshness';
+  return 'requested household finance answer';
+}
+
+function desiredGrainForQuestion(question: string): string[] {
+  const coverage = coverageForQuestion(question);
+  if (coverage === 'account list' || coverage === 'balance snapshot' || coverage === 'debt progress'
+    || coverage === 'reconciliation status') {
+    return ['household', 'account'];
+  }
+  if (coverage === 'categorized transactions') return ['household', 'account', 'journal'];
+  if (coverage === 'budget variance') return ['household', 'category'];
+  if (coverage === 'savings goal progress') return ['household', 'goal'];
+  if (coverage === 'source freshness') return ['household', 'source'];
+  return ['household'];
 }
 
 function workInputFor(

@@ -20,6 +20,11 @@ export interface CreateArtifactInput {
 export interface ArtifactRepository {
   insert(artifact: ArtifactEnvelopeV1, canonicalPayload: string): Promise<void>;
   findById(artifactId: ArtifactEnvelopeV1['artifactId']): Promise<ArtifactEnvelopeV1 | undefined>;
+  findByTaskAndHash(input: {
+    householdId: ArtifactEnvelopeV1['householdId'];
+    taskId: ArtifactEnvelopeV1['taskId'];
+    artifactHash: ArtifactEnvelopeV1['artifactHash'];
+  }): Promise<ArtifactEnvelopeV1 | undefined>;
 }
 
 export function createArtifactEnvelope(input: CreateArtifactInput): ArtifactEnvelopeV1 {
@@ -42,7 +47,7 @@ export function createArtifactEnvelope(input: CreateArtifactInput): ArtifactEnve
 export class ArtifactStore {
   constructor(private readonly repository: ArtifactRepository) {}
 
-  async save(artifact: ArtifactEnvelopeV1): Promise<void> {
+  async save(artifact: ArtifactEnvelopeV1): Promise<ArtifactEnvelopeV1> {
     const parsed = ArtifactEnvelopeSchemaV1.parse(artifact);
 
     if (hashArtifact(parsed.payload) !== parsed.artifactHash) {
@@ -56,7 +61,19 @@ export class ArtifactStore {
       });
     }
 
-    await this.repository.insert(parsed, canonicalizeJson(parsed.payload));
+    try {
+      await this.repository.insert(parsed, canonicalizeJson(parsed.payload));
+      return parsed;
+    } catch (error) {
+      if (!isDuplicateArtifactHash(error)) throw error;
+      const existing = await this.repository.findByTaskAndHash({
+        householdId: parsed.householdId,
+        taskId: parsed.taskId,
+        artifactHash: parsed.artifactHash,
+      });
+      if (existing !== undefined) return existing;
+      throw error;
+    }
   }
 
   async getVerified(artifactId: ArtifactEnvelopeV1['artifactId']): Promise<ArtifactEnvelopeV1> {
@@ -88,4 +105,13 @@ export class ArtifactStore {
 
     return parsed;
   }
+}
+
+function isDuplicateArtifactHash(error: unknown): boolean {
+  return error !== null
+    && typeof error === 'object'
+    && 'code' in error
+    && 'constraint' in error
+    && error.code === '23505'
+    && error.constraint === 'artifacts_household_task_hash_unique';
 }

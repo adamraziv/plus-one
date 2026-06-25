@@ -78,14 +78,14 @@ export class VerificationRuntime {
       payload: input.payload,
     });
 
-    await this.dependencies.artifacts.save(artifact);
+    const storedArtifact = await this.dependencies.artifacts.save(artifact);
     await this.dependencies.ledger.linkMakerArtifact({
       ...input,
-      artifactId: artifact.artifactId,
-      artifactHash: artifact.artifactHash,
+      artifactId: storedArtifact.artifactId,
+      artifactHash: storedArtifact.artifactHash,
     });
     await this.move(input, task.status, 'maker_validated', 'maker_artifact_validated');
-    return artifact;
+    return storedArtifact;
   }
 
   beginChecker(identity: TaskIdentity): Promise<VerificationTaskSnapshot> {
@@ -109,14 +109,14 @@ export class VerificationRuntime {
       payload: verdict,
     });
 
-    await this.dependencies.artifacts.save(checkerArtifact);
+    const storedArtifact = await this.dependencies.artifacts.save(checkerArtifact);
     await this.dependencies.ledger.recordCheckerVerdict({
       ...input,
-      checkerArtifactId: checkerArtifact.artifactId,
+      checkerArtifactId: storedArtifact.artifactId,
       verdict,
     });
     await this.move(input, 'checker_running', 'checker_validated', 'checker_artifact_validated');
-    return checkerArtifact;
+    return storedArtifact;
   }
 
   async requestRevision(identity: TaskIdentity): Promise<VerificationTaskSnapshot> {

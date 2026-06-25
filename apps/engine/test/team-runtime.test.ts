@@ -84,6 +84,28 @@ describe('normalizeQueryLeadRequest', () => {
     expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 
+  it('canonicalizes a thin balances request from inbound context', () => {
+    const normalized = normalizeQueryLeadRequest(message, {
+      businessQuestion: 'What are our balances?',
+    });
+
+    const parsed = EvidenceRequestSchemaV1.parse(normalized);
+    expect(parsed).toMatchObject({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      businessQuestion: 'What are our balances?',
+      intendedUse: 'household_finance_answer',
+      timeframe: { start: '2026-06-24', end: '2026-06-24' },
+      desiredGrain: ['household', 'account'],
+      filters: [],
+      requiredFreshness: 'latest available reporting projection',
+      requiredCalculations: [],
+      coverage: ['balance snapshot'],
+    });
+    expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
+
   it('keeps a valid EvidenceRequestV1 unchanged', () => {
     const request = EvidenceRequestSchemaV1.parse({
       schemaName: 'evidence-request',
@@ -149,19 +171,33 @@ describe('deterministicLeadPlanForRequest', () => {
     });
   });
 
-  it('leaves non-account-list Query requests on the modeled team-lead path', () => {
+  it('builds the same deterministic Query plan for a normalized balances slice', () => {
+    const request = normalizeQueryLeadRequest(message, {
+      businessQuestion: 'What are our balances?',
+    });
+
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'query-evidence', makerInput: request }],
+      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
+  });
+
+  it('leaves calculation-heavy Query requests on the modeled team-lead path', () => {
     const request = EvidenceRequestSchemaV1.parse({
       schemaName: 'evidence-request',
       schemaVersion: 1,
       householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
-      businessQuestion: 'What are our balances?',
+      businessQuestion: 'What is our average balance this month?',
       intendedUse: 'household_finance_answer',
       timeframe: { start: '2026-06-01', end: '2026-06-24' },
       desiredGrain: ['household', 'account'],
       filters: [],
       requiredFreshness: 'latest available reporting projection',
-      requiredCalculations: [],
+      requiredCalculations: ['average balance by account'],
       coverage: ['balance snapshot'],
     });
 
