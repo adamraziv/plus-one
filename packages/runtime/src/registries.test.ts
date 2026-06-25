@@ -19,9 +19,13 @@ describe('execution registries', () => {
   });
 
   it('denies unregistered tools and fixes the required strategy catalog', () => {
-    const tools = new ToolPermissionRegistry([{ team: 'query', roleName: 'query-maker', roleVersion: 1,
-      toolIds: ['query.balance'] }]);
-    expect(tools.resolve({ team: 'query', roleName: 'query-maker', roleVersion: 1 })).toEqual(['query.balance']);
+    const tools = new ToolPermissionRegistry([{
+      team: 'query',
+      roleName: 'query-maker',
+      roleVersion: 1,
+      toolIds: ['query_balance'],
+    }]);
+    expect(tools.resolve({ team: 'query', roleName: 'query-maker', roleVersion: 1 })).toEqual(['query_balance']);
     expect(() => tools.resolve({ team: 'query', roleName: 'query-checker', roleVersion: 1 })).toThrow(/permission/);
 
     const strategies = ExecutionStrategyRegistry.withRequiredStrategies();
@@ -32,5 +36,26 @@ describe('execution registries', () => {
       'verified-factual-lookup',
     ]);
     expect(strategies.resolve('parallel-independent-makers').parallel).toBe(true);
+  });
+
+  it('rejects provider-unsafe tool ids before they reach an LLM provider', () => {
+    expect(() => new ToolPermissionRegistry([{
+      team: 'query',
+      roleName: 'query-maker',
+      roleVersion: 1,
+      toolIds: ['query.balance'],
+    }])).toThrow(/Tool id must contain only letters/);
+    expect(() => new ToolPermissionRegistry([{
+      team: 'query',
+      roleName: 'query-maker',
+      roleVersion: 1,
+      toolIds: [''],
+    }])).toThrow(/Tool id must contain only letters/);
+    expect(() => new ToolPermissionRegistry([{
+      team: 'query',
+      roleName: 'query-maker',
+      roleVersion: 1,
+      toolIds: ['a'.repeat(65)],
+    }])).toThrow(/Tool id must contain only letters/);
   });
 });
