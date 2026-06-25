@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
+import { z } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -29,6 +30,35 @@ const orchestratorInstructions = [
   'Return the requested OrchestratorFinalResponseV1 object.',
 ].join('\n');
 
+const finalizerInstructions = [
+  'You serialize the Orchestrator final answer for Plus One.',
+  'Use only the supplied inbound message, main orchestrator result, and checked team results.',
+  'Do not call tools.',
+  'Do not invent checked facts, citations, timestamps, ids, hashes, account data, or transaction confirmations.',
+  'If the main result says more information is needed, preserve that in body.',
+  'Return only the requested structured draft object.',
+].join('\n');
+
+const citationDraftSchema = z.object({
+  label: z.string().min(1).max(512),
+  artifactId: z.string().regex(/^artifact_[0-9A-HJKMNP-TV-Z]{26}$/).optional(),
+  sourceRef: z.string().min(1).max(512).optional(),
+}).strict();
+
+const OrchestratorResponseDraftSchema = z.object({
+  body: z.string().min(1).max(32_000),
+  policyBoundary: z.enum(['personalized_finance', 'informational_only', 'unsupported_capability', 'operational']),
+  citations: z.array(citationDraftSchema).default([]),
+  assumptions: z.array(z.string().min(1).max(2_000)).default([]),
+  freshness: z.array(z.string().min(1).max(2_000)).default(['current invocation only']),
+  disclaimer: z.string().min(1).max(2_000)
+    .default('Plus One is an AI assistant, not a licensed financial professional.'),
+  unsupportedCapabilities: z.array(z.enum(['tax', 'insurance'])).default([]),
+  recommendationActions: z.array(z.string().min(1).max(2_000)).default([]),
+}).strict();
+
+type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>;
+
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
   private readonly activeInvocation = new AsyncLocalStorage<{
@@ -37,6 +67,7 @@ export class OrchestratorAgent {
     teamResults: TeamResultEnvelopeV1[];
   }>();
   readonly agent: Agent<string, ToolsInput, unknown>;
+  readonly finalizerAgent: Agent<string, ToolsInput, unknown>;
   readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
 
   constructor(private readonly dependencies: {
@@ -69,6 +100,14 @@ export class OrchestratorAgent {
       model: toMastraModel(dependencies.model),
       tools: this.agentTools,
     });
+    this.finalizerAgent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
+      id: 'orchestrator-finalizer',
+      name: 'Orchestrator Finalizer',
+      description: 'Serializes the orchestrator answer into the final Plus One response draft.',
+      instructions: finalizerInstructions,
+      model: toMastraModel(dependencies.model),
+      tools: {},
+    });
   }
 
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
@@ -81,16 +120,46 @@ export class OrchestratorAgent {
         JSON.stringify(message),
       ].join('\n');
       try {
-        const result = await this.agent.generate(prompt, {
-          structuredOutput: { schema: OrchestratorFinalResponseSchemaV1, jsonPromptInjection: true },
-        });
-        return OrchestratorFinalResponseSchemaV1.parse(result.object ?? parseJsonObject(result.text));
+        const result = await this.agent.generate(prompt, {});
+        const direct = parseFinalResponse(result.object);
+        if (direct !== undefined) return direct;
+        return await this.finalizeFromModelResult(message, result.text, invocation.teamResults);
       } catch (error) {
         if (invocation.teamResults.length === 0) throw error;
         return responseFromTeamResults(message, invocation.teamResults);
       }
     });
   }
+
+  private async finalizeFromModelResult(
+    message: InboundChannelMessageV1,
+    modelText: unknown,
+    teamResults: readonly TeamResultEnvelopeV1[],
+  ): Promise<OrchestratorFinalResponseV1> {
+    try {
+      const result = await this.finalizerAgent.generate([
+        'InboundChannelMessageV1 context:',
+        JSON.stringify(message),
+        'Main orchestrator result:',
+        typeof modelText === 'string' ? modelText : '',
+        'Checked team results:',
+        JSON.stringify(teamResults),
+      ].join('\n'), {
+        structuredOutput: { schema: OrchestratorResponseDraftSchema, jsonPromptInjection: true },
+        toolChoice: 'none',
+      });
+      const draft = OrchestratorResponseDraftSchema.parse(result.object ?? parseJsonObject(result.text));
+      return responseFromDraft(message, draft);
+    } catch (error) {
+      if (teamResults.length === 0) throw error;
+      return responseFromTeamResults(message, teamResults);
+    }
+  }
+}
+
+function parseFinalResponse(value: unknown): OrchestratorFinalResponseV1 | undefined {
+  const parsed = OrchestratorFinalResponseSchemaV1.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function parseJsonObject(text: unknown): unknown {
@@ -130,6 +199,37 @@ function responseFromTeamResults(message: InboundChannelMessageV1,
     createdAt: new Date().toISOString(),
   });
   return response;
+}
+
+function responseFromDraft(
+  message: InboundChannelMessageV1,
+  draft: OrchestratorResponseDraft,
+): OrchestratorFinalResponseV1 {
+  const body = draft.body;
+  return OrchestratorFinalResponseSchemaV1.parse({
+    schemaName: 'orchestrator-final-response',
+    schemaVersion: 1,
+    responseId: `response_${Date.now()}`,
+    householdId: message.householdId,
+    conversationId: message.conversationId,
+    body,
+    policyBoundary: draft.policyBoundary,
+    citations: draft.citations.length === 0
+      ? [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }]
+      : draft.citations,
+    assumptions: draft.assumptions,
+    freshness: draft.freshness.length === 0 ? ['current invocation only'] : draft.freshness,
+    disclaimer: draft.disclaimer,
+    unsupportedCapabilities: draft.unsupportedCapabilities,
+    recommendationActions: draft.recommendationActions,
+    delivery: {
+      channel: message.channel,
+      destination: destinationFor(message.channel, message.metadata.destination),
+      format: message.channel === 'slack' ? 'mrkdwn' : 'plain_text',
+    },
+    responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
+    createdAt: new Date().toISOString(),
+  });
 }
 
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
