@@ -13,6 +13,7 @@ import {
 import {
   PlusOneError,
   EvidenceRequestSchemaV1,
+  TeamLeadPlanSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
 } from '@plus-one/contracts';
@@ -98,15 +99,16 @@ export function createTeamRuntime(input: {
         attemptLimit: leadPolicy.maxAttempts,
         deadlineAt: new Date(Date.now() + leadPolicy.teamDeadlineMs).toISOString(),
       });
-      const plan = await planner.plan({
-        householdId: runtimeInput.message.householdId,
-        taskId: leadTaskId,
-        team: runtimeInput.team,
-        selectedSkill: leadSkill.identity,
-        request,
-        policyLabels: ['personalized_finance'],
-        abortSignal: runtimeInput.signal,
-      });
+      const plan = deterministicLeadPlanForRequest(runtimeInput.team, request)
+        ?? await planner.plan({
+          householdId: runtimeInput.message.householdId,
+          taskId: leadTaskId,
+          team: runtimeInput.team,
+          selectedSkill: leadSkill.identity,
+          request,
+          policyLabels: ['personalized_finance'],
+          abortSignal: runtimeInput.signal,
+        });
       const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
         householdId: runtimeInput.message.householdId,
         parentTaskId: leadTaskId,
@@ -199,6 +201,22 @@ export function makerInputForLeadWorkItem(
   return planMakerInput;
 }
 
+export function deterministicLeadPlanForRequest(
+  team: TeamDefinition,
+  request: JsonValue,
+) {
+  if (team.team !== 'query') return undefined;
+  const parsed = EvidenceRequestSchemaV1.safeParse(request);
+  if (!parsed.success || !isDeterministicQueryEvidenceRequest(parsed.data)) return undefined;
+  return TeamLeadPlanSchemaV1.parse({
+    schemaName: 'team-lead-plan',
+    schemaVersion: 1,
+    recommendedStrategyName: 'single-maker-checker',
+    work: [{ workCellId: 'query-evidence', makerInput: request }],
+    stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+  });
+}
+
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {
   const result = await pools.accounting.query<{ book_id: string }>(
     `SELECT book.book_id
@@ -263,6 +281,15 @@ function isAccountListQuestion(question: string): boolean {
   const normalized = question.trim().toLowerCase();
   return /(?:^|\b)(list|show|what|which)\b[\s\w]*\baccounts?\b/.test(normalized)
     && !/\bbalances?\b/.test(normalized);
+}
+
+function isDeterministicQueryEvidenceRequest(request: {
+  coverage: readonly string[];
+  requiredCalculations: readonly unknown[];
+}): boolean {
+  return request.requiredCalculations.length === 0
+    && request.coverage.length === 1
+    && request.coverage[0] === 'account list';
 }
 
 function workInputFor(
