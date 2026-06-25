@@ -72,6 +72,9 @@ describe('Query Mastra role agents', () => {
       .toContain('select the correct Query work cell');
     expect(Object.keys(configs.find((config) => config.id === 'query-maker')?.tools ?? {}).sort())
       .toEqual(['query_account_list', 'query_current_balances']);
+    const queryMakerInstructions = String(configs.find((config) => config.id === 'query-maker')?.instructions);
+    expect(queryMakerInstructions).toContain('householdId');
+    expect(queryMakerInstructions).toContain('evidenceArtifactIds must be empty when permittedEvidence is empty');
     expect(Object.keys(configs.find((config) => config.id === 'query-checker')?.tools ?? {}))
       .toEqual([]);
     expect(Object.keys(configs.find((config) => config.id === 'analyst-maker')?.tools ?? {}))
