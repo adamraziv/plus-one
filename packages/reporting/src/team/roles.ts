@@ -37,7 +37,7 @@ export const reportingToolPermissions = reportingRoles.map((entry) => ({
   roleName: entry.identity.roleName,
   roleVersion: entry.identity.roleVersion,
   toolIds: entry.identity.roleName === 'investments-retirement-lead'
-    ? ['research.authoritative_web']
+    ? ['research_authoritative_web']
     : [] as const,
 }));
 

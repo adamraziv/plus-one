@@ -111,7 +111,7 @@ describe('reporting team registrations', () => {
         roleVersion: role.identity.roleVersion,
       });
       if (role.identity.roleName === 'investments-retirement-lead') {
-        expect(granted).toEqual(['research.authoritative_web']);
+        expect(granted).toEqual(['research_authoritative_web']);
       } else {
         expect(granted).toEqual([]);
       }

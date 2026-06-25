@@ -71,8 +71,9 @@ describe('query team definition', () => {
     expect(maker?.toolIds.length).toBeGreaterThan(0);
     expect(checker?.toolIds).toEqual([]);
     expect(lead?.toolIds).toEqual([]);
-    expect(analystMaker?.toolIds).toEqual(['query.analyst_sandbox']);
-    expect(analystChecker?.toolIds).toEqual(['query.analyst_sandbox']);
+    expect(maker?.toolIds).toEqual(expect.arrayContaining(['query_account_list']));
+    expect(analystMaker?.toolIds).toEqual(['query_analyst_sandbox']);
+    expect(analystChecker?.toolIds).toEqual(['query_analyst_sandbox']);
   });
 
   it('requires the checker rubric to verify scope, grain, filters, freshness, provenance, completeness', () => {

@@ -38,7 +38,7 @@ describe('engine Mastra helper', () => {
       analystSandboxTool: createAnalystSandboxTool(),
     });
 
-    expect(Object.keys(tools).sort()).toEqual(['query.account_list', 'query.analyst_sandbox']);
+    expect(Object.keys(tools).sort()).toEqual(['query_account_list', 'query_analyst_sandbox']);
   });
 
   it('creates a generic non-Query Mastra role agent with code-owned instructions', () => {

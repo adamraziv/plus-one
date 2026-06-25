@@ -20,7 +20,7 @@ export function createQueryTools(input: {
   };
 
   for (const definition of input.registry.list()) {
-    const id = `query.${definition.toolName}`;
+    const id = `query_${definition.toolName}`;
     tools[id] = createTool({
       id,
       description: definition.description,
