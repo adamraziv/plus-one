@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
-import { normalizeAccountingLeadRequest } from '../src/team-runtime.js';
+import { EvidenceRequestSchemaV1, InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
+import { queryTeamDefinition } from '@plus-one/query';
+import {
+  makerInputForLeadWorkItem,
+  normalizeAccountingLeadRequest,
+  normalizeQueryLeadRequest,
+} from '../src/team-runtime.ts';
 
 const message = InboundChannelMessageSchemaV1.parse({
   schemaName: 'inbound-channel-message',
@@ -52,5 +57,78 @@ describe('normalizeAccountingLeadRequest', () => {
         },
       },
     });
+  });
+});
+
+describe('normalizeQueryLeadRequest', () => {
+  it('canonicalizes a thin account-list request from inbound context', () => {
+    const normalized = normalizeQueryLeadRequest(message, {
+      businessQuestion: 'List our accounts.',
+    });
+
+    const parsed = EvidenceRequestSchemaV1.parse(normalized);
+    expect(parsed).toMatchObject({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      businessQuestion: 'List our accounts.',
+      intendedUse: 'household_finance_answer',
+      timeframe: { start: '2026-06-24', end: '2026-06-24' },
+      desiredGrain: ['household', 'account'],
+      filters: [],
+      requiredFreshness: 'latest available reporting projection',
+      requiredCalculations: [],
+      coverage: ['account list'],
+    });
+    expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
+
+  it('keeps a valid EvidenceRequestV1 unchanged', () => {
+    const request = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      businessQuestion: 'What are our balances?',
+      intendedUse: 'household_finance_answer',
+      timeframe: { start: '2026-06-01', end: '2026-06-24' },
+      desiredGrain: ['household', 'account'],
+      filters: [],
+      requiredFreshness: 'latest available reporting projection',
+      requiredCalculations: [],
+      coverage: ['balance snapshot'],
+    });
+
+    expect(normalizeQueryLeadRequest(message, request)).toEqual(request);
+  });
+});
+
+describe('makerInputForLeadWorkItem', () => {
+  it('uses the normalized Query request as query-evidence maker input, but leaves query-analyst maker input unchanged', () => {
+    const normalized = normalizeQueryLeadRequest(message, {
+      businessQuestion: 'List our accounts.',
+    });
+    const analystInput = {
+      schemaName: 'analyst-task',
+      schemaVersion: 1,
+      evidencePackageId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      request: normalized,
+      queryResult: {
+        schemaName: 'query-result',
+        schemaVersion: 1,
+        relationName: 'reporting.account_balances',
+        grain: ['account'],
+        rows: [],
+        fieldDefinitions: ['account_name'],
+        sourceReferences: ['reporting.account_balances'],
+        freshness: 'latest available reporting projection',
+        coverageWarnings: [],
+      },
+    };
+
+    expect(makerInputForLeadWorkItem(queryTeamDefinition, 'query-evidence', { original: true }, normalized))
+      .toEqual(normalized);
+    expect(makerInputForLeadWorkItem(queryTeamDefinition, 'query-analyst', analystInput, normalized))
+      .toEqual(analystInput);
   });
 });
