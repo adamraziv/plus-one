@@ -1,6 +1,14 @@
 import { PlusOneError } from '@plus-one/contracts';
+import { assertProviderToolId } from '../tools/tool-permission-registry.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { StructuredAgentCall, StructuredAgentPort } from './structured-agent-port.js';
+
+interface MastraGenerationResult {
+  object?: unknown;
+  text?: unknown;
+  toolResults?: unknown;
+  steps?: unknown;
+}
 
 export class MastraStructuredAgentAdapter implements StructuredAgentPort {
   constructor(private readonly agents: AgentRegistry) {}
@@ -10,6 +18,9 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       throw new PlusOneError({ category: 'policy_rejected', code: 'contractual_context_not_isolated',
         message: 'Contractual calls cannot inherit messages, memory, or tool history',
         retry: 'never', receiptLookupRequired: false, details: { roleKind: call.roleKind } });
+    }
+    for (const toolId of call.activeTools) {
+      assertProviderToolId(toolId);
     }
     const registration = this.agents.resolve(call.agentId, call.modelId, call.roleKind);
     if (call.roleKind === 'checker' && registration.memoryEnabled) {
@@ -22,7 +33,13 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       errorStrategy: 'strict' as const,
       jsonPromptInjection: true,
     };
-    const agent = registration.agent as unknown as { generate: (messages: readonly { role: string; content: string }[], options: Record<string, unknown>) => Promise<{ object?: unknown; text?: unknown }> }; const options = {
+    const agent = registration.agent as unknown as {
+      generate: (
+        messages: readonly { role: string; content: string }[],
+        options: Record<string, unknown>,
+      ) => Promise<MastraGenerationResult>;
+    };
+    const options = {
       instructions: call.systemPrompt,
       structuredOutput,
       activeTools: [...call.activeTools],
@@ -39,8 +56,12 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       { role: 'user', content: 'Return only valid JSON matching the requested output contract.' },
     ], { ...options, structuredOutput: undefined });
     const result = call.modelId.includes('/')
-      ? await agent.generate([...call.messages], options).catch(fallback)
+      ? await agent.generate([...call.messages], options).catch((error) => {
+        if (call.activeTools.length !== 0) throw error;
+        return fallback();
+      })
       : await fallback();
+    assertExecutedActiveTool(call, result);
     const parsed = call.outputSchema.parse(result.object ?? parseJsonObject(result.text));
     const outputBytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
     if (outputBytes > call.maxOutputBytes) {
@@ -50,6 +71,51 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     }
     return parsed;
   }
+}
+
+function assertExecutedActiveTool<Output>(
+  call: StructuredAgentCall<Output>,
+  result: MastraGenerationResult,
+): void {
+  if (call.activeTools.length === 0) return;
+  const activeTools = new Set(call.activeTools);
+  if (collectToolResultNames(result).some((toolName) => activeTools.has(toolName))) return;
+  throw new PlusOneError({
+    category: 'runtime_failure',
+    code: 'tool_call_not_executed',
+    message: 'Tool-enabled agent returned without executing an active tool',
+    retry: 'safe',
+    receiptLookupRequired: false,
+    details: {
+      agentId: call.agentId,
+      roleKind: call.roleKind,
+      activeTools: call.activeTools.join(','),
+    },
+  });
+}
+
+function collectToolResultNames(result: MastraGenerationResult): string[] {
+  const chunks: unknown[] = [];
+  if (Array.isArray(result.toolResults)) chunks.push(...result.toolResults);
+  if (Array.isArray(result.steps)) {
+    for (const step of result.steps) {
+      if (step !== null && typeof step === 'object') {
+        const toolResults = (step as { toolResults?: unknown }).toolResults;
+        if (Array.isArray(toolResults)) chunks.push(...toolResults);
+      }
+    }
+  }
+  return chunks.flatMap((chunk) => {
+    if (chunk === null || typeof chunk !== 'object') return [];
+    const direct = (chunk as { toolName?: unknown }).toolName;
+    if (typeof direct === 'string') return [direct];
+    const payload = (chunk as { payload?: unknown }).payload;
+    if (payload !== null && typeof payload === 'object') {
+      const toolName = (payload as { toolName?: unknown }).toolName;
+      if (typeof toolName === 'string') return [toolName];
+    }
+    return [];
+  });
 }
 
 function parseJsonObject(text: unknown): unknown {
