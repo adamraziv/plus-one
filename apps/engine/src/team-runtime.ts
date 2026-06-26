@@ -8,6 +8,7 @@ import {
   AccountingLeadRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
   accountingSkills,
+  validateAccountingLeadPlan,
   type AccountingLeadRequestV1,
 } from '@plus-one/accounting';
 import {
@@ -99,7 +100,7 @@ export function createTeamRuntime(input: {
         attemptLimit: leadPolicy.maxAttempts,
         deadlineAt: new Date(Date.now() + leadPolicy.teamDeadlineMs).toISOString(),
       });
-      const plan = deterministicLeadPlanForRequest(runtimeInput.team, request)
+      const planCandidate = deterministicLeadPlanForRequest(runtimeInput.team, request)
         ?? await planner.plan({
           householdId: runtimeInput.message.householdId,
           taskId: leadTaskId,
@@ -109,6 +110,12 @@ export function createTeamRuntime(input: {
           policyLabels: ['personalized_finance'],
           abortSignal: runtimeInput.signal,
         });
+      const accountingRequest = runtimeInput.team.team === 'accounting'
+        ? AccountingLeadRequestSchemaV1.safeParse(request)
+        : undefined;
+      const plan = accountingRequest?.success
+        ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
+        : planCandidate;
       const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
         householdId: runtimeInput.message.householdId,
         parentTaskId: leadTaskId,
@@ -203,18 +210,6 @@ export function deterministicLeadPlanForRequest(
   team: TeamDefinition,
   request: JsonValue,
 ) {
-  if (team.team === 'accounting') {
-    const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
-    if (!parsed.success) return undefined;
-    const workCellId = accountingWorkCellId(parsed.data.intent);
-    return TeamLeadPlanSchemaV1.parse({
-      schemaName: 'team-lead-plan',
-      schemaVersion: 1,
-      recommendedStrategyName: 'single-maker-checker',
-      work: [{ workCellId, makerInput: parsed.data.request }],
-      stopCondition: { code: `checked-${workCellId}`, description: 'Return one checked accounting result.' },
-    });
-  }
   if (team.team === 'query') {
     const parsed = EvidenceRequestSchemaV1.safeParse(request);
     if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
@@ -227,12 +222,6 @@ export function deterministicLeadPlanForRequest(
     });
   }
   return undefined;
-}
-
-function accountingWorkCellId(intent: AccountingLeadRequestV1['intent']): string {
-  if (intent === 'transaction_capture') return 'transaction-capture';
-  if (intent === 'chart_of_accounts') return 'chart-of-accounts';
-  return intent;
 }
 
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {

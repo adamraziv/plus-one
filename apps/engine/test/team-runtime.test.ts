@@ -205,7 +205,7 @@ describe('deterministicLeadPlanForRequest', () => {
     expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
-  it('builds the one valid Accounting lead plan for a typed transaction capture request', () => {
+  it('leaves typed Accounting requests on the modeled team-lead path', () => {
     const request = {
       schemaName: 'accounting-lead-request',
       schemaVersion: 1,
@@ -221,12 +221,6 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     };
 
-    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toEqual({
-      schemaName: 'team-lead-plan',
-      schemaVersion: 1,
-      recommendedStrategyName: 'single-maker-checker',
-      work: [{ workCellId: 'transaction-capture', makerInput: request.request }],
-      stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
-    });
+    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toBeUndefined();
   });
 });
