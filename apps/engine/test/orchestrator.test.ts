@@ -423,6 +423,54 @@ describe('OrchestratorAgent', () => {
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
   });
 
+  it('uses a later verified team result over an earlier failed retry result', async () => {
+    const failedResult = TeamResultEnvelopeSchemaV1.parse({
+      ...teamResult(),
+      status: 'failed',
+      claims: [],
+      makerArtifacts: [],
+      checkerVerdicts: [],
+      freshness: [],
+      completionReason: 'Agent output failed structured validation',
+      outstanding: ['agent_output_schema_failed'],
+    });
+    const verifiedResult = teamResult();
+    const runTeamLead = vi.fn()
+      .mockResolvedValueOnce(failedResult)
+      .mockResolvedValueOnce(verifiedResult);
+    const mainGenerate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: { businessQuestion: 'List our accounts.' },
+      });
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: { businessQuestion: 'List our accounts.' },
+      });
+      return { text: 'The Query team found one account.' };
+    });
+    const finalizerGenerate = vi.fn();
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({
+        ...config,
+        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+          ? finalizerGenerate
+          : mainGenerate,
+      }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(runTeamLead).toHaveBeenCalledTimes(2);
+    expect(finalizerGenerate).not.toHaveBeenCalled();
+    expect(response.body).toContain('Query team status: verified');
+    expect(response.body).not.toContain('agent_output_schema_failed');
+    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+  });
+
   it('delegates obvious account-list reads when the main model returns no checked team result', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const mainGenerate = vi.fn(async () => ({

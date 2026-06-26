@@ -202,7 +202,7 @@ function parseJsonObject(text: unknown): unknown {
 
 function responseFromTeamResults(message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV1[]): OrchestratorFinalResponseV1 {
-  const [teamResult] = teamResults;
+  const teamResult = selectTeamResult(teamResults);
   if (teamResult === undefined) throw new Error('Missing team result for fallback response');
   const body = responseBody(teamResult);
   const response = OrchestratorFinalResponseSchemaV1.parse({
@@ -267,9 +267,22 @@ function citationsFromDraftOrTeamResults(
   if (draftCitations.length > 0 && !isPolicyOnlyCitationSet(draftCitations)) {
     return draftCitations;
   }
-  const [teamResult] = teamResults;
+  const teamResult = selectTeamResult(teamResults);
   if (teamResult !== undefined) return citationsFor(teamResult);
   return [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }];
+}
+
+function selectTeamResult(teamResults: readonly TeamResultEnvelopeV1[]): TeamResultEnvelopeV1 | undefined {
+  return [...teamResults].sort((left, right) =>
+    statusRank(left.status) - statusRank(right.status) || teamResults.lastIndexOf(right) - teamResults.lastIndexOf(left))[0];
+}
+
+function statusRank(status: TeamResultEnvelopeV1['status']): number {
+  if (status === 'verified') return 0;
+  if (status === 'partial') return 1;
+  if (status === 'insufficient_evidence') return 2;
+  if (status === 'conflicted') return 3;
+  return 4;
 }
 
 function isPolicyOnlyCitationSet(citations: OrchestratorResponseDraft['citations']): boolean {
