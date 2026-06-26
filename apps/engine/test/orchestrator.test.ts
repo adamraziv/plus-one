@@ -108,6 +108,17 @@ function teamResult() {
   });
 }
 
+function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting') {
+  return TeamResultEnvelopeSchemaV1.parse({
+    ...teamResult(),
+    team,
+    status: 'insufficient_evidence',
+    claims: [],
+    completionReason: 'Need the payment account before recording this transaction.',
+    outstanding: ['Which account was used to pay?'],
+  });
+}
+
 function finalResponse(body = 'Structured response.'): OrchestratorFinalResponseV1 {
   return OrchestratorFinalResponseSchemaV1.parse({
     schemaName: 'orchestrator-final-response',
@@ -243,7 +254,12 @@ describe('OrchestratorAgent', () => {
 
   it('keeps final schema off the reasoning agent and uses a no-tools finalizer', async () => {
     const mainGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
-      expect(options).toEqual({});
+      expect(options).toEqual({
+        memory: {
+          thread: conversationId,
+          resource: householdId,
+        },
+      });
       return { text: 'Plus One can help with household finance questions.' };
     });
     const finalizerGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
@@ -288,6 +304,27 @@ describe('OrchestratorAgent', () => {
       expect.objectContaining({ id: 'orchestrator', tools: expect.any(Object) }),
       expect.objectContaining({ id: 'orchestrator-finalizer', tools: {} }),
     ]);
+  });
+
+  it('returns a non-terminal turn result when a delegated team needs user clarification', async () => {
+    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate: vi.fn() }) as never,
+      teams: [queryTeam, accountingTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const result = await (orchestrator as OrchestratorAgent & {
+      runTurn: (input: { message: ReturnType<typeof message> }) => Promise<unknown>;
+    }).runTurn({ message: message('add $10 of buying a burger') });
+
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      response: {
+        body: expect.stringContaining('Which account was used to pay?'),
+      },
+    });
   });
 
   it('uses checked team results when a reasoning model returns prose plus fenced JSON after delegation', async () => {

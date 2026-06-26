@@ -60,6 +60,10 @@ const OrchestratorResponseDraftSchema = z.object({
 
 type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>;
 
+export type OrchestratorTurnResult =
+  | { kind: 'final'; response: OrchestratorFinalResponseV1 }
+  | { kind: 'ask-user'; response: OrchestratorFinalResponseV1 };
+
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
   private readonly teamRuntime: OrchestratorTeamRuntime;
@@ -114,6 +118,11 @@ export class OrchestratorAgent {
   }
 
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
+    const result = await this.runTurn(input);
+    return result.response;
+  }
+
+  async runTurn(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorTurnResult> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const signal = input.signal ?? AbortSignal.timeout(60_000);
     const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
@@ -121,27 +130,32 @@ export class OrchestratorAgent {
       const requiredDelegation = requiredTeamForMessage(message);
       if (requiredDelegation?.teamId === 'accounting') {
         await this.delegateRequiredTeam(message, requiredDelegation, signal);
-        return responseFromTeamResults(message, invocation.teamResults);
+        return turnFromTeamResults(message, invocation.teamResults);
       }
       const prompt = [
         'InboundChannelMessageV1 context:',
         JSON.stringify(message),
       ].join('\n');
       try {
-        const result = await this.agent.generate(prompt, {});
+        const result = await this.agent.generate(prompt, {
+          memory: {
+            thread: message.conversationId,
+            resource: message.householdId,
+          },
+        });
         if (requiredDelegation !== undefined && invocation.teamResults.length === 0) {
           await this.delegateRequiredTeam(message, requiredDelegation, signal);
-          return responseFromTeamResults(message, invocation.teamResults);
+          return turnFromTeamResults(message, invocation.teamResults);
         }
         if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-          return responseFromTeamResults(message, invocation.teamResults);
+          return turnFromTeamResults(message, invocation.teamResults);
         }
         const direct = parseFinalResponse(result.object);
-        if (direct !== undefined) return direct;
-        return await this.finalizeFromModelResult(message, result.text, invocation.teamResults);
+        if (direct !== undefined) return { kind: 'final', response: direct };
+        return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
       } catch (error) {
         if (invocation.teamResults.length === 0) throw error;
-        return responseFromTeamResults(message, invocation.teamResults);
+        return turnFromTeamResults(message, invocation.teamResults);
       }
     });
   }
@@ -232,6 +246,18 @@ function responseFromTeamResults(message: InboundChannelMessageV1,
     createdAt: new Date().toISOString(),
   });
   return response;
+}
+
+function turnFromTeamResults(
+  message: InboundChannelMessageV1,
+  teamResults: readonly TeamResultEnvelopeV1[],
+): OrchestratorTurnResult {
+  const response = responseFromTeamResults(message, teamResults);
+  const teamResult = selectTeamResult(teamResults);
+  if (teamResult?.status === 'insufficient_evidence') {
+    return { kind: 'ask-user', response };
+  }
+  return { kind: 'final', response };
 }
 
 function responseFromDraft(
