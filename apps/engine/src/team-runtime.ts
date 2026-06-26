@@ -203,16 +203,36 @@ export function deterministicLeadPlanForRequest(
   team: TeamDefinition,
   request: JsonValue,
 ) {
-  if (team.team !== 'query') return undefined;
-  const parsed = EvidenceRequestSchemaV1.safeParse(request);
-  if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
-  return TeamLeadPlanSchemaV1.parse({
-    schemaName: 'team-lead-plan',
-    schemaVersion: 1,
-    recommendedStrategyName: 'single-maker-checker',
-    work: [{ workCellId: 'query-evidence', makerInput: request }],
-    stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-  });
+  if (team.team === 'accounting') {
+    const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
+    if (!parsed.success) return undefined;
+    const workCellId = accountingWorkCellId(parsed.data.intent);
+    return TeamLeadPlanSchemaV1.parse({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId, makerInput: parsed.data.request }],
+      stopCondition: { code: `checked-${workCellId}`, description: 'Return one checked accounting result.' },
+    });
+  }
+  if (team.team === 'query') {
+    const parsed = EvidenceRequestSchemaV1.safeParse(request);
+    if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
+    return TeamLeadPlanSchemaV1.parse({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'query-evidence', makerInput: request }],
+      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
+  }
+  return undefined;
+}
+
+function accountingWorkCellId(intent: AccountingLeadRequestV1['intent']): string {
+  if (intent === 'transaction_capture') return 'transaction-capture';
+  if (intent === 'chart_of_accounts') return 'chart-of-accounts';
+  return intent;
 }
 
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {

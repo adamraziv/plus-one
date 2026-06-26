@@ -501,7 +501,7 @@ describe('OrchestratorAgent', () => {
     expect(response.body).not.toContain('I can answer directly without a team.');
   });
 
-  it('delegates obvious accounting writes when the main model returns no checked team result', async () => {
+  it('delegates obvious accounting writes without waiting for the main model', async () => {
     const runTeamLead = vi.fn(async () => ({
       ...teamResult(),
       team: 'accounting',
@@ -524,7 +524,7 @@ describe('OrchestratorAgent', () => {
 
     const response = await orchestrator.run({ message: message('add $10 of buying a burger') });
 
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(mainGenerate).not.toHaveBeenCalled();
     expect(finalizerGenerate).not.toHaveBeenCalled();
     expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
       team: accountingTeam,

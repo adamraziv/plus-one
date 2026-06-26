@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@mastra/core/agent';
-import { createAccountingRoleAgents } from '../src/agents/accounting/index.js';
+import {
+  ArtifactEnvelopeSchemaV1,
+  MakerArtifactSchemaV1,
+  MakerInvocationSchemaV1,
+  VerificationTaskSchemaV1,
+} from '@plus-one/contracts';
+import { accountingSkills } from '@plus-one/accounting';
+import {
+  createAccountingRoleAgents,
+  createTransactionCaptureCheckerAgent,
+  createTransactionCaptureMakerAgent,
+} from '../src/agents/accounting/index.js';
 
 const models = {
   lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -102,5 +113,129 @@ describe('Accounting Mastra role agents', () => {
       .toContain('requires external confirmation before persistence');
     expect(String(configs.find((config) => config.id === 'reconciliation-checker')?.instructions))
       .toContain('Return insufficient_evidence when checked evidence is missing');
+  });
+
+  it('accepts valid transaction-capture clarifications without calling the model', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createTransactionCaptureCheckerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'b'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-clarification',
+          schemaVersion: 1,
+          missingFields: ['payment_account', 'occurred_on', 'category'],
+          questions: [
+            'Which account was used?',
+            'On what date did the transaction occur?',
+            'What category should this use?',
+          ],
+          reason: 'The transaction cannot be posted without account, date, and category.',
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'transaction-capture')!;
+    const task = VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'transaction-capture-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'add $10 of buying a burger',
+        known: { amount: '10.00', currency: 'USD' },
+      },
+      permittedEvidence: [],
+      selectedSkill: skill.identity,
+      rubric: { rubricName: 'transaction-capture-rubric', rubricVersion: 1, instructions: ['Check.'] },
+      policyLabels: ['personalized_finance'],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      object: {
+        verdict: 'accepted',
+        coveredArtifactId: makerArtifact.artifactId,
+        coveredArtifactHash: makerArtifact.artifactHash,
+        findings: [],
+      },
+    });
+  });
+
+  it('returns transaction-capture clarifications without calling the model when required fields are missing', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createTransactionCaptureMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'transaction-capture')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'transaction-capture-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'transaction-capture-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'add $10 of buying a burger',
+        known: { amount: '10.00', currency: 'USD' },
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      object: {
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-clarification',
+          missingFields: ['payment_account', 'occurred_on', 'category'],
+        },
+      },
+    });
   });
 });
