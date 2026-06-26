@@ -1,3 +1,10 @@
+import {
+  CheckerVerdictSchemaV1,
+  EvidenceRequestSchemaV1,
+  MakerArtifactSchemaV1,
+  QueryResultSchemaV1,
+  VerificationTaskSchemaV1,
+} from '@plus-one/contracts';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
 import {
@@ -9,7 +16,7 @@ import {
 
 export function createQueryCheckerAgent(input: QueryRoleAgentInput): QueryRoleAgent {
   const factory: QueryRoleAgentFactory = input.agentFactory ?? defaultQueryRoleAgentFactory;
-  return factory({
+  const fallback = factory({
     id: 'query-checker',
     name: 'Query Checker',
     description: 'Checks Query Maker outputs without database tools or parent conversation memory.',
@@ -28,4 +35,52 @@ export function createQueryCheckerAgent(input: QueryRoleAgentInput): QueryRoleAg
       'Output contract: return only the structured CheckerVerdictV1 requested by the runtime.',
     ].join('\n'),
   });
+  const fallbackGenerate = fallback.generate.bind(fallback) as
+    (messages: unknown, options: unknown) => Promise<unknown>;
+  fallback.generate = (async (messages: unknown, options: unknown) => {
+    const task = parseVerificationTask(messages as readonly { role: string; content: string }[]);
+    if (task === undefined) return fallbackGenerate(messages, options);
+    const maker = MakerArtifactSchemaV1.parse(task.makerArtifact.payload);
+    if (maker.outputSchema.schemaName !== 'query-result') return fallbackGenerate(messages, options);
+    const result = QueryResultSchemaV1.parse(maker.output);
+    const findings = queryFindings(task, result);
+    return {
+      object: CheckerVerdictSchemaV1.parse({
+        verdict: findings.length === 0 ? 'accepted' : 'revision_requested',
+        coveredArtifactId: task.makerArtifact.artifactId,
+        coveredArtifactHash: task.makerArtifact.artifactHash,
+        findings,
+      }),
+    };
+  }) as typeof fallback.generate;
+  return fallback;
+}
+
+function parseVerificationTask(messages: readonly { role: string; content: string }[]) {
+  const content = [...messages].reverse().find((message) => message.role === 'user')?.content;
+  if (content === undefined) return undefined;
+  const parsed = VerificationTaskSchemaV1.safeParse(JSON.parse(content));
+  return parsed.success ? parsed.data : undefined;
+}
+
+function queryFindings(
+  task: NonNullable<ReturnType<typeof parseVerificationTask>>,
+  result: ReturnType<typeof QueryResultSchemaV1.parse>,
+) {
+  const findings: Array<{ code: string; message: string }> = [];
+  const request = EvidenceRequestSchemaV1.safeParse(task.makerInput);
+  if (request.success && !sameStrings(result.grain, request.data.desiredGrain)) {
+    findings.push({ code: 'query_grain_mismatch', message: 'Query result grain does not match requested grain.' });
+  }
+  if (!result.sourceReferences.includes(`filter=household_id:eq:${task.householdId}`)) {
+    findings.push({ code: 'query_household_scope_missing', message: 'Query result does not prove household scope.' });
+  }
+  for (const warning of result.coverageWarnings) {
+    findings.push({ code: 'query_coverage_warning', message: warning });
+  }
+  return findings;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

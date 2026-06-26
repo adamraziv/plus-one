@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createSkillRegistration, RoleContextBuilder, SkillRegistry, ToolPermissionRegistry } from '@plus-one/runtime';
 import type { Agent } from '@mastra/core/agent';
-import { MakerInvocationSchemaV1 } from '@plus-one/contracts';
+import {
+  ArtifactEnvelopeSchemaV1,
+  CheckerVerdictSchemaV1,
+  MakerArtifactSchemaV1,
+  MakerInvocationSchemaV1,
+  QueryResultSchemaV1,
+  VerificationTaskSchemaV1,
+} from '@plus-one/contracts';
 import { analystSandboxToolId } from '@plus-one/runtime';
 import { createQueryRoleAgents, splitQueryRoleTools } from '../src/agents/query/index.js';
 
@@ -169,6 +176,109 @@ describe('Query Mastra role agents', () => {
         }],
       },
       toolResults: [{ payload: { toolName: 'query_current_balances' } }],
+    });
+  });
+
+  it('checks a simple QueryResultV1 deterministically without calling the model', async () => {
+    const skill = createSkillRegistration({
+      skillName: 'query-evidence',
+      skillVersion: 1,
+      content: 'Use governed query tools.',
+      allowedTeams: ['query'],
+      allowedRoles: ['query-maker', 'query-checker'],
+      makerInstructions: [],
+      checkerRubric: ['Verify routing.'],
+    });
+    const queryResult = QueryResultSchemaV1.parse({
+      schemaName: 'query-result',
+      schemaVersion: 1,
+      relationName: 'reporting.accounts',
+      grain: ['household', 'account'],
+      rows: [{ account_id: 'acc_1', name: 'Cash' }],
+      fieldDefinitions: ['account_id', 'name'],
+      sourceReferences: [
+        'relation=reporting.accounts',
+        'filter=household_id:eq:hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      ],
+      freshness: 'latest available reporting projection',
+      coverageWarnings: [],
+    });
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'a'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: queryResult,
+        claims: [{ claimId: 'query-result-summary', text: 'Query returned one account.', evidenceArtifactIds: [] }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const verificationTask = VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'query-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'evidence-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        requestId: 'evidence_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        businessQuestion: 'List our accounts.',
+        intendedUse: 'household_finance_answer',
+        timeframe: { start: '2026-06-24', end: '2026-06-24' },
+        desiredGrain: ['household', 'account'],
+        filters: [],
+        requiredFreshness: 'latest available reporting projection',
+        requiredCalculations: [],
+        coverage: ['account list'],
+      },
+      permittedEvidence: [],
+      selectedSkill: skill.identity,
+      rubric: { rubricName: 'query-evidence', rubricVersion: 1, instructions: ['Verify routing.'] },
+      policyLabels: [],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+    const context = new RoleContextBuilder({
+      skills: new SkillRegistry([skill]),
+      tools: new ToolPermissionRegistry([
+        { team: 'query', roleName: 'query-checker', roleVersion: 1, toolIds: [] },
+      ]),
+    }).forChecker({
+      team: 'query',
+      role: { roleName: 'query-checker', roleVersion: 1 },
+      selectedSkill: skill.identity,
+      verificationTask,
+    });
+    const agents = createQueryRoleAgents({
+      models,
+      tools,
+      agentFactory: (config) => ({
+        ...config,
+        generate: vi.fn(async () => {
+          throw new Error('model should not be called');
+        }),
+      }) as never,
+    });
+
+    const result = await agents['query-checker']!.generate([...context.messages], {} as never);
+
+    expect(CheckerVerdictSchemaV1.parse(result.object)).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
     });
   });
 });
