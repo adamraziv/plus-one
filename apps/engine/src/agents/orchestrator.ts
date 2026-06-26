@@ -118,13 +118,17 @@ export class OrchestratorAgent {
     const signal = input.signal ?? AbortSignal.timeout(60_000);
     const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
     return this.activeInvocation.run(invocation, async () => {
+      const requiredDelegation = requiredTeamForMessage(message);
+      if (requiredDelegation?.teamId === 'accounting') {
+        await this.delegateRequiredTeam(message, requiredDelegation, signal);
+        return responseFromTeamResults(message, invocation.teamResults);
+      }
       const prompt = [
         'InboundChannelMessageV1 context:',
         JSON.stringify(message),
       ].join('\n');
       try {
         const result = await this.agent.generate(prompt, {});
-        const requiredDelegation = requiredTeamForMessage(message);
         if (requiredDelegation !== undefined && invocation.teamResults.length === 0) {
           await this.delegateRequiredTeam(message, requiredDelegation, signal);
           return responseFromTeamResults(message, invocation.teamResults);

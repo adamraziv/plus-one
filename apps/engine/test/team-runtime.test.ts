@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EvidenceRequestSchemaV1, InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
 import { queryTeamDefinition } from '@plus-one/query';
+import { accountingTeamDefinition } from '@plus-one/accounting';
 import {
   deterministicLeadPlanForRequest,
   makerInputForLeadWorkItem,
@@ -202,5 +203,30 @@ describe('deterministicLeadPlanForRequest', () => {
     });
 
     expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
+  });
+
+  it('builds the one valid Accounting lead plan for a typed transaction capture request', () => {
+    const request = {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'transaction_capture',
+      request: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'add $10 of buying a burger',
+        known: { amount: '10.00', currency: 'USD' },
+      },
+    };
+
+    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'transaction-capture', makerInput: request.request }],
+      stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
+    });
   });
 });
