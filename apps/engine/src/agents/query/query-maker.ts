@@ -1,4 +1,9 @@
-import { MakerArtifactSchemaV1, MakerInvocationSchemaV1, QueryResultSchemaV1 } from '@plus-one/contracts';
+import {
+  EvidenceRequestSchemaV1,
+  MakerArtifactSchemaV1,
+  MakerInvocationSchemaV1,
+  QueryResultSchemaV1,
+} from '@plus-one/contracts';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
 import {
@@ -35,8 +40,9 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
 
   const fallback = defaultQueryRoleAgentFactory(config);
   const tools = config.tools as Record<string, { execute: (input: unknown, options: unknown) => Promise<unknown> }>;
-  const fallbackGenerate = fallback.generate.bind(fallback);
-  fallback.generate = (async (messages, options) => {
+  const fallbackGenerate = fallback.generate.bind(fallback) as
+    (messages: unknown, options: unknown) => Promise<unknown>;
+  fallback.generate = (async (messages: unknown, options: unknown) => {
     const invocation = parseMakerInvocation(messages as readonly { role: string; content: string }[]);
     const toolId = queryToolIdFor(invocation);
     const activeTools = Array.isArray((options as { activeTools?: unknown }).activeTools)
@@ -71,14 +77,17 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
 }
 
 function parseMakerInvocation(messages: readonly { role: string; content: string }[]) {
-  const content = messages.findLast((message) => message.role === 'user')?.content;
+  const content = [...messages].reverse().find((message) => message.role === 'user')?.content;
   return MakerInvocationSchemaV1.parse(JSON.parse(content ?? 'null'));
 }
 
 function queryToolIdFor(invocation: ReturnType<typeof parseMakerInvocation>): string | undefined {
-  const coverage = invocation.input.coverage[0];
+  const input = EvidenceRequestSchemaV1.safeParse(invocation.input);
+  if (!input.success) return undefined;
+  const coverage = input.data.coverage[0];
   if (coverage === 'account list' || coverage === 'reporting.accounts') return 'query_account_list';
-  if (coverage === 'balance snapshot' || coverage === 'reporting.account_current_balances') {
+  if (coverage === 'balance snapshot' || coverage === 'reporting.current_balances'
+    || coverage === 'reporting.account_current_balances') {
     return 'query_current_balances';
   }
   if (coverage === 'categorized transactions' || coverage === 'reporting.categorized_transactions') {

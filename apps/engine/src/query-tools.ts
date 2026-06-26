@@ -26,8 +26,8 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
   },
   {
     toolName: 'current_balances',
-    relationNames: ['reporting.account_current_balances'],
-    sql: 'SELECT account_id, as_of, native_amount, native_currency, reporting_amount, reporting_currency, freshness_at FROM reporting.account_current_balances WHERE household_id = $1 LIMIT 100',
+    relationNames: ['reporting.current_balances'],
+    sql: 'SELECT account_id, as_of, native_amount, native_currency, reporting_amount, reporting_currency, freshness_at FROM reporting.current_balances WHERE household_id = $1 LIMIT 100',
     parameters: ['$1'],
     limit: 100,
     description: 'Read current account balances.',

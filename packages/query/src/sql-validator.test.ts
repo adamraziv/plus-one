@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ReadOnlySqlValidator } from './sql-validator.js';
 
 const validator = new ReadOnlySqlValidator();
-const allowedRelations = ['reporting.accounts', 'reporting.account_current_balances'];
+const allowedRelations = ['reporting.accounts', 'reporting.current_balances'];
 
 describe('ReadOnlySqlValidator', () => {
   it('accepts one bounded household-scoped reporting select', () => {

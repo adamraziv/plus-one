@@ -250,11 +250,11 @@ describe('TeamExecutor', () => {
         output: QueryResultSchemaV1.parse({
           schemaName: 'query-result',
           schemaVersion: 1,
-          relationName: 'reporting.account_current_balances',
+          relationName: 'reporting.current_balances',
           grain: ['household', 'account'],
           rows: [{ account_id: 'acc_1', native_amount: '10.00' }],
           fieldDefinitions: ['account_id', 'native_amount'],
-          sourceReferences: ['relation=reporting.account_current_balances'],
+          sourceReferences: ['relation=reporting.current_balances'],
           freshness: 'latest available reporting projection',
           coverageWarnings: [],
         }),
@@ -315,7 +315,7 @@ describe('TeamExecutor', () => {
     expect(result.status).toBe('verified');
     expect(result.acceptedMaker?.claims).toEqual([{
       claimId: 'query-result-summary',
-      text: 'Query result from reporting.account_current_balances returned 1 row.',
+      text: 'Query result from reporting.current_balances returned 1 row.',
       evidenceArtifactIds: [],
     }]);
   });

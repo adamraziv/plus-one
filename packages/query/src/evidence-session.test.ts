@@ -12,7 +12,7 @@ import {
 
 const allowedRelations = [
   'reporting.accounts',
-  'reporting.account_current_balances',
+  'reporting.current_balances',
   'reporting.categorized_transactions',
   'reporting.cash_flow_monthly',
   'reporting.source_freshness',
@@ -107,6 +107,41 @@ describe('EvidenceSession', () => {
       'relation=reporting.accounts',
       'filter=household_id:eq:hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     ]);
+  });
+
+  it('uses reporting relation grain instead of table names', async () => {
+    const tools = buildToolRegistry();
+    tools.register({
+      toolName: 'categorized_transactions',
+      relationNames: ['reporting.categorized_transactions'],
+      sql: 'SELECT posting_id, journal_id, account_id FROM reporting.categorized_transactions WHERE household_id = $1 LIMIT 100',
+      parameters: ['$1'],
+      limit: 100,
+      description: 'categorized transactions',
+    });
+    const runner = {
+      async query<R extends Record<string, unknown> = Record<string, unknown>>(text: string) {
+        if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY') return { rows: [] as readonly R[] };
+        if (text.startsWith('SET LOCAL statement_timeout')) return { rows: [] as readonly R[] };
+        if (text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] as readonly R[] };
+        return {
+          rows: [] as readonly R[],
+          fields: [{ name: 'posting_id' }, { name: 'journal_id' }, { name: 'account_id' }],
+        };
+      },
+    };
+    const session = new EvidenceSession(runner, {
+      allowedRelations,
+      maxRows: 500,
+      maxOutputBytes: 1_000_000,
+      statementTimeoutMs: 5_000,
+      validator: new ReadOnlySqlValidator(),
+    }, tools);
+
+    const result = await session.withSession(async (handle) =>
+      handle.runTool('categorized_transactions', ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K']));
+
+    expect(result.grain).toEqual(['household', 'account', 'journal']);
   });
 
   it('keeps field definitions when a typed tool returns zero rows', async () => {

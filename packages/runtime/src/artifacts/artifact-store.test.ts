@@ -43,7 +43,7 @@ class MemoryArtifactRepository implements ArtifactRepository {
     artifactHash: ArtifactEnvelopeV1['artifactHash'];
   }): Promise<ArtifactEnvelopeV1 | undefined> {
     const artifactId = this.taskHashes.get([input.householdId, input.taskId, input.artifactHash].join(':'));
-    return artifactId === undefined ? undefined : this.findById(artifactId);
+    return artifactId === undefined ? undefined : this.findById(ArtifactIdSchema.parse(artifactId));
   }
 }
 

@@ -371,6 +371,58 @@ describe('OrchestratorAgent', () => {
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
   });
 
+  it('does not let the finalizer rewrite failed team results as successful answers', async () => {
+    const failedResult = TeamResultEnvelopeSchemaV1.parse({
+      ...teamResult(),
+      status: 'failed',
+      claims: [],
+      makerArtifacts: [],
+      checkerVerdicts: [],
+      freshness: [],
+      completionReason: 'The checker rejected the artifact or revision attempts were exhausted.',
+      outstanding: ['grain mismatch'],
+    });
+    const runTeamLead = vi.fn(async () => failedResult);
+    const mainGenerate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: { businessQuestion: 'Show our transactions.' },
+      });
+      return { text: 'The query returned verified transactions.' };
+    });
+    const finalizerGenerate = vi.fn(async () => ({
+      object: {
+        body: 'The query returned verified transactions.',
+        policyBoundary: 'personalized_finance',
+        citations: [],
+        assumptions: [],
+        freshness: ['current invocation only'],
+        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+        unsupportedCapabilities: [],
+        recommendationActions: [],
+      },
+    }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({
+        ...config,
+        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+          ? finalizerGenerate
+          : mainGenerate,
+      }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('Show our transactions.') });
+
+    expect(finalizerGenerate).not.toHaveBeenCalled();
+    expect(response.body).toContain('Query team status: failed');
+    expect(response.body).toContain('grain mismatch');
+    expect(response.body).not.toContain('verified transactions');
+    expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
+  });
+
   it('delegates obvious account-list reads when the main model returns no checked team result', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const mainGenerate = vi.fn(async () => ({
@@ -473,7 +525,7 @@ describe('OrchestratorAgent', () => {
       options: unknown,
     ) => Promise<unknown>;
     await expect(execute({ team: 'Query Team', request: 'test' }, {})).resolves.toMatchObject({ error: true });
-    await expect(execute({ team: 'query', request: '\"test\"' }, {})).resolves.toMatchObject({ error: true });
+    await expect(execute({ team: 'query', request: '"test"' }, {})).resolves.toMatchObject({ error: true });
     expect(runTeamLead).not.toHaveBeenCalled();
   });
 });

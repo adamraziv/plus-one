@@ -175,9 +175,9 @@ export class EvidenceHandle {
         details: { rowCount: response.rows.length, limit },
       });
     }
-    const grain = ['household', relationName.replace(/^reporting\./, '')];
     const fields = response.fields?.map((field) => field.name).sort()
       ?? (response.rows[0] === undefined ? [] : Object.keys(response.rows[0]).sort());
+    const grain = grainForRelation(relationName);
     const serialized = JSON.stringify(response.rows);
     if (serialized.length > this.config.maxOutputBytes) {
       throw new PlusOneError({
@@ -213,6 +213,24 @@ function sourceReferencesForToolCall(
     references.push(`filter=household_id:eq:${householdId}`);
   }
   return references;
+}
+
+function grainForRelation(relationName: string): string[] {
+  return {
+    'reporting.accounts': ['household', 'account'],
+    'reporting.current_balances': ['household', 'account'],
+    'reporting.account_daily_balances': ['household', 'account', 'date'],
+    'reporting.household_net_worth_daily': ['household', 'date'],
+    'reporting.journal_activity': ['household', 'journal'],
+    'reporting.categorized_transactions': ['household', 'account', 'journal'],
+    'reporting.cash_flow_monthly': ['household', 'month', 'accounting class', 'currency'],
+    'reporting.obligation_occurrences': ['household', 'obligation occurrence'],
+    'reporting.budget_variance': ['household', 'budget category', 'period'],
+    'reporting.savings_goal_progress': ['household', 'savings goal'],
+    'reporting.debt_progress': ['household', 'debt plan'],
+    'reporting.reconciliation_status': ['household', 'statement snapshot'],
+    'reporting.source_freshness': ['household', 'source system'],
+  }[relationName] ?? ['household', relationName.replace(/^reporting\./, '')];
 }
 
 const PoolLikeClientSchema = z.object({

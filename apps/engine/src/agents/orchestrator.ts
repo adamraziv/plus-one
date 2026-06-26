@@ -129,6 +129,9 @@ export class OrchestratorAgent {
           await this.delegateRequiredTeam(message, requiredDelegation, signal);
           return responseFromTeamResults(message, invocation.teamResults);
         }
+        if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+          return responseFromTeamResults(message, invocation.teamResults);
+        }
         const direct = parseFinalResponse(result.object);
         if (direct !== undefined) return direct;
         return await this.finalizeFromModelResult(message, result.text, invocation.teamResults);
@@ -159,6 +162,9 @@ export class OrchestratorAgent {
     modelText: unknown,
     teamResults: readonly TeamResultEnvelopeV1[],
   ): Promise<OrchestratorFinalResponseV1> {
+    if (teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+      return responseFromTeamResults(message, teamResults);
+    }
     try {
       const result = await this.finalizerAgent.generate([
         'InboundChannelMessageV1 context:',

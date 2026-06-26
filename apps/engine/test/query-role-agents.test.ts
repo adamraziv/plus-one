@@ -12,9 +12,9 @@ const models = {
 };
 
 const tools = {
-  'query_account_list': { execute: vi.fn() } as never,
-  'query_current_balances': { execute: vi.fn() } as never,
-  [analystSandboxToolId]: { execute: vi.fn() } as never,
+  'query_account_list': { execute: vi.fn() },
+  'query_current_balances': { execute: vi.fn() },
+  [analystSandboxToolId]: { execute: vi.fn() },
 };
 
 describe('Query Mastra role agents', () => {
@@ -97,11 +97,11 @@ describe('Query Mastra role agents', () => {
     (tools.query_current_balances.execute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       schemaName: 'query-result',
       schemaVersion: 1,
-      relationName: 'reporting.account_current_balances',
+      relationName: 'reporting.current_balances',
       grain: ['household', 'account'],
       rows: [{ account_id: 'acc_1', native_amount: '10.00' }],
       fieldDefinitions: ['account_id', 'native_amount'],
-      sourceReferences: ['relation=reporting.account_current_balances'],
+      sourceReferences: ['relation=reporting.current_balances'],
       freshness: 'latest available reporting projection',
       coverageWarnings: [],
     });
@@ -154,7 +154,7 @@ describe('Query Mastra role agents', () => {
       }),
     });
 
-    const result = await agents['query-maker']!.generate(context.messages, {
+    const result = await agents['query-maker']!.generate([...context.messages], {
       activeTools: context.activeTools,
     } as never);
 

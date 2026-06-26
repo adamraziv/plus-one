@@ -6,7 +6,7 @@ import {
 
 export const REQUIRED_REPORTING_RELATIONS = [
   'reporting.accounts',
-  'reporting.account_current_balances',
+  'reporting.current_balances',
   'reporting.account_daily_balances',
   'reporting.household_net_worth_daily',
   'reporting.journal_activity',
