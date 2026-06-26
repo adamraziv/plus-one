@@ -96,4 +96,33 @@ describe('Mastra memory storage', () => {
     expect(duplicateLookup?.messages.map((message) => message.id)).toEqual(['msg_02']);
     expect(checkerThreadMessages?.messages).toEqual([]);
   });
+
+  it('persists workflow snapshots across fresh storage instances', async () => {
+    context = await createPostgresTestContext('mastra_workflows');
+
+    const first = createMastraMemoryStorage(context.roleUrls.memory);
+    storages.push(first as { close: () => Promise<void> });
+    await first.init();
+    const workflows = await first.getStore('workflows');
+    await workflows?.persistWorkflowSnapshot({
+      workflowName: 'orchestrator-loop',
+      runId: 'run_01',
+      resourceId: 'conversation_01',
+      snapshot: { status: 'suspended', payload: { question: 'Which account?' } } as never,
+    });
+
+    const second = createMastraMemoryStorage(context.roleUrls.memory);
+    storages.push(second as { close: () => Promise<void> });
+    await second.init();
+    const reloaded = await second.getStore('workflows');
+    const snapshot = await reloaded?.loadWorkflowSnapshot({
+      workflowName: 'orchestrator-loop',
+      runId: 'run_01',
+    });
+
+    expect(snapshot).toMatchObject({
+      status: 'suspended',
+      payload: { question: 'Which account?' },
+    });
+  });
 });

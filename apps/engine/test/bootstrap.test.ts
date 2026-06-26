@@ -50,6 +50,8 @@ describe('engine scaffold', () => {
 
     expect(mastra).toBeInstanceOf(Mastra);
     expect(storage?.stores?.memory).toBeDefined();
+    expect(storage?.stores?.workflows).toBeDefined();
+    expect(mastra.getWorkflow('orchestrator-loop')).toBeDefined();
   });
 
   it('passes the memory URL to the Mastra factory and closes pools through the runtime handle', async () => {
