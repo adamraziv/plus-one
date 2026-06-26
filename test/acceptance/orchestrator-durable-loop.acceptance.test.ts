@@ -16,7 +16,9 @@ let context: PostgresTestContext | undefined;
 let mastra: ReturnType<typeof createMastra> | undefined;
 
 afterEach(async () => {
-  await mastra?.getStorage()?.close();
+  const storage = mastra?.getStorage();
+  const close = storage?.close?.bind(storage);
+  if (close !== undefined) await close();
   mastra = undefined;
   await context?.cleanup();
   context = undefined;
