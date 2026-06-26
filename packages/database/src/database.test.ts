@@ -71,6 +71,7 @@ describe('migration discovery', () => {
       '0010_query_role.sql',
       '0011_mastra_memory_storage.sql',
       '0012_policy_delivery_scheduler.sql',
+      '0013_query_public_current_balances.sql',
     ]);
 
     for (const migration of migrations) {

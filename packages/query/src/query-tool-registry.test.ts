@@ -5,7 +5,7 @@ import { QueryToolRegistry } from './query-tool-registry.js';
 
 const allowedRelations = [
   'reporting.accounts',
-  'reporting.account_current_balances',
+  'reporting.current_balances',
   'reporting.account_daily_balances',
   'reporting.household_net_worth_daily',
   'reporting.journal_activity',
@@ -30,8 +30,8 @@ describe('QueryToolRegistry', () => {
       { toolName: 'account_list', relationNames: ['reporting.accounts'],
         sql: 'SELECT account_id, name FROM reporting.accounts WHERE household_id = $1 LIMIT 100',
         parameters: ['$1'], limit: 100, description: 'list accounts' },
-      { toolName: 'current_balances', relationNames: ['reporting.account_current_balances'],
-        sql: 'SELECT account_id, native_amount FROM reporting.account_current_balances WHERE household_id = $1 LIMIT 100',
+      { toolName: 'current_balances', relationNames: ['reporting.current_balances'],
+        sql: 'SELECT account_id, native_amount FROM reporting.current_balances WHERE household_id = $1 LIMIT 100',
         parameters: ['$1'], limit: 100, description: 'current balances' },
       { toolName: 'categorized_transactions', relationNames: ['reporting.categorized_transactions'],
         sql: 'SELECT posting_id, account_id, amount FROM reporting.categorized_transactions WHERE household_id = $1 LIMIT 100',
@@ -62,7 +62,7 @@ describe('QueryToolRegistry', () => {
       'savings_goal_progress', 'source_freshness',
     ]);
     expect(registry.get('current_balances').relationNames)
-      .toEqual(['reporting.account_current_balances']);
+      .toEqual(['reporting.current_balances']);
   });
 
   it('rejects a tool that targets a non-allowlisted relation', () => {

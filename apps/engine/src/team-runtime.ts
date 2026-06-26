@@ -13,6 +13,7 @@ import {
 import {
   PlusOneError,
   EvidenceRequestSchemaV1,
+  TeamLeadPlanSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
 } from '@plus-one/contracts';
@@ -98,15 +99,16 @@ export function createTeamRuntime(input: {
         attemptLimit: leadPolicy.maxAttempts,
         deadlineAt: new Date(Date.now() + leadPolicy.teamDeadlineMs).toISOString(),
       });
-      const plan = await planner.plan({
-        householdId: runtimeInput.message.householdId,
-        taskId: leadTaskId,
-        team: runtimeInput.team,
-        selectedSkill: leadSkill.identity,
-        request,
-        policyLabels: ['personalized_finance'],
-        abortSignal: runtimeInput.signal,
-      });
+      const plan = deterministicLeadPlanForRequest(runtimeInput.team, request)
+        ?? await planner.plan({
+          householdId: runtimeInput.message.householdId,
+          taskId: leadTaskId,
+          team: runtimeInput.team,
+          selectedSkill: leadSkill.identity,
+          request,
+          policyLabels: ['personalized_finance'],
+          abortSignal: runtimeInput.signal,
+        });
       const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
         householdId: runtimeInput.message.householdId,
         parentTaskId: leadTaskId,
@@ -166,8 +168,6 @@ export function normalizeQueryLeadRequest(
   if (parsed.success) return JSON.parse(JSON.stringify(parsed.data)) as JsonValue;
 
   const businessQuestion = queryBusinessQuestion(message, request);
-  if (!isAccountListQuestion(businessQuestion)) return request;
-
   const date = message.receivedAt.slice(0, 10);
   return JSON.parse(JSON.stringify(EvidenceRequestSchemaV1.parse({
     schemaName: 'evidence-request',
@@ -177,11 +177,11 @@ export function normalizeQueryLeadRequest(
     businessQuestion,
     intendedUse: 'household_finance_answer',
     timeframe: { start: date, end: date },
-    desiredGrain: ['household', 'account'],
+    desiredGrain: desiredGrainForQuestion(businessQuestion),
     filters: [],
     requiredFreshness: 'latest available reporting projection',
     requiredCalculations: [],
-    coverage: ['account list'],
+    coverage: [coverageForQuestion(businessQuestion)],
   }))) as JsonValue;
 }
 
@@ -197,6 +197,22 @@ export function makerInputForLeadWorkItem(
     return normalizedRequest;
   }
   return planMakerInput;
+}
+
+export function deterministicLeadPlanForRequest(
+  team: TeamDefinition,
+  request: JsonValue,
+) {
+  if (team.team !== 'query') return undefined;
+  const parsed = EvidenceRequestSchemaV1.safeParse(request);
+  if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
+  return TeamLeadPlanSchemaV1.parse({
+    schemaName: 'team-lead-plan',
+    schemaVersion: 1,
+    recommendedStrategyName: 'single-maker-checker',
+    work: [{ workCellId: 'query-evidence', makerInput: request }],
+    stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+  });
 }
 
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {
@@ -263,6 +279,32 @@ function isAccountListQuestion(question: string): boolean {
   const normalized = question.trim().toLowerCase();
   return /(?:^|\b)(list|show|what|which)\b[\s\w]*\baccounts?\b/.test(normalized)
     && !/\bbalances?\b/.test(normalized);
+}
+
+function coverageForQuestion(question: string): string {
+  const normalized = question.trim().toLowerCase();
+  if (isAccountListQuestion(normalized)) return 'account list';
+  if (/\bbalances?\b/.test(normalized)) return 'balance snapshot';
+  if (/\btransactions?\b|\bspend(?:ing|s)?\b|\bspent\b/.test(normalized)) return 'categorized transactions';
+  if (/\bbudget\b|\bvariance\b/.test(normalized)) return 'budget variance';
+  if (/\bsavings?\b|\bgoals?\b/.test(normalized)) return 'savings goal progress';
+  if (/\bdebt\b|\bloan\b|\bliabilit(?:y|ies)\b/.test(normalized)) return 'debt progress';
+  if (/\breconcil(?:e|iation)\b|\bstatement\b/.test(normalized)) return 'reconciliation status';
+  if (/\bfreshness\b|\bstale\b|\bsource\b/.test(normalized)) return 'source freshness';
+  return 'requested household finance answer';
+}
+
+function desiredGrainForQuestion(question: string): string[] {
+  const coverage = coverageForQuestion(question);
+  if (coverage === 'account list' || coverage === 'balance snapshot' || coverage === 'debt progress'
+    || coverage === 'reconciliation status') {
+    return ['household', 'account'];
+  }
+  if (coverage === 'categorized transactions') return ['household', 'account', 'journal'];
+  if (coverage === 'budget variance') return ['household', 'category'];
+  if (coverage === 'savings goal progress') return ['household', 'goal'];
+  if (coverage === 'source freshness') return ['household', 'source'];
+  return ['household'];
 }
 
 function workInputFor(

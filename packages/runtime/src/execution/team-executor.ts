@@ -1,6 +1,6 @@
 import {
   CheckerVerdictSchemaV1, MakerArtifactSchemaV1, MakerInvocationSchemaV1,
-  PlusOneError, TeamResultStatusSchemaV1, VerificationTaskSchemaV1,
+  PlusOneError, QueryResultSchemaV1, TeamResultStatusSchemaV1, VerificationTaskSchemaV1,
   type ArtifactEnvelopeV1, type CheckerVerdictV1, type JsonValue,
   type MakerArtifactV1, type SkillIdentityV1, type StopConditionV1,
 } from '@plus-one/contracts';
@@ -106,6 +106,7 @@ export class TeamExecutor {
           }),
           outputSchema: makerArtifactSchema, abortSignal: teamAbortSignal,
         });
+        makerOutput = synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName);
         assertMakerOutputSchemaIdentity(makerOutput.outputSchema,
           input.workCell.outputSchemaIdentity);
         input.workCell.makerOutputSchema.parse(makerOutput.output);
@@ -119,7 +120,7 @@ export class TeamExecutor {
         if (makerOrdinal < attemptLimit) continue;
         await this.dependencies.runtime.fail({ householdId: input.householdId, taskId: input.taskId,
           expectedFrom: 'maker_running', failureCategory: 'runtime_failure', resumable: false });
-        throw error;
+        return failedResult(input, makerArtifacts, checkerVerdicts, error);
       }
 
       const makerArtifact = await this.dependencies.runtime.validateMaker({
@@ -161,7 +162,7 @@ export class TeamExecutor {
           if (checkerOrdinal < attemptLimit) continue;
           await this.dependencies.runtime.fail({ householdId: input.householdId, taskId: input.taskId,
             expectedFrom: 'checker_running', failureCategory: 'runtime_failure', resumable: false });
-          throw error;
+          return failedResult(input, makerArtifacts, checkerVerdicts, error);
         }
       }
       if (verdict === undefined) throw new Error('Checker attempt accounting failed');
@@ -244,6 +245,50 @@ export class TeamExecutor {
     return { status: 'failed', reason: 'The checker rejected the artifact or revision attempts were exhausted.',
       outstanding: verdict.findings.map((finding) => finding.message) };
   }
+}
+
+function synthesizeClaimsIfNeeded(
+  makerOutput: MakerArtifactV1,
+  outputSchemaName: string,
+): MakerArtifactV1 {
+  if (makerOutput.claims.length > 0 || outputSchemaName !== 'query-result') return makerOutput;
+  const result = QueryResultSchemaV1.safeParse(makerOutput.output);
+  if (!result.success) return makerOutput;
+  const rowLabel = result.data.rows.length === 1 ? 'row' : 'rows';
+  return {
+    ...makerOutput,
+    claims: [{
+      claimId: 'query-result-summary',
+      text: `Query result from ${result.data.relationName} returned ${result.data.rows.length} ${rowLabel}.`,
+      evidenceArtifactIds: [],
+    }],
+  };
+}
+
+function failedResult(
+  input: {
+    householdId: string;
+    taskId: string;
+    team: string;
+    workCell: WorkCellDefinition;
+  },
+  makerArtifacts: readonly ArtifactEnvelopeV1[],
+  checkerVerdicts: readonly CheckerVerdictV1[],
+  error: unknown,
+): CheckedWorkCellResult {
+  const plusOne = error instanceof PlusOneError ? error : undefined;
+  return {
+    householdId: input.householdId,
+    taskId: input.taskId,
+    team: input.team,
+    workCellId: input.workCell.workCellId,
+    status: 'failed',
+    completionState: 'terminal',
+    makerArtifacts,
+    checkerVerdicts,
+    completionReason: plusOne?.message ?? 'Work cell execution failed.',
+    outstanding: plusOne === undefined ? [] : [plusOne.code],
+  };
 }
 
 function assertMakerClaimsUsePermittedEvidence(

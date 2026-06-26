@@ -12,7 +12,7 @@ describe('ReportingCatalog', () => {
   it('lists every V1 relation with grain, metrics, freshness, and source semantics', () => {
     expect(REQUIRED_REPORTING_RELATIONS).toEqual([
       'reporting.accounts',
-      'reporting.account_current_balances',
+      'reporting.current_balances',
       'reporting.account_daily_balances',
       'reporting.household_net_worth_daily',
       'reporting.journal_activity',

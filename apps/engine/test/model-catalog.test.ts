@@ -19,6 +19,23 @@ describe('model catalog validation', () => {
     }));
   });
 
+  it('resolves /models relative to nested API bases instead of the domain root', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: 'deepseek-v4-flash-free', owned_by: 'opencode' }],
+    }), { status: 200 }));
+
+    await expect(validateConfiguredModels({
+      endpoint: 'https://opencode.ai/zen/v1',
+      apiKey: 'test-key',
+      modelIds: ['opencode/deepseek-v4-flash-free'],
+      fetch,
+    })).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledWith('https://opencode.ai/zen/v1/models', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer test-key' }),
+    }));
+  });
+
   it('rejects configured models missing from endpoint /models', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       data: [{ id: 'deepseek/other-model' }],

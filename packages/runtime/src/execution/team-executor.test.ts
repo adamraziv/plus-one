@@ -1,3 +1,4 @@
+import { QueryResultSchemaV1 } from '@plus-one/contracts';
 import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 import { TeamExecutor } from '../index.js';
@@ -219,6 +220,156 @@ describe('TeamExecutor', () => {
     expect(runner.run).toHaveBeenCalledTimes(3);
     expect(runtime.validateMaker).toHaveBeenCalledTimes(1);
     expect(runtime.fail).not.toHaveBeenCalled();
+  });
+
+  it('synthesizes one checked claim for verified query results that omit claims', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      validateMaker: vi.fn(async (input) => ({
+        ...input,
+        artifactType: 'maker_output',
+        schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+        canonicalizationVersion: 'rfc8785-v1',
+        hashAlgorithm: 'sha256',
+        artifactHash: 'a'.repeat(64),
+        createdAt: '2026-06-26T00:00:00.000Z',
+      })),
+      beginChecker: vi.fn(),
+      validateChecker: vi.fn(async () => ({ artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K', artifactHash: 'b'.repeat(64) })),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const runner = { run: vi.fn()
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: QueryResultSchemaV1.parse({
+          schemaName: 'query-result',
+          schemaVersion: 1,
+          relationName: 'reporting.current_balances',
+          grain: ['household', 'account'],
+          rows: [{ account_id: 'acc_1', native_amount: '10.00' }],
+          fieldDefinitions: ['account_id', 'native_amount'],
+          sourceReferences: ['relation=reporting.current_balances'],
+          freshness: 'latest available reporting projection',
+          coverageWarnings: [],
+        }),
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'accepted',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        coveredArtifactHash: 'a'.repeat(64),
+        findings: [],
+      }) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({
+          systemPrompt: 'maker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+        forChecker: vi.fn(() => ({
+          systemPrompt: 'checker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({
+        maxAttempts: 1,
+        teamDeadlineMs: 5_000,
+        identity: { policyName: 'test', policyVersion: 1 },
+      })) } as never,
+      ids: { nextArtifactId: vi.fn()
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K') },
+    });
+
+    const result = await executor.executeWorkCell({
+      ...makeExecutionInput(),
+      workCell: {
+        ...makeExecutionInput().workCell,
+        makerInputSchema: z.object({ schemaName: z.literal('evidence-request') }).passthrough(),
+        makerOutputSchema: QueryResultSchemaV1,
+        inputSchemaIdentity: { schemaName: 'evidence-request', schemaVersion: 1 },
+        outputSchemaIdentity: { schemaName: 'query-result', schemaVersion: 1 },
+      },
+      makerInput: { schemaName: 'evidence-request', schemaVersion: 1 },
+      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
+
+    expect(result.status).toBe('verified');
+    expect(result.acceptedMaker?.claims).toEqual([{
+      claimId: 'query-result-summary',
+      text: 'Query result from reporting.current_balances returned 1 row.',
+      evidenceArtifactIds: [],
+    }]);
+  });
+
+  it('returns a failed terminal result instead of throwing when maker retries are exhausted', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      validateMaker: vi.fn(),
+      beginChecker: vi.fn(),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const runner = { run: vi.fn()
+      .mockRejectedValueOnce(new Error('structured output unavailable'))
+      .mockRejectedValueOnce(new Error('structured output unavailable')) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({
+          systemPrompt: 'maker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+        forChecker: vi.fn(() => ({
+          systemPrompt: 'checker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({
+        maxAttempts: 2,
+        teamDeadlineMs: 5_000,
+        identity: { policyName: 'test', policyVersion: 1 },
+      })) } as never,
+      ids: { nextArtifactId: vi.fn() },
+    });
+
+    const result = await executor.executeWorkCell(makeExecutionInput());
+
+    expect(result.status).toBe('failed');
+    expect(result.completionState).toBe('terminal');
+    expect(result.makerArtifacts).toEqual([]);
+    expect(runtime.fail).toHaveBeenCalledTimes(1);
   });
 });
 

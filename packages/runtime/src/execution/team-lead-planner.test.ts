@@ -142,7 +142,66 @@ describe('TeamLeadPlanner', () => {
       activeTools: [],
       parentMessages: [],
       memoryEnabled: false,
-      outputSchema: TeamLeadPlanSchemaV1,
+      outputSchema: expect.anything(),
     }));
+  });
+
+  it('normalizes underscore-delimited lead identifiers before validating the final plan', async () => {
+    const generate = vi.fn(async () => ({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single_maker_checker',
+      work: [{ workCellId: 'query_evidence', makerInput: {} }],
+      stopCondition: { code: 'query_answer', description: 'Return one checked query answer.' },
+    }));
+    const runner = new AgentInvocationRunner({
+      agents: { generate } as StructuredAgentPort,
+      policies: new RuntimePolicyRegistry({
+        models: { 'provider/lead': ['structured_output'] },
+        policies: [policy],
+      }),
+      ledger: {
+        startRun: vi.fn(async () => undefined),
+        finishRun: vi.fn(async () => undefined),
+        startAttempt: vi.fn(async () => undefined),
+        finishAttempt: vi.fn(async () => undefined),
+      },
+      ids: { nextRunId: () => 'run_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+    const contexts = new RoleContextBuilder({
+      skills: new SkillRegistry([{
+        identity: selectedSkill,
+        content: 'Route one request to query-evidence.',
+        allowedTeams: ['query'],
+        allowedRoles: ['query-lead'],
+        makerInstructions: [],
+        checkerRubric: ['Verify routing.'],
+      }]),
+      tools: new ToolPermissionRegistry([
+        { team: 'query', roleName: 'query-lead', roleVersion: 1, toolIds: [] },
+        { team: 'query', roleName: 'query-maker', roleVersion: 1, toolIds: ['query_account_list'] },
+      ]),
+    });
+    const planner = new TeamLeadPlanner({
+      runner,
+      contexts,
+      strategies: ExecutionStrategyRegistry.withRequiredStrategies(),
+    });
+
+    await expect(planner.plan({
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team,
+      selectedSkill,
+      request: { businessQuestion: 'What are our balances?' },
+      policyLabels: ['personalized_finance'],
+      abortSignal: AbortSignal.timeout(1_000),
+    })).resolves.toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'query-evidence', makerInput: {} }],
+      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
   });
 });

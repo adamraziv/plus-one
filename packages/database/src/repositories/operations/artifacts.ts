@@ -63,14 +63,32 @@ export class PostgresArtifactRepository {
   async findById(
     artifactId: ArtifactEnvelopeV1['artifactId'],
   ): Promise<ArtifactEnvelopeV1 | undefined> {
+    return this.findWhere('a.artifact_id = $1', [ArtifactIdSchema.parse(artifactId)]);
+  }
+
+  async findByTaskAndHash(input: {
+    householdId: ArtifactEnvelopeV1['householdId'];
+    taskId: ArtifactEnvelopeV1['taskId'];
+    artifactHash: ArtifactEnvelopeV1['artifactHash'];
+  }): Promise<ArtifactEnvelopeV1 | undefined> {
+    return this.findWhere(
+      'h.household_id = $1 AND a.task_id = $2 AND a.artifact_hash = $3',
+      [input.householdId, input.taskId, input.artifactHash],
+    );
+  }
+
+  private async findWhere(
+    predicate: string,
+    values: readonly unknown[],
+  ): Promise<ArtifactEnvelopeV1 | undefined> {
     const result = await this.pool.query<ArtifactRow>(
       `SELECT a.artifact_id, h.household_id, a.task_id, a.artifact_type, a.schema_name,
               a.schema_version, a.canonicalization_version, a.hash_algorithm, a.artifact_hash,
               a.payload, a.created_at
        FROM operations.artifacts a
        JOIN operations.households h ON h.id = a.household_id
-       WHERE a.artifact_id = $1`,
-      [ArtifactIdSchema.parse(artifactId)],
+       WHERE ${predicate}`,
+      [...values],
     );
     const row = result.rows[0];
 

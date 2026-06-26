@@ -10,6 +10,7 @@ import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
 import type { RoleAgentTools } from './mastra/role-agent.js';
 import { validateConfiguredModels } from './model-catalog.js';
+import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
 
@@ -39,9 +40,9 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     ],
   });
   const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
-  const queryTools = dependencies.queryTools ?? {};
-  if (config.nodeEnv === 'production' && Object.keys(queryTools).length === 0) {
-    throw new Error('Production bootstrap requires configured Query tools.');
+  const queryTools = dependencies.queryTools ?? createDefaultQueryTools(pools);
+  if (Object.keys(queryTools).length === 0) {
+    throw new Error('Bootstrap requires configured Query tools.');
   }
   if (config.nodeEnv === 'production' && dependencies.orchestratorAgent === undefined) {
     throw new Error('Production bootstrap requires a configured orchestrator agent.');

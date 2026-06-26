@@ -37,6 +37,7 @@ describe('reporting schema', () => {
       );
       expect(views.rows.map((row) => row.table_name)).toEqual(expect.arrayContaining([
         'accounts',
+        'current_balances',
         'journal_activity',
         'categorized_transactions',
         'cash_flow_monthly',
@@ -51,19 +52,25 @@ describe('reporting schema', () => {
       const metadata = await owner.query<{ relation_name: string }>(
         'SELECT relation_name FROM reporting.relation_metadata ORDER BY relation_name',
       );
-      expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.account_current_balances');
+      expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.current_balances');
       expect(metadata.rows).toHaveLength(13);
+
+      const currentBalanceHousehold = await owner.query<{ data_type: string }>(
+        `SELECT data_type FROM information_schema.columns
+         WHERE table_schema='reporting' AND table_name='current_balances' AND column_name='household_id'`,
+      );
+      expect(currentBalanceHousehold.rows[0]?.data_type).toBe('text');
     } finally {
       await owner.end();
     }
   });
 
-  it('grants query role reporting reads after the Plan 10 allowlist migration', async () => {
+  it('grants query role reporting reads through public reporting views', async () => {
     const { Pool } = await import('pg');
     const owner = new Pool({ connectionString: context.migratorUrl });
     try {
       const privileges = await owner.query<{ can_select: boolean }>(
-        `SELECT has_table_privilege('plus_one_query','reporting.account_current_balances','SELECT') AS can_select`,
+        `SELECT has_table_privilege('plus_one_query','reporting.current_balances','SELECT') AS can_select`,
       );
       expect(privileges.rows[0]?.can_select).toBe(true);
     } finally {

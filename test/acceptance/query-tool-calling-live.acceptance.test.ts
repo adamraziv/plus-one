@@ -94,7 +94,7 @@ describe('live Mastra adapter tool calling', () => {
       abortSignal: AbortSignal.timeout(60_000),
     });
 
-    expect(hits).toEqual([`${toolId}:[\"hh_01JNZQ4A9B8C7D6E5F4G3H2J1K\"]`]);
+    expect(hits).toEqual([`${toolId}:["hh_01JNZQ4A9B8C7D6E5F4G3H2J1K"]`]);
     expect(result.answer.length).toBeGreaterThan(0);
   });
 });
