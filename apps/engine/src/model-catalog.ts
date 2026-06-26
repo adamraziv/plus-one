@@ -15,7 +15,10 @@ export async function validateConfiguredModels(input: {
   fetch?: typeof globalThis.fetch;
 }): Promise<void> {
   const fetcher = input.fetch ?? globalThis.fetch;
-  const url = new URL('/models', input.endpoint.endsWith('/') ? input.endpoint : `${input.endpoint}/`);
+  const base = input.endpoint.endsWith('/chat/completions')
+    ? input.endpoint.slice(0, -'/chat/completions'.length)
+    : input.endpoint;
+  const url = new URL('models', base.endsWith('/') ? base : `${base}/`);
   const response = await fetcher(url.toString(), {
     headers: { Authorization: `Bearer ${input.apiKey}` },
   });
