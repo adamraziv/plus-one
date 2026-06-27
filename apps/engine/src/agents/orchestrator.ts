@@ -25,6 +25,7 @@ const orchestratorInstructions = [
   'A request to add, record, capture, import, reconcile, or change accounting data is accounting, not query.',
   'For internal Plus One ledger work, your next action must be delegateTeam with team accounting; do not answer directly first.',
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
+  'Do not ask the user to confirm transaction capture directly; delegateTeam accounting must ask any needed clarification.',
   'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
