@@ -275,6 +275,13 @@ describe('OrchestratorAgent', () => {
       });
       return { text: 'Plus One can help with household finance questions.' };
     });
+    const accountingIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
+      expect(options).toMatchObject({
+        structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
+        toolChoice: 'none',
+      });
+      return { object: { shouldDelegateTransactionCapture: false, known: {} } };
+    });
     const finalizerGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
       expect(options).toMatchObject({
         structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
@@ -298,6 +305,9 @@ describe('OrchestratorAgent', () => {
       model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
       agentFactory: (config) => {
         configs.push({ id: config.id, tools: config.tools as Record<string, unknown> | undefined });
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
         return {
           ...config,
           generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
@@ -312,9 +322,11 @@ describe('OrchestratorAgent', () => {
     await expect(orchestrator.run({ message: message('What can you do?') }))
       .resolves.toMatchObject({ body: 'Plus One can help with household finance questions.' });
     expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).toHaveBeenCalledTimes(1);
     expect(configs).toEqual([
       expect.objectContaining({ id: 'orchestrator', tools: expect.any(Object) }),
+      expect.objectContaining({ id: 'orchestrator-accounting-intent', tools: {} }),
       expect.objectContaining({ id: 'orchestrator-finalizer', tools: {} }),
     ]);
   });
@@ -636,17 +648,98 @@ describe('OrchestratorAgent', () => {
     });
   });
 
+  it('uses structured intent classification when the reasoning model answers directly without delegating', async () => {
+    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const mainGenerate = vi.fn(async () => ({ text: 'Transaction recorded.' }));
+    const accountingIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
+      expect(options).toMatchObject({
+        structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
+        toolChoice: 'none',
+      });
+      return {
+        object: {
+          shouldDelegateTransactionCapture: true,
+          instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
+          known: {
+            amount: '10.00',
+            currency: 'USD',
+            occurredOn: '2026-06-27',
+            paymentAccountName: 'checking',
+            categoryName: 'dining out',
+          },
+        },
+      };
+    });
+    const finalizerGenerate = vi.fn();
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
+      teams: [queryTeam, accountingTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const result = await orchestrator.runTurn({
+      message: message('Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.'),
+    });
+
+    expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(finalizerGenerate).not.toHaveBeenCalled();
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: accountingTeam,
+      request: expect.objectContaining({
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'transaction_capture',
+        request: expect.objectContaining({
+          schemaName: 'transaction-capture-request-draft',
+          known: expect.objectContaining({
+            amount: '10.00',
+            currency: 'USD',
+            occurredOn: '2026-06-27',
+            paymentAccountName: 'checking',
+            categoryName: 'dining out',
+          }),
+        }),
+      }),
+    }));
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      response: {
+        body: expect.stringContaining('Which account was used to pay?'),
+      },
+    });
+  });
+
   it('fails instead of wrapping invalid no-team model output as plain text', async () => {
     const mainGenerate = vi.fn(async () => ({ text: 'I recorded it.' }));
+    const accountingIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateTransactionCapture: false, known: {} },
+    }));
     const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));
     const orchestrator = new OrchestratorAgent({
       model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
       teams: [queryTeam],
       teamRuntime: { runTeamLead: vi.fn() },
     });
@@ -654,6 +747,7 @@ describe('OrchestratorAgent', () => {
     await expect(orchestrator.run({ message: message('What can you do?') }))
       .rejects.toThrow();
     expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).toHaveBeenCalledTimes(1);
   });
 

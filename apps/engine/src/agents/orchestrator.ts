@@ -3,10 +3,13 @@ import { createHash } from 'node:crypto';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
 import { z } from 'zod';
 import {
+  CurrencyCodeSchema,
   InboundChannelMessageSchemaV1,
+  JsonValueSchema,
   OrchestratorFinalResponseSchemaV1,
   type ChannelKindV1,
   type InboundChannelMessageV1,
+  type JsonValue,
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
@@ -43,6 +46,15 @@ const finalizerInstructions = [
   'Return only the requested structured draft object.',
 ].join('\n');
 
+const accountingIntentInstructions = [
+  'You classify only explicit Plus One internal ledger transaction-capture requests.',
+  'Return shouldDelegateTransactionCapture true when the user asks to record, add, capture, or log a purchase, spend, or expense in Plus One accounting records.',
+  'Return false for read questions, capability questions, external payments, trades, tax filings, provider account changes, or unclear chit-chat.',
+  'When true, preserve the original instruction and extract only user-stated amount, currency, occurredOn date, paymentAccountName, and categoryName.',
+  'Do not invent internal account ids or category ids.',
+  'Return only the requested structured object.',
+].join('\n');
+
 const citationDraftSchema = z.object({
   label: z.string().min(1).max(512),
   artifactId: z.string().regex(/^artifact_[0-9A-HJKMNP-TV-Z]{26}$/).optional(),
@@ -63,12 +75,27 @@ const OrchestratorResponseDraftSchema = z.object({
 
 type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>;
 
+const AccountingIntentDraftSchema = z.object({
+  shouldDelegateTransactionCapture: z.boolean(),
+  instruction: z.string().min(1).max(4_000).optional(),
+  known: z.object({
+    amount: z.string().min(1).max(128).optional(),
+    currency: CurrencyCodeSchema.optional(),
+    paymentAccountName: z.string().min(1).max(512).optional(),
+    occurredOn: z.string().min(1).max(64).optional(),
+    categoryName: z.string().min(1).max(512).optional(),
+  }).strict().default({}),
+}).strict();
+
+type AccountingIntentDraft = z.infer<typeof AccountingIntentDraftSchema>;
+
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
   | { kind: 'ask-user'; response: OrchestratorFinalResponseV1 };
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
+  private readonly teamRuntime: OrchestratorTeamRuntime;
   private readonly activeInvocation = new AsyncLocalStorage<{
     message: InboundChannelMessageV1;
     signal: AbortSignal;
@@ -76,6 +103,7 @@ export class OrchestratorAgent {
   }>();
   readonly agent: Agent<string, ToolsInput, unknown>;
   readonly finalizerAgent: Agent<string, ToolsInput, unknown>;
+  readonly accountingIntentAgent: Agent<string, ToolsInput, unknown>;
   readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
 
   constructor(private readonly dependencies: {
@@ -93,6 +121,7 @@ export class OrchestratorAgent {
         return result;
       },
     };
+    this.teamRuntime = teamRuntime;
     this.agentTools = {
       delegateTeam: createDelegateTeamTool({
         teams: this.teams,
@@ -107,6 +136,14 @@ export class OrchestratorAgent {
       instructions: orchestratorInstructions,
       model: toMastraModel(dependencies.model),
       tools: this.agentTools,
+    });
+    this.accountingIntentAgent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
+      id: 'orchestrator-accounting-intent',
+      name: 'Orchestrator Accounting Intent',
+      description: 'Classifies explicit internal transaction capture requests into a typed accounting draft.',
+      instructions: accountingIntentInstructions,
+      model: toMastraModel(dependencies.model),
+      tools: {},
     });
     this.finalizerAgent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
       id: 'orchestrator-finalizer',
@@ -144,12 +181,57 @@ export class OrchestratorAgent {
         }
         const direct = parseFinalResponse(result.object);
         if (direct !== undefined) return { kind: 'final', response: direct };
+        if (invocation.teamResults.length === 0) {
+          const accountingRequest = await this.accountingRequestFromIntent(message);
+          if (accountingRequest !== undefined) {
+            await this.delegateTeam(message, 'accounting', accountingRequest, signal);
+            return turnFromTeamResults(message, invocation.teamResults);
+          }
+        }
         return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
       } catch (error) {
         if (invocation.teamResults.length === 0) throw error;
         return turnFromTeamResults(message, invocation.teamResults);
       }
     });
+  }
+
+  private async delegateTeam(
+    message: InboundChannelMessageV1,
+    teamId: string,
+    request: JsonValue,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const team = this.teams.get(teamId);
+    if (team === undefined) throw new Error(`Unknown team: ${teamId}`);
+    await this.teamRuntime.runTeamLead({ message, team, request, signal });
+  }
+
+  private async accountingRequestFromIntent(message: InboundChannelMessageV1): Promise<JsonValue | undefined> {
+    try {
+      const result = await this.accountingIntentAgent.generate([
+        'InboundChannelMessageV1 context:',
+        JSON.stringify(message),
+      ].join('\n'), {
+        structuredOutput: { schema: AccountingIntentDraftSchema, jsonPromptInjection: true },
+        toolChoice: 'none',
+      });
+      const intent = AccountingIntentDraftSchema.parse(result.object ?? parseJsonObject(result.text));
+      if (!intent.shouldDelegateTransactionCapture) return undefined;
+      return JsonValueSchema.parse({
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'transaction_capture',
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: intent.instruction ?? message.body,
+          known: transactionKnownFromIntent(intent.known),
+        },
+      });
+    } catch {
+      return undefined;
+    }
   }
 
   private async finalizeFromModelResult(
@@ -319,6 +401,16 @@ function labelForTeam(team: string): string {
   if (team === 'accounting') return 'Accounting team';
   if (team === 'query') return 'Query team';
   return `${team} team`;
+}
+
+function transactionKnownFromIntent(known: AccountingIntentDraft['known']) {
+  return {
+    ...(known.amount === undefined ? {} : { amount: known.amount }),
+    ...(known.currency === undefined ? {} : { currency: known.currency }),
+    ...(known.paymentAccountName === undefined ? {} : { paymentAccountName: known.paymentAccountName }),
+    ...(known.occurredOn === undefined ? {} : { occurredOn: known.occurredOn }),
+    ...(known.categoryName === undefined ? {} : { categoryName: known.categoryName }),
+  };
 }
 
 function destinationFor(channel: ChannelKindV1, destination: unknown): Record<string, unknown> {
