@@ -8,7 +8,7 @@ import { createQueryTools } from '../src/tools/query.js';
 describe('engine Mastra helper', () => {
   it('creates Query tools with permission ids used by the Query Team definition', async () => {
     const registry = new QueryToolRegistry({
-      allowedRelations: ['reporting.accounts'],
+      allowedRelations: ['reporting.accounts', 'reporting.category_spend_monthly'],
       maxRows: 100,
       validator: new ReadOnlySqlValidator(),
     });
@@ -19,6 +19,14 @@ describe('engine Mastra helper', () => {
       parameters: ['$1'],
       limit: 100,
       description: 'List accounts.',
+    });
+    registry.register({
+      toolName: 'category_spend_monthly',
+      relationNames: ['reporting.category_spend_monthly'],
+      sql: 'SELECT month_start, category_name, native_amount FROM reporting.category_spend_monthly WHERE household_id = $1 LIMIT 100',
+      parameters: ['$1'],
+      limit: 100,
+      description: 'Monthly spend by category.',
     });
 
     const runTool = vi.fn(async (_toolName: string, parameters: readonly unknown[]) => {
@@ -41,7 +49,11 @@ describe('engine Mastra helper', () => {
       analystSandboxTool: createAnalystSandboxTool(),
     });
 
-    expect(Object.keys(tools).sort()).toEqual(['query_account_list', 'query_analyst_sandbox']);
+    expect(Object.keys(tools).sort()).toEqual([
+      'query_account_list',
+      'query_analyst_sandbox',
+      'query_category_spend_monthly',
+    ]);
     const accountList = tools.query_account_list as unknown as {
       execute: (input: unknown, options: unknown) => Promise<unknown>;
     };

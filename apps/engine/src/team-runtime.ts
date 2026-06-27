@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import {
   PostgresArtifactRepository,
   PostgresVerificationLedgerRepository,
@@ -6,6 +7,7 @@ import {
 } from '@plus-one/database';
 import {
   AccountingLeadRequestSchemaV1,
+  JournalWorkRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
   accountingSkills,
   validateAccountingLeadPlan,
@@ -148,7 +150,27 @@ export async function normalizeAccountingLeadRequest(
   request: JsonValue,
 ): Promise<JsonValue> {
   const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
-  if (!parsed.success || parsed.data.intent !== 'transaction_capture') return request;
+  if (!parsed.success) return request;
+  if (parsed.data.intent === 'journal') {
+    if (JournalWorkRequestSchemaV1.safeParse(parsed.data.request).success) return request;
+    const draft = JournalWorkRequestDraftSchema.safeParse(parsed.data.request);
+    if (!draft.success) return request;
+    const bookId = await resolveHouseholdBookId(pools, message.householdId);
+    return JSON.parse(JSON.stringify(AccountingLeadRequestSchemaV1.parse({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'journal',
+      request: JournalWorkRequestSchemaV1.parse({
+        schemaName: 'journal-work-request',
+        schemaVersion: 1,
+        householdId: message.householdId,
+        bookId,
+        operation: draft.data.operation,
+        instruction: draft.data.instruction,
+      }),
+    }))) as JsonValue;
+  }
+  if (parsed.data.intent !== 'transaction_capture') return request;
   if (TransactionCaptureRequestSchemaV1.safeParse(parsed.data.request).success) return request;
 
   const draft = TransactionCaptureRequestDraftSchemaV1.safeParse(parsed.data.request);
@@ -208,10 +230,10 @@ export function makerInputForLeadWorkItem(
   planMakerInput: JsonValue,
   normalizedRequest: JsonValue,
 ): JsonValue {
-  if (team.team === 'query'
-    && workCellId === 'query-evidence'
-    && EvidenceRequestSchemaV1.safeParse(normalizedRequest).success) {
-    return normalizedRequest;
+  if (team.team === 'query' && workCellId === 'query-evidence') {
+    const plan = EvidenceRequestSchemaV1.safeParse(planMakerInput);
+    if (plan.success) return JSON.parse(JSON.stringify(plan.data)) as JsonValue;
+    if (EvidenceRequestSchemaV1.safeParse(normalizedRequest).success) return normalizedRequest;
   }
   return planMakerInput;
 }
@@ -222,7 +244,11 @@ export function deterministicLeadPlanForRequest(
 ) {
   if (team.team === 'query') {
     const parsed = EvidenceRequestSchemaV1.safeParse(request);
-    if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
+    if (!parsed.success
+      || parsed.data.requiredCalculations.length > 0
+      || !parsed.data.coverage.some((coverage) => deterministicQueryCoverages.has(coverage))) {
+      return undefined;
+    }
     return TeamLeadPlanSchemaV1.parse({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
@@ -231,8 +257,78 @@ export function deterministicLeadPlanForRequest(
       stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     });
   }
+  if (team.team === 'accounting') {
+    const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
+    if (!parsed.success) return undefined;
+    const plan = deterministicAccountingPlans[parsed.data.intent];
+    return TeamLeadPlanSchemaV1.parse({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: plan.workCellId, makerInput: parsed.data.request }],
+      stopCondition: {
+        code: plan.stopCode,
+        description: plan.stopDescription,
+      },
+    });
+  }
   return undefined;
 }
+
+const deterministicQueryCoverages = new Set([
+  'account list',
+  'reporting.accounts',
+  'balance snapshot',
+  'reporting.current_balances',
+  'reporting.account_current_balances',
+  'categorized transactions',
+  'reporting.categorized_transactions',
+  'category spend monthly',
+  'reporting.category_spend_monthly',
+  'budget variance',
+  'reporting.budget_variance',
+  'savings goal progress',
+  'reporting.savings_goal_progress',
+  'debt progress',
+  'reporting.debt_progress',
+  'reconciliation status',
+  'reporting.reconciliation_status',
+  'source freshness',
+  'reporting.source_freshness',
+]);
+
+const deterministicAccountingPlans = {
+  transaction_capture: {
+    workCellId: 'transaction-capture',
+    stopCode: 'checked-transaction-capture',
+    stopDescription: 'Return one checked accounting result.',
+  },
+  ingestion: {
+    workCellId: 'ingestion',
+    stopCode: 'checked-ingestion',
+    stopDescription: 'Return one checked import proposal.',
+  },
+  journal: {
+    workCellId: 'journal',
+    stopCode: 'checked-journal',
+    stopDescription: 'Return one checked accounting result.',
+  },
+  chart_of_accounts: {
+    workCellId: 'chart-of-accounts',
+    stopCode: 'checked-chart-change',
+    stopDescription: 'Return one checked chart change.',
+  },
+  reconciliation: {
+    workCellId: 'reconciliation',
+    stopCode: 'checked-reconciliation',
+    stopDescription: 'Return one checked reconciliation proposal.',
+  },
+} as const;
+
+const JournalWorkRequestDraftSchema = z.object({
+  operation: z.enum(['post', 'transfer', 'split', 'adjustment', 'reverse_replace', 'fx_realized']),
+  instruction: z.string().min(1).max(4_000),
+}).strict();
 
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {
   const result = await pools.accounting.query<{ book_id: string }>(

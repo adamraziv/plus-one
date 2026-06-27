@@ -28,10 +28,14 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
         message: 'Checker memory must be disabled', retry: 'never',
         receiptLookupRequired: false, details: {} });
     }
+    const structuredOutputModel = call.activeTools.length === 0
+      ? undefined
+      : mastraModelConfigFromAgent(registration.agent);
     const structuredOutput = {
       schema: call.outputSchema,
       errorStrategy: 'strict' as const,
       jsonPromptInjection: true,
+      ...(structuredOutputModel === undefined ? {} : { model: structuredOutputModel }),
     };
     const agent = registration.agent as unknown as {
       generate: (
@@ -71,6 +75,24 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     }
     return parsed;
   }
+}
+
+function mastraModelConfigFromAgent(agent: unknown): {
+  id: string;
+  url?: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+} | undefined {
+  if (agent === null || typeof agent !== 'object') return undefined;
+  const model = (agent as { model?: unknown }).model;
+  if (model === null || typeof model !== 'object' || Array.isArray(model)) return undefined;
+  if (typeof (model as { id?: unknown }).id !== 'string') return undefined;
+  return model as {
+    id: string;
+    url?: string;
+    apiKey?: string;
+    headers?: Record<string, string>;
+  };
 }
 
 function assertExecutedActiveTool<Output>(

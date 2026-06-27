@@ -100,6 +100,38 @@ describe('normalizeAccountingLeadRequest', () => {
       },
     });
   });
+
+  it('canonicalizes typed journal drafts by resolving the household book id', async () => {
+    const pools = {
+      accounting: {
+        query: vi.fn(async () => ({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })),
+      },
+    } as never;
+
+    const normalized = await normalizeAccountingLeadRequest(pools, message, {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'journal',
+      request: {
+        operation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
+      },
+    });
+
+    expect(normalized).toMatchObject({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'journal',
+      request: {
+        schemaName: 'journal-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        operation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
+      },
+    });
+  });
 });
 
 describe('normalizeQueryLeadRequest', () => {
@@ -212,16 +244,10 @@ describe('deterministicLeadPlanForRequest', () => {
       businessQuestion: 'What are our balances?',
     });
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
-      schemaName: 'team-lead-plan',
-      schemaVersion: 1,
-      recommendedStrategyName: 'single-maker-checker',
-      work: [{ workCellId: 'query-evidence', makerInput: request }],
-      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-    });
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
-  it('leaves calculation-heavy Query requests on the modeled team-lead path', () => {
+  it('leaves calculation requests with known coverage on the modeled team-lead path', () => {
     const request = EvidenceRequestSchemaV1.parse({
       schemaName: 'evidence-request',
       schemaVersion: 1,
@@ -240,7 +266,51 @@ describe('deterministicLeadPlanForRequest', () => {
     expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
-  it('leaves typed Accounting requests on the modeled team-lead path', () => {
+  it('leaves calculation-heavy Query requests on the modeled team-lead path', () => {
+    const request = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      businessQuestion: 'What are my top expenses this month?',
+      intendedUse: 'expense_tracking',
+      timeframe: { start: '2026-06-01', end: '2026-06-30' },
+      desiredGrain: ['category'],
+      filters: [],
+      requiredFreshness: 'latest',
+      requiredCalculations: ['sum'],
+      coverage: ['all'],
+    });
+
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
+  });
+
+  it('uses deterministic Query evidence for explicit category spend coverage', () => {
+    const request = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      businessQuestion: 'What are my top expenses this month?',
+      intendedUse: 'expense_tracking',
+      timeframe: { start: '2026-06-01', end: '2026-06-30' },
+      desiredGrain: ['household', 'month', 'category'],
+      filters: [],
+      requiredFreshness: 'latest',
+      requiredCalculations: [],
+      coverage: ['category spend monthly'],
+    });
+
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'query-evidence', makerInput: request }],
+      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
+  });
+
+  it('uses deterministic Accounting routing for typed accounting requests', () => {
     const request = {
       schemaName: 'accounting-lead-request',
       schemaVersion: 1,
@@ -256,6 +326,15 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     };
 
-    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toBeUndefined();
+    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'transaction-capture', makerInput: request.request }],
+      stopCondition: {
+        code: 'checked-transaction-capture',
+        description: 'Return one checked accounting result.',
+      },
+    });
   });
 });

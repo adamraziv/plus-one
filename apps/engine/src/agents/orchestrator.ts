@@ -15,6 +15,7 @@ import {
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
+import { QueryLeadRequestDraftSchemaV1 } from '../tools/delegate-team-schemas.js';
 import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
 
 const orchestratorInstructions = [
@@ -31,6 +32,8 @@ const orchestratorInstructions = [
   'Do not ask the user to confirm transaction capture directly; delegateTeam accounting must ask any needed clarification.',
   'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
+  'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
+  'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
@@ -48,10 +51,28 @@ const finalizerInstructions = [
 
 const accountingIntentInstructions = [
   'You classify only explicit Plus One internal ledger transaction-capture requests.',
+  'Assume the user is speaking about Plus One internal ledger work unless they explicitly ask for an external payment, trade, tax filing, provider login, or provider account change.',
   'Return shouldDelegateTransactionCapture true when the user asks to record, add, capture, or log a purchase, spend, or expense in Plus One accounting records.',
+  'Return shouldDelegateJournal true with journalOperation transfer when the user asks to transfer money between their own accounts inside Plus One.',
+  'Return shouldDelegateTransactionCapture true even when account, category, or date details are incomplete; the downstream accounting team will ask clarifying questions.',
   'Return false for read questions, capability questions, external payments, trades, tax filings, provider account changes, or unclear chit-chat.',
   'When true, preserve the original instruction and extract only user-stated amount, currency, occurredOn date, paymentAccountName, and categoryName.',
   'Do not invent internal account ids or category ids.',
+  'Never answer the user, refuse access, or mention security limitations. Only classify the intent into the requested JSON object.',
+  'Return only the requested structured object.',
+].join('\n');
+
+const queryIntentInstructions = [
+  'You classify only read-only Plus One household finance questions.',
+  'Assume the user is asking about Plus One household data inside this app unless they explicitly ask to log in, connect a bank, fetch external provider data, or perform an external action.',
+  'Return shouldDelegateQuery true for questions asking to inspect internal Plus One balances, accounts, expenses, budgets, transactions, goals, debts, reconciliation, or source freshness.',
+  'Return false for accounting writes, external payments, trades, tax filings, provider account changes, general capabilities, or unclear chit-chat.',
+  'When true, preserve the user question as businessQuestion and extract only semantic timeframe, desiredGrain, requiredCalculations, and coverage.',
+  'Coverage map: account list -> account list; current balance -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level expense history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debt payoff or liability status -> debt progress; reconciliation -> reconciliation status; source freshness -> source freshness.',
+  'For category spend monthly, desiredGrain should be household, month, category and requiredCalculations should usually stay empty because the governed report is already aggregated.',
+  'If shouldDelegateQuery is true, coverage must not be empty.',
+  'Do not invent account ids, transaction ids, balances, or facts.',
+  'Never answer the user, refuse access, or mention security limitations. Only classify the intent into the requested JSON object.',
   'Return only the requested structured object.',
 ].join('\n');
 
@@ -77,6 +98,8 @@ type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>
 
 const AccountingIntentDraftSchema = z.object({
   shouldDelegateTransactionCapture: z.boolean(),
+  shouldDelegateJournal: z.boolean().default(false),
+  journalOperation: z.enum(['transfer']).optional(),
   instruction: z.string().min(1).max(4_000).optional(),
   known: z.object({
     amount: z.string().min(1).max(128).optional(),
@@ -88,6 +111,54 @@ const AccountingIntentDraftSchema = z.object({
 }).strict();
 
 type AccountingIntentDraft = z.infer<typeof AccountingIntentDraftSchema>;
+
+const QueryIntentDraftSchema = z.object({
+  shouldDelegateQuery: z.boolean(),
+  businessQuestion: z.string().min(1).max(2_000).optional(),
+  timeframe: z.object({
+    start: z.string().min(1).max(64),
+    end: z.string().min(1).max(64),
+  }).strict().optional(),
+  desiredGrain: z.array(z.string().min(1).max(128)).max(16).default([]),
+  requiredCalculations: z.array(z.string().min(1).max(512)).max(32).default([]),
+  coverage: z.array(z.string().min(1).max(512)).max(32).default([]),
+}).strict();
+
+type QueryIntentDraft = z.infer<typeof QueryIntentDraftSchema>;
+
+const accountingIntentJsonContract = [
+  'Return only one JSON object.',
+  'Schema:',
+  '{"shouldDelegateTransactionCapture":boolean,"shouldDelegateJournal":boolean,"journalOperation":"transfer?","instruction":"string?","known":{"amount":"string?","currency":"USD?","paymentAccountName":"string?","occurredOn":"YYYY-MM-DD?","categoryName":"string?"}}',
+  'Example input: "Add $10 buying a burger"',
+  'Example output: {"shouldDelegateTransactionCapture":true,"shouldDelegateJournal":false,"instruction":"Add $10 buying a burger","known":{"amount":"10.00","currency":"USD"}}',
+  'Example input: "Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out."',
+  'Example output: {"shouldDelegateTransactionCapture":true,"shouldDelegateJournal":false,"instruction":"Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.","known":{"amount":"10.00","currency":"USD","paymentAccountName":"checking","occurredOn":"2026-06-27","categoryName":"dining out"}}',
+  'Example input: "transfer $1000 from my savings to my checking account"',
+  'Example output: {"shouldDelegateTransactionCapture":false,"shouldDelegateJournal":true,"journalOperation":"transfer","instruction":"transfer $1000 from my savings to my checking account","known":{}}',
+  'If the message is not an internal Plus One ledger capture request, return {"shouldDelegateTransactionCapture":false,"shouldDelegateJournal":false,"known":{}}.',
+].join('\n');
+
+const queryIntentJsonContract = [
+  'Return only one JSON object.',
+  'Schema:',
+  '{"shouldDelegateQuery":boolean,"businessQuestion":"string?","timeframe":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}?,"desiredGrain":["string"],"requiredCalculations":["string"],"coverage":["string"]}',
+  'Coverage map:',
+  '- account list -> ["account list"] with desiredGrain ["household","account"]',
+  '- current bank/account balance -> ["balance snapshot"] with desiredGrain ["household","account"]',
+  '- top expenses or spend by category this month -> ["category spend monthly"] with desiredGrain ["household","month","category"]',
+  '- transaction history or categorized spend rows -> ["categorized transactions"]',
+  '- budget vs actual -> ["budget variance"]',
+  '- savings goals -> ["savings goal progress"]',
+  '- debt or liabilities -> ["debt progress"]',
+  '- reconciliation -> ["reconciliation status"]',
+  '- source sync freshness -> ["source freshness"]',
+  'Example input: "What is my current bank account balance?"',
+  'Example output: {"shouldDelegateQuery":true,"businessQuestion":"What is my current bank account balance?","desiredGrain":["household","account"],"requiredCalculations":[],"coverage":["balance snapshot"]}',
+  'Example input: "What are my top expenses this month?"',
+  'Example output: {"shouldDelegateQuery":true,"businessQuestion":"What are my top expenses this month?","timeframe":{"start":"2026-06-01","end":"2026-06-30"},"desiredGrain":["household","month","category"],"requiredCalculations":[],"coverage":["category spend monthly"]}',
+  'If the message is not an internal Plus One read query, return {"shouldDelegateQuery":false,"desiredGrain":[],"requiredCalculations":[],"coverage":[]}.',
+].join('\n');
 
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
@@ -104,6 +175,7 @@ export class OrchestratorAgent {
   readonly agent: Agent<string, ToolsInput, unknown>;
   readonly finalizerAgent: Agent<string, ToolsInput, unknown>;
   readonly accountingIntentAgent: Agent<string, ToolsInput, unknown>;
+  readonly queryIntentAgent: Agent<string, ToolsInput, unknown>;
   readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
 
   constructor(private readonly dependencies: {
@@ -116,7 +188,10 @@ export class OrchestratorAgent {
     this.teams = new Map(dependencies.teams.map((team) => [team.team, team]));
     const teamRuntime: OrchestratorTeamRuntime = {
       runTeamLead: async (input) => {
-        const result = await dependencies.teamRuntime.runTeamLead(input);
+        const request = input.team.team === 'query'
+          ? await this.refineQueryRequest(input.message, input.request)
+          : input.request;
+        const result = await dependencies.teamRuntime.runTeamLead({ ...input, request });
         this.activeInvocation.getStore()?.teamResults.push(result);
         return result;
       },
@@ -142,6 +217,14 @@ export class OrchestratorAgent {
       name: 'Orchestrator Accounting Intent',
       description: 'Classifies explicit internal transaction capture requests into a typed accounting draft.',
       instructions: accountingIntentInstructions,
+      model: toMastraModel(dependencies.model),
+      tools: {},
+    });
+    this.queryIntentAgent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
+      id: 'orchestrator-query-intent',
+      name: 'Orchestrator Query Intent',
+      description: 'Classifies internal read-only finance questions into a typed query draft.',
+      instructions: queryIntentInstructions,
       model: toMastraModel(dependencies.model),
       tools: {},
     });
@@ -179,15 +262,27 @@ export class OrchestratorAgent {
         if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
           return turnFromTeamResults(message, invocation.teamResults);
         }
-        const direct = parseFinalResponse(result.object);
-        if (direct !== undefined) return { kind: 'final', response: direct };
         if (invocation.teamResults.length === 0) {
           const accountingRequest = await this.accountingRequestFromIntent(message);
           if (accountingRequest !== undefined) {
             await this.delegateTeam(message, 'accounting', accountingRequest, signal);
             return turnFromTeamResults(message, invocation.teamResults);
           }
+          const queryRequest = await this.queryRequestFromIntent(message);
+          if (queryRequest !== undefined) {
+            await this.delegateTeam(message, 'query', queryRequest, signal);
+            if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+              return turnFromTeamResults(message, invocation.teamResults);
+            }
+            const direct = parseFinalResponse(result.object);
+            return {
+              kind: 'final',
+              response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
+            };
+          }
         }
+        const direct = parseFinalResponse(result.object);
+        if (direct !== undefined) return { kind: 'final', response: direct };
         return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
       } catch (error) {
         if (invocation.teamResults.length === 0) throw error;
@@ -209,14 +304,26 @@ export class OrchestratorAgent {
 
   private async accountingRequestFromIntent(message: InboundChannelMessageV1): Promise<JsonValue | undefined> {
     try {
-      const result = await this.accountingIntentAgent.generate([
-        'InboundChannelMessageV1 context:',
-        JSON.stringify(message),
-      ].join('\n'), {
-        structuredOutput: { schema: AccountingIntentDraftSchema, jsonPromptInjection: true },
-        toolChoice: 'none',
+      const intent = await generateTypedDraft({
+        agent: this.accountingIntentAgent,
+        schema: AccountingIntentDraftSchema,
+        prompt: [
+          'InboundChannelMessageV1 context:',
+          JSON.stringify(message),
+        ].join('\n'),
+        fallbackJsonContract: accountingIntentJsonContract,
       });
-      const intent = AccountingIntentDraftSchema.parse(result.object ?? parseJsonObject(result.text));
+      if (intent.shouldDelegateJournal && intent.journalOperation === 'transfer') {
+        return JsonValueSchema.parse({
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: 'journal',
+          request: {
+            operation: 'transfer',
+            instruction: intent.instruction ?? message.body,
+          },
+        });
+      }
       if (!intent.shouldDelegateTransactionCapture) return undefined;
       return JsonValueSchema.parse({
         schemaName: 'accounting-lead-request',
@@ -232,6 +339,43 @@ export class OrchestratorAgent {
     } catch {
       return undefined;
     }
+  }
+
+  private async queryRequestFromIntent(message: InboundChannelMessageV1): Promise<JsonValue | undefined> {
+    try {
+      const intent = await generateTypedDraft({
+        agent: this.queryIntentAgent,
+        schema: QueryIntentDraftSchema,
+        prompt: [
+          'InboundChannelMessageV1 context:',
+          JSON.stringify(message),
+        ].join('\n'),
+        fallbackJsonContract: queryIntentJsonContract,
+      });
+      if (!intent.shouldDelegateQuery || intent.businessQuestion === undefined || intent.coverage.length === 0) {
+        return undefined;
+      }
+      return JsonValueSchema.parse({
+        schemaName: 'query-lead-request-draft',
+        schemaVersion: 1,
+        businessQuestion: intent.businessQuestion,
+        ...(intent.timeframe === undefined ? {} : { timeframe: intent.timeframe }),
+        ...(intent.desiredGrain.length === 0 ? {} : { desiredGrain: intent.desiredGrain }),
+        requiredCalculations: intent.requiredCalculations,
+        coverage: intent.coverage,
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async refineQueryRequest(
+    message: InboundChannelMessageV1,
+    request: JsonValue,
+  ): Promise<JsonValue> {
+    const draft = QueryLeadRequestDraftSchemaV1.safeParse(request);
+    if (!draft.success || !isUnderspecifiedQueryDraft(draft.data)) return request;
+    return await this.queryRequestFromIntent(message) ?? request;
   }
 
   private async finalizeFromModelResult(
@@ -275,6 +419,28 @@ function parseJsonObject(text: unknown): unknown {
   const end = trimmed.lastIndexOf('}');
   if (start === -1 || end === -1 || end < start) return undefined;
   return JSON.parse(trimmed.slice(start, end + 1));
+}
+
+function isUnderspecifiedQueryDraft(
+  draft: z.infer<typeof QueryLeadRequestDraftSchemaV1>,
+): boolean {
+  return draft.coverage === undefined || draft.coverage.length === 0
+    || draft.desiredGrain === undefined || draft.desiredGrain.length === 0;
+}
+
+async function generateTypedDraft<Output>(input: {
+  agent: Agent<string, ToolsInput, unknown>;
+  schema: z.ZodType<Output>;
+  prompt: string;
+  fallbackJsonContract: string;
+}): Promise<Output> {
+  const result = await input.agent.generate([
+    input.prompt,
+    input.fallbackJsonContract,
+  ].join('\n\n'), {
+    toolChoice: 'none',
+  });
+  return input.schema.parse(result.object ?? parseJsonObject(result.text));
 }
 
 function responseFromTeamResults(message: InboundChannelMessageV1,

@@ -140,6 +140,20 @@ function finalResponse(body = 'Structured response.'): OrchestratorFinalResponse
   });
 }
 
+function unsupportedResponse(body = 'I cannot access that data.'): OrchestratorFinalResponseV1 {
+  return OrchestratorFinalResponseSchemaV1.parse({
+    ...finalResponse(body),
+    policyBoundary: 'unsupported_capability',
+  });
+}
+
+function personalizedResponse(body = 'Personalized finance response.'): OrchestratorFinalResponseV1 {
+  return OrchestratorFinalResponseSchemaV1.parse({
+    ...finalResponse(body),
+    policyBoundary: 'personalized_finance',
+  });
+}
+
 function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {}) {
   return {
     schemaName: 'query-lead-request-draft',
@@ -277,11 +291,11 @@ describe('OrchestratorAgent', () => {
     });
     const accountingIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
       expect(options).toMatchObject({
-        structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
         toolChoice: 'none',
       });
       return { object: { shouldDelegateTransactionCapture: false, known: {} } };
     });
+    const queryIntentGenerate = vi.fn();
     const finalizerGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
       expect(options).toMatchObject({
         structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
@@ -308,6 +322,9 @@ describe('OrchestratorAgent', () => {
         if (config.id === 'orchestrator-accounting-intent') {
           return { ...config, generate: accountingIntentGenerate } as never;
         }
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
         return {
           ...config,
           generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
@@ -323,10 +340,12 @@ describe('OrchestratorAgent', () => {
       .resolves.toMatchObject({ body: 'Plus One can help with household finance questions.' });
     expect(mainGenerate).toHaveBeenCalledTimes(1);
     expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).toHaveBeenCalledTimes(1);
     expect(configs).toEqual([
       expect.objectContaining({ id: 'orchestrator', tools: expect.any(Object) }),
       expect.objectContaining({ id: 'orchestrator-accounting-intent', tools: {} }),
+      expect.objectContaining({ id: 'orchestrator-query-intent', tools: {} }),
       expect.objectContaining({ id: 'orchestrator-finalizer', tools: {} }),
     ]);
   });
@@ -588,6 +607,149 @@ describe('OrchestratorAgent', () => {
     expect(response.body).toBe('I can answer directly without a team.');
   });
 
+  it('delegates internal finance reads when the reasoning model answers without checked data', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const mainGenerate = vi.fn(async () => ({
+      object: finalResponse('I currently do not have access to your transaction history.'),
+    }));
+    const accountingIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateTransactionCapture: false, known: {} },
+    }));
+    const queryIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
+      expect(options).toMatchObject({
+        toolChoice: 'none',
+      });
+      return {
+        object: {
+          shouldDelegateQuery: true,
+          businessQuestion: 'What are my top expenses this month?',
+          timeframe: { start: '2026-06-01', end: '2026-06-30' },
+          desiredGrain: ['household', 'month', 'category'],
+          requiredCalculations: [],
+          coverage: ['category spend monthly'],
+        },
+      };
+    });
+    const finalizerGenerate = vi.fn(async () => ({
+      object: {
+        body: 'Your checked expense data is ready.',
+        policyBoundary: 'personalized_finance',
+        citations: [],
+        assumptions: [],
+        freshness: ['current invocation only'],
+        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+        unsupportedCapabilities: [],
+        recommendationActions: [],
+      },
+    }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
+      teams: [queryTeam, accountingTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({
+      message: message('What are my top expenses this month?'),
+    });
+
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: queryTeam,
+      request: expect.objectContaining({
+        schemaName: 'query-lead-request-draft',
+        businessQuestion: 'What are my top expenses this month?',
+        desiredGrain: ['household', 'month', 'category'],
+        requiredCalculations: [],
+        coverage: ['category spend monthly'],
+      }),
+    }));
+    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
+    expect(response.body).toBe('Your checked expense data is ready.');
+  });
+
+  it('refines bare query delegations before they reach the query team', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const mainGenerate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: {
+          schemaName: 'query-lead-request-draft',
+          schemaVersion: 1,
+          businessQuestion: 'What is my current bank account balance?',
+          requiredCalculations: [],
+        },
+      });
+      return { text: 'The query team found checked balance evidence.' };
+    });
+    const queryIntentGenerate = vi.fn(async () => ({
+      object: {
+        shouldDelegateQuery: true,
+        businessQuestion: 'What is my current bank account balance?',
+        desiredGrain: ['household', 'account'],
+        requiredCalculations: [],
+        coverage: ['balance snapshot'],
+      },
+    }));
+    const finalizerGenerate = vi.fn(async () => ({
+      object: {
+        body: 'Your checked balance data is ready.',
+        policyBoundary: 'personalized_finance',
+        citations: [],
+        assumptions: [],
+        freshness: ['current invocation only'],
+        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+        unsupportedCapabilities: [],
+        recommendationActions: [],
+      },
+    }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
+      teams: [queryTeam, accountingTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({
+      message: message('What is my current bank account balance?'),
+    });
+
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: queryTeam,
+      request: expect.objectContaining({
+        businessQuestion: 'What is my current bank account balance?',
+        desiredGrain: ['household', 'account'],
+        coverage: ['balance snapshot'],
+      }),
+    }));
+    expect(response.body).toBe('Your checked balance data is ready.');
+  });
+
   it('uses the Mastra delegate tool for accounting writes instead of regex pre-routing', async () => {
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
     const mainGenerate = vi.fn(async () => {
@@ -653,7 +815,6 @@ describe('OrchestratorAgent', () => {
     const mainGenerate = vi.fn(async () => ({ text: 'Transaction recorded.' }));
     const accountingIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
       expect(options).toMatchObject({
-        structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
         toolChoice: 'none',
       });
       return {
@@ -710,6 +871,61 @@ describe('OrchestratorAgent', () => {
             paymentAccountName: 'checking',
             categoryName: 'dining out',
           }),
+        }),
+      }),
+    }));
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      response: {
+        body: expect.stringContaining('Which account was used to pay?'),
+      },
+    });
+  });
+
+  it('routes internal transfers to accounting journal work when the reasoning model answers directly', async () => {
+    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const mainGenerate = vi.fn(async () => ({ text: 'Transfer recorded.' }));
+    const accountingIntentGenerate = vi.fn(async () => ({
+      object: {
+        shouldDelegateTransactionCapture: false,
+        shouldDelegateJournal: true,
+        journalOperation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
+        known: {},
+      },
+    }));
+    const finalizerGenerate = vi.fn();
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
+      teams: [queryTeam, accountingTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const result = await orchestrator.runTurn({
+      message: message('transfer $1000 from my savings to my checking account'),
+    });
+
+    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: accountingTeam,
+      request: expect.objectContaining({
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'journal',
+        request: expect.objectContaining({
+          operation: 'transfer',
+          instruction: 'transfer $1000 from my savings to my checking account',
         }),
       }),
     }));

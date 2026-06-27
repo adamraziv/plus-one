@@ -21,6 +21,8 @@ const models = {
 const tools = {
   'query_account_list': { execute: vi.fn() },
   'query_current_balances': { execute: vi.fn() },
+  'query_categorized_transactions': { execute: vi.fn() },
+  'query_category_spend_monthly': { execute: vi.fn() },
   [analystSandboxToolId]: { execute: vi.fn() },
 };
 
@@ -29,6 +31,8 @@ describe('Query Mastra role agents', () => {
     expect(Object.keys(splitQueryRoleTools(tools, 'lead'))).toEqual([]);
     expect(Object.keys(splitQueryRoleTools(tools, 'query-maker')).sort()).toEqual([
       'query_account_list',
+      'query_categorized_transactions',
+      'query_category_spend_monthly',
       'query_current_balances',
     ]);
     expect(Object.keys(splitQueryRoleTools(tools, 'query-checker'))).toEqual([]);
@@ -82,7 +86,8 @@ describe('Query Mastra role agents', () => {
     expect(queryLeadInstructions).toContain('single-maker-checker');
     expect(queryLeadInstructions).toContain('query-answer');
     expect(Object.keys(configs.find((config) => config.id === 'query-maker')?.tools ?? {}).sort())
-      .toEqual(['query_account_list', 'query_current_balances']);
+      .toEqual(['query_account_list', 'query_categorized_transactions',
+        'query_category_spend_monthly', 'query_current_balances']);
     const queryMakerInstructions = String(configs.find((config) => config.id === 'query-maker')?.instructions);
     expect(queryMakerInstructions).toContain('householdId');
     expect(queryMakerInstructions).toContain('balance snapshot');
@@ -176,6 +181,79 @@ describe('Query Mastra role agents', () => {
         }],
       },
       toolResults: [{ payload: { toolName: 'query_current_balances' } }],
+    });
+  });
+
+  it('routes explicit monthly category-spend coverage to the matching query tool', async () => {
+    (tools.query_category_spend_monthly.execute as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      schemaName: 'query-result',
+      schemaVersion: 1,
+      relationName: 'reporting.category_spend_monthly',
+      grain: ['household', 'month', 'category'],
+      rows: [],
+      fieldDefinitions: ['month_start', 'category_name', 'native_amount', 'native_currency'],
+      sourceReferences: ['relation=reporting.category_spend_monthly'],
+      freshness: 'latest available reporting projection',
+      coverageWarnings: [],
+    });
+    const agents = createQueryRoleAgents({ models, tools });
+    const skill = createSkillRegistration({
+      skillName: 'query-evidence',
+      skillVersion: 1,
+      content: 'Use governed query tools.',
+      allowedTeams: ['query'],
+      allowedRoles: ['query-maker', 'query-checker'],
+      makerInstructions: [],
+      checkerRubric: ['Verify routing.'],
+    });
+    const context = new RoleContextBuilder({
+      skills: new SkillRegistry([skill]),
+      tools: new ToolPermissionRegistry([
+        { team: 'query', roleName: 'query-maker', roleVersion: 1, toolIds: ['query_category_spend_monthly'] },
+      ]),
+    }).forMaker({
+      team: 'query',
+      role: { roleName: 'query-maker', roleVersion: 1 },
+      selectedSkill: skill.identity,
+      invocation: MakerInvocationSchemaV1.parse({
+        schemaName: 'maker-invocation',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        team: 'query',
+        role: { roleName: 'query-maker', roleVersion: 1 },
+        skill: skill.identity,
+        inputSchema: { schemaName: 'evidence-request', schemaVersion: 1 },
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        input: {
+          schemaName: 'evidence-request',
+          schemaVersion: 1,
+          householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          requestId: 'evidence_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          businessQuestion: 'What are my top expenses this month?',
+          intendedUse: 'expense_tracking',
+          timeframe: { start: '2026-06-01', end: '2026-06-30' },
+          desiredGrain: ['household', 'month', 'category'],
+          filters: [],
+          requiredFreshness: 'latest',
+          requiredCalculations: [],
+          coverage: ['category spend monthly'],
+        },
+        permittedEvidence: [],
+        policyLabels: [],
+        stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+      }),
+    });
+
+    const result = await agents['query-maker']!.generate([...context.messages], {
+      activeTools: context.activeTools,
+    } as never);
+
+    expect(tools.query_category_spend_monthly.execute).toHaveBeenCalledWith({
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    }, {});
+    expect(result).toMatchObject({
+      toolResults: [{ payload: { toolName: 'query_category_spend_monthly' } }],
     });
   });
 
