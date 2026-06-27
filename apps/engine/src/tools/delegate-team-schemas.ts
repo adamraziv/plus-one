@@ -12,6 +12,14 @@ import {
 
 const jsonObjectSchema = z.record(z.string(), JsonValueSchema);
 const nonEmptyText = z.string().min(1).max(4_000);
+const TeamIdSchema = z.enum([
+  'query',
+  'accounting',
+  'budgeting',
+  'cash-flow',
+  'investments-retirement',
+  'records-reporting',
+]);
 
 export const TransactionCaptureRequestDraftSchemaV1 = z.object({
   schemaName: z.literal('transaction-capture-request-draft'),
@@ -61,27 +69,30 @@ export const QueryDelegateRequestSchemaV1 = z.union([
   QueryLeadRequestDraftSchemaV1,
 ]).describe('Full EvidenceRequestV1 or semantic query draft.');
 
-const futureTeamRequestSchema = jsonObjectSchema.describe('Typed request object for this specialist team.');
-
-export const DelegateTeamToolInputSchema = z.discriminatedUnion('team', [
-  z.object({
-    team: z.literal('query').describe('Use for checked reads of household finance data.'),
-    request: QueryDelegateRequestSchemaV1,
-  }).strict(),
-  z.object({
-    team: z.literal('accounting').describe('Use for transaction capture, journal, chart, ingestion, or reconciliation mutations.'),
-    request: AccountingDelegateRequestSchemaV1,
-  }).strict(),
-  z.object({ team: z.literal('budgeting'), request: futureTeamRequestSchema }).strict(),
-  z.object({ team: z.literal('cash-flow'), request: futureTeamRequestSchema }).strict(),
-  z.object({ team: z.literal('investments-retirement'), request: futureTeamRequestSchema }).strict(),
-  z.object({ team: z.literal('records-reporting'), request: futureTeamRequestSchema }).strict(),
-]).describe('Delegate exactly one user task to the specialist team matching the user intent.');
+export const DelegateTeamToolInputSchema = z.object({
+  team: TeamIdSchema.describe([
+    'Exact team id.',
+    'Use query for checked reads of household finance data.',
+    'Use accounting for transaction capture, journal, chart, ingestion, or reconciliation mutations.',
+  ].join(' ')),
+  request: jsonObjectSchema.describe([
+    'JSON object for the selected team.',
+    'For query, use query-lead-request-draft or full EvidenceRequestV1.',
+    'For accounting, use AccountingLeadRequestV1; transaction_capture may contain transaction-capture-request-draft.',
+  ].join(' ')),
+}).strict().describe('Delegate exactly one user task to the specialist team matching the user intent.');
 
 export type TransactionCaptureRequestDraftV1 = z.infer<typeof TransactionCaptureRequestDraftSchemaV1>;
 
 export function parseDelegateTeamToolInput(input: unknown) {
-  return DelegateTeamToolInputSchema.parse(input);
+  const parsed = DelegateTeamToolInputSchema.parse(input);
+  if (parsed.team === 'query') {
+    return { ...parsed, request: QueryDelegateRequestSchemaV1.parse(parsed.request) };
+  }
+  if (parsed.team === 'accounting') {
+    return { ...parsed, request: AccountingDelegateRequestSchemaV1.parse(parsed.request) };
+  }
+  return parsed;
 }
 
 export function requestForRuntime(request: unknown): JsonValue {
