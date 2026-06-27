@@ -115,7 +115,7 @@ function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting')
     status: 'insufficient_evidence',
     claims: [],
     completionReason: 'Need the payment account before recording this transaction.',
-    outstanding: ['Which account was used to pay?'],
+    outstanding: ['Which internal payment account should this use?'],
   });
 }
 
@@ -383,7 +383,7 @@ describe('OrchestratorAgent', () => {
     expect(result).toMatchObject({
       kind: 'ask-user',
       response: {
-        body: expect.stringContaining('Which account was used to pay?'),
+        body: expect.stringContaining('Which internal payment account should this use?'),
       },
     });
   });
@@ -805,7 +805,7 @@ describe('OrchestratorAgent', () => {
     expect(result).toMatchObject({
       kind: 'ask-user',
       response: {
-        body: expect.stringContaining('Which account was used to pay?'),
+        body: expect.stringContaining('Which internal payment account should this use?'),
       },
     });
   });
@@ -877,7 +877,7 @@ describe('OrchestratorAgent', () => {
     expect(result).toMatchObject({
       kind: 'ask-user',
       response: {
-        body: expect.stringContaining('Which account was used to pay?'),
+        body: expect.stringContaining('Which internal payment account should this use?'),
       },
     });
   });
@@ -932,7 +932,7 @@ describe('OrchestratorAgent', () => {
     expect(result).toMatchObject({
       kind: 'ask-user',
       response: {
-        body: expect.stringContaining('Which account was used to pay?'),
+        body: expect.stringContaining('Which internal payment account should this use?'),
       },
     });
   });

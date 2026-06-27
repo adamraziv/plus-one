@@ -144,9 +144,9 @@ describe('Accounting Mastra role agents', () => {
           schemaVersion: 1,
           missingFields: ['payment_account', 'occurred_on', 'category'],
           questions: [
-            'Which account was used?',
+            'Which internal payment account should this use?',
             'On what date did the transaction occur?',
-            'What category should this use?',
+            'Which internal category account should this use?',
           ],
           reason: 'The transaction cannot be posted without account, date, and category.',
         },
