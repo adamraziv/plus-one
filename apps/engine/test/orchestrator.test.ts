@@ -215,7 +215,7 @@ describe('OrchestratorAgent', () => {
     const firstEnteredPromise = new Promise<void>((resolve) => {
       firstEntered = resolve;
     });
-    const generate = vi.fn(async (messages: string) => {
+    const mainGenerate = vi.fn(async (messages: string) => {
       const body = messages.includes('first') ? 'first' : 'second';
       if (body === 'first') {
         firstEntered();
@@ -249,9 +249,29 @@ describe('OrchestratorAgent', () => {
         }),
       };
     });
+    const accountingIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateTransactionCapture: false, known: {} },
+    }));
+    const queryIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
+    }));
+    const finalizerGenerate = vi.fn();
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate }) as never,
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
       teams: [queryTeam],
       teamRuntime: { runTeamLead },
     });
@@ -263,6 +283,9 @@ describe('OrchestratorAgent', () => {
 
     expect(runTeamLead.mock.calls.map(([input]) => input.message.body).sort())
       .toEqual(['first', 'second']);
+    expect(accountingIntentGenerate).not.toHaveBeenCalled();
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(2);
+    expect(finalizerGenerate).not.toHaveBeenCalled();
   });
 
   it('keeps final schema off the reasoning agent and uses a no-tools finalizer', async () => {
@@ -492,14 +515,22 @@ describe('OrchestratorAgent', () => {
         recommendationActions: [],
       },
     }));
+    const queryIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
+    }));
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
       teams: [queryTeam],
       teamRuntime: { runTeamLead },
     });
@@ -507,6 +538,7 @@ describe('OrchestratorAgent', () => {
     const response = await orchestrator.run({ message: message('Show our transactions.') });
 
     expect(finalizerGenerate).not.toHaveBeenCalled();
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
     expect(response.body).toContain('Query team status: failed');
     expect(response.body).toContain('grain mismatch');
     expect(response.body).not.toContain('verified transactions');
@@ -572,15 +604,29 @@ describe('OrchestratorAgent', () => {
     const mainGenerate = vi.fn(async () => ({
       object: finalResponse('I can answer directly without a team.'),
     }));
+    const accountingIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateTransactionCapture: false, known: {} },
+    }));
+    const queryIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
+    }));
     const finalizerGenerate = vi.fn();
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
       teams: [queryTeam, accountingTeam],
       teamRuntime: { runTeamLead },
     });
@@ -588,6 +634,8 @@ describe('OrchestratorAgent', () => {
     const response = await orchestrator.run({ message: message('List our accounts.') });
 
     expect(mainGenerate).toHaveBeenCalledTimes(1);
+    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).not.toHaveBeenCalled();
     expect(runTeamLead).not.toHaveBeenCalled();
     expect(response.body).toBe('I can answer directly without a team.');
@@ -928,12 +976,18 @@ describe('OrchestratorAgent', () => {
     const accountingIntentGenerate = vi.fn(async () => ({
       object: { shouldDelegateTransactionCapture: false, known: {} },
     }));
+    const queryIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
+    }));
     const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));
     const orchestrator = new OrchestratorAgent({
       model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
       agentFactory: (config) => {
         if (config.id === 'orchestrator-accounting-intent') {
           return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
         }
         return {
           ...config,
@@ -950,6 +1004,7 @@ describe('OrchestratorAgent', () => {
       .rejects.toThrow();
     expect(mainGenerate).toHaveBeenCalledTimes(1);
     expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
+    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).toHaveBeenCalledTimes(1);
   });
 
