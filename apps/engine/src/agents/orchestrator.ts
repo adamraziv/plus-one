@@ -24,8 +24,9 @@ const orchestratorInstructions = [
   'Delegate transaction capture, journal, chart-of-accounts, ingestion, and reconciliation requests to team id accounting.',
   'A request to add, record, capture, import, reconcile, or change accounting data is accounting, not query.',
   'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
-  'For query, request must be a full EvidenceRequestV1 object; do not invent one unless the user is actually asking a read question.',
-  'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested TransactionCaptureRequestV1 JSON.',
+  'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
+  'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
+  'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
   'Return the requested OrchestratorFinalResponseV1 object.',
 ].join('\n');

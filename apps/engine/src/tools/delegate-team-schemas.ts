@@ -45,6 +45,15 @@ export const AccountingDelegateRequestSchemaV1 = AccountingLeadRequestSchemaV1.e
     TransactionCaptureRequestDraftSchemaV1,
     jsonObjectSchema,
   ]),
+}).superRefine((value, context) => {
+  if (value.intent !== 'transaction_capture') return;
+  if (TransactionCaptureRequestSchemaV1.safeParse(value.request).success) return;
+  if (TransactionCaptureRequestDraftSchemaV1.safeParse(value.request).success) return;
+  context.addIssue({
+    code: 'custom',
+    path: ['request'],
+    message: 'transaction_capture requires transaction-capture-request-draft or TransactionCaptureRequestV1',
+  });
 }).describe('AccountingLeadRequestV1 for explicit accounting work.');
 
 export const QueryLeadRequestDraftSchemaV1 = z.object({
