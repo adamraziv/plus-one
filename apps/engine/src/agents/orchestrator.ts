@@ -7,7 +7,6 @@ import {
   OrchestratorFinalResponseSchemaV1,
   type ChannelKindV1,
   type InboundChannelMessageV1,
-  type JsonValue,
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
@@ -66,7 +65,6 @@ export type OrchestratorTurnResult =
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
-  private readonly teamRuntime: OrchestratorTeamRuntime;
   private readonly activeInvocation = new AsyncLocalStorage<{
     message: InboundChannelMessageV1;
     signal: AbortSignal;
@@ -91,7 +89,6 @@ export class OrchestratorAgent {
         return result;
       },
     };
-    this.teamRuntime = teamRuntime;
     this.agentTools = {
       delegateTeam: createDelegateTeamTool({
         teams: this.teams,
@@ -127,11 +124,6 @@ export class OrchestratorAgent {
     const signal = input.signal ?? AbortSignal.timeout(60_000);
     const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
     return this.activeInvocation.run(invocation, async () => {
-      const requiredDelegation = requiredTeamForMessage(message);
-      if (requiredDelegation?.teamId === 'accounting') {
-        await this.delegateRequiredTeam(message, requiredDelegation, signal);
-        return turnFromTeamResults(message, invocation.teamResults);
-      }
       const prompt = [
         'InboundChannelMessageV1 context:',
         JSON.stringify(message),
@@ -143,10 +135,6 @@ export class OrchestratorAgent {
             resource: message.householdId,
           },
         });
-        if (requiredDelegation !== undefined && invocation.teamResults.length === 0) {
-          await this.delegateRequiredTeam(message, requiredDelegation, signal);
-          return turnFromTeamResults(message, invocation.teamResults);
-        }
         if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
           return turnFromTeamResults(message, invocation.teamResults);
         }
@@ -157,21 +145,6 @@ export class OrchestratorAgent {
         if (invocation.teamResults.length === 0) throw error;
         return turnFromTeamResults(message, invocation.teamResults);
       }
-    });
-  }
-
-  private async delegateRequiredTeam(
-    message: InboundChannelMessageV1,
-    requiredDelegation: RequiredDelegation,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const team = this.teams.get(requiredDelegation.teamId);
-    if (team === undefined) throw new Error(`Unknown team: ${requiredDelegation.teamId}`);
-    await this.teamRuntime.runTeamLead({
-      message,
-      team,
-      request: requiredDelegation.request,
-      signal,
     });
   }
 
@@ -342,42 +315,6 @@ function labelForTeam(team: string): string {
   if (team === 'accounting') return 'Accounting team';
   if (team === 'query') return 'Query team';
   return `${team} team`;
-}
-
-type RequiredDelegation = {
-  teamId: 'accounting' | 'query';
-  request: JsonValue;
-};
-
-function requiredTeamForMessage(message: InboundChannelMessageV1): RequiredDelegation | undefined {
-  if (isAccountListQuestion(message.body)) {
-    return { teamId: 'query', request: { businessQuestion: message.body } };
-  }
-  if (isTransactionCaptureMessage(message.body)) {
-    return {
-      teamId: 'accounting',
-      request: {
-        schemaName: 'accounting-lead-request',
-        schemaVersion: 1,
-        intent: 'transaction_capture',
-        request: {},
-      },
-    };
-  }
-  return undefined;
-}
-
-function isAccountListQuestion(question: string): boolean {
-  const lower = question.toLowerCase();
-  return /\b(list|show|what|which)\b/.test(lower)
-    && /\baccounts?\b/.test(lower)
-    && !/\bbalances?\b/.test(lower);
-}
-
-function isTransactionCaptureMessage(message: string): boolean {
-  const lower = message.toLowerCase();
-  return /\b(add|record|capture)\b/.test(lower)
-    && (/\$[0-9]/.test(message) || /\bspent?\b/.test(lower) || /\bbought?\b/.test(lower));
 }
 
 function destinationFor(channel: ChannelKindV1, destination: unknown): Record<string, unknown> {

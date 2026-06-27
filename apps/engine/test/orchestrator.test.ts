@@ -140,6 +140,16 @@ function finalResponse(body = 'Structured response.'): OrchestratorFinalResponse
   });
 }
 
+function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {}) {
+  return {
+    schemaName: 'query-lead-request-draft',
+    schemaVersion: 1,
+    businessQuestion,
+    requiredCalculations: [],
+    ...extra,
+  };
+}
+
 describe('OrchestratorAgent', () => {
   it('lets the orchestrator agent delegate through the existing team lead runtime', async () => {
     const runTeamLead = vi.fn(async (input) => {
@@ -150,7 +160,10 @@ describe('OrchestratorAgent', () => {
       expect(messages).toContain('List our accounts.');
       const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'List our accounts.' },
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
       });
       return {
         object: OrchestratorFinalResponseSchemaV1.parse({
@@ -212,7 +225,7 @@ describe('OrchestratorAgent', () => {
       }
       const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: body },
+        request: queryDraft(body),
       });
       if (body === 'second') secondDelegated();
       return {
@@ -308,9 +321,26 @@ describe('OrchestratorAgent', () => {
 
   it('returns a non-terminal turn result when a delegated team needs user clarification', async () => {
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const mainGenerate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: 'transaction_capture',
+          request: {
+            schemaName: 'transaction-capture-request-draft',
+            schemaVersion: 1,
+            instruction: 'add $10 of buying a burger',
+            known: { amount: '10.00', currency: 'USD' },
+          },
+        },
+      });
+      return { text: 'The accounting team needs clarification before posting.' };
+    });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate: vi.fn() }) as never,
+      agentFactory: (config) => ({ ...config, generate: mainGenerate }) as never,
       teams: [queryTeam, accountingTeam],
       teamRuntime: { runTeamLead },
     });
@@ -332,7 +362,10 @@ describe('OrchestratorAgent', () => {
     const mainGenerate = vi.fn(async () => {
       const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'List our accounts.' },
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
       });
       return {
         text: [
@@ -373,7 +406,10 @@ describe('OrchestratorAgent', () => {
     const mainGenerate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'List our accounts.' },
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
       });
       return { text: 'The Query team found one account.' };
     });
@@ -423,7 +459,7 @@ describe('OrchestratorAgent', () => {
     const mainGenerate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'Show our transactions.' },
+        request: queryDraft('Show our transactions.'),
       });
       return { text: 'The query returned verified transactions.' };
     });
@@ -478,11 +514,17 @@ describe('OrchestratorAgent', () => {
     const mainGenerate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'List our accounts.' },
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
       });
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'List our accounts.' },
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
       });
       return { text: 'The Query team found one account.' };
     });
@@ -508,7 +550,7 @@ describe('OrchestratorAgent', () => {
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
   });
 
-  it('delegates obvious account-list reads when the main model returns no checked team result', async () => {
+  it('does not synthesize query delegation when the model returns a direct final response', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const mainGenerate = vi.fn(async () => ({
       object: finalResponse('I can answer directly without a team.'),
@@ -530,22 +572,35 @@ describe('OrchestratorAgent', () => {
 
     expect(mainGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).not.toHaveBeenCalled();
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      team: queryTeam,
-      request: { businessQuestion: 'List our accounts.' },
-    }));
-    expect(response.body).toContain('Query team status: verified');
-    expect(response.body).not.toContain('I can answer directly without a team.');
+    expect(runTeamLead).not.toHaveBeenCalled();
+    expect(response.body).toBe('I can answer directly without a team.');
   });
 
-  it('delegates obvious accounting writes without waiting for the main model', async () => {
-    const runTeamLead = vi.fn(async () => ({
-      ...teamResult(),
-      team: 'accounting',
-    }));
-    const mainGenerate = vi.fn(async () => ({
-      object: finalResponse('I can record that directly without a team.'),
-    }));
+  it('uses the Mastra delegate tool for accounting writes instead of regex pre-routing', async () => {
+    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const mainGenerate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: 'transaction_capture',
+          request: {
+            schemaName: 'transaction-capture-request-draft',
+            schemaVersion: 1,
+            instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
+            known: {
+              amount: '10.00',
+              currency: 'USD',
+              occurredOn: '2026-06-27',
+              paymentAccountName: 'checking',
+              categoryName: 'dining out',
+            },
+          },
+        },
+      });
+      return { text: 'The accounting team needs clarification before posting.' };
+    });
     const finalizerGenerate = vi.fn();
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -559,9 +614,11 @@ describe('OrchestratorAgent', () => {
       teamRuntime: { runTeamLead },
     });
 
-    const response = await orchestrator.run({ message: message('add $10 of buying a burger') });
+    const result = await orchestrator.runTurn({
+      message: message('Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.'),
+    });
 
-    expect(mainGenerate).not.toHaveBeenCalled();
+    expect(mainGenerate).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).not.toHaveBeenCalled();
     expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
       team: accountingTeam,
@@ -571,8 +628,12 @@ describe('OrchestratorAgent', () => {
         intent: 'transaction_capture',
       }),
     }));
-    expect(response.body).toContain('Accounting team status: verified');
-    expect(response.body).not.toContain('I can record that directly without a team.');
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      response: {
+        body: expect.stringContaining('Which account was used to pay?'),
+      },
+    });
   });
 
   it('fails instead of wrapping invalid no-team model output as plain text', async () => {
