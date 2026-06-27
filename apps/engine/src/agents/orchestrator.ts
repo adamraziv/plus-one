@@ -124,8 +124,6 @@ const QueryIntentDraftSchema = z.object({
   coverage: z.array(z.string().min(1).max(512)).max(32).default([]),
 }).strict();
 
-type QueryIntentDraft = z.infer<typeof QueryIntentDraftSchema>;
-
 const accountingIntentJsonContract = [
   'Return only one JSON object.',
   'Schema:',

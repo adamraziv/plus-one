@@ -63,16 +63,12 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const workflows = {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
-  let mastraRef: ReturnType<typeof createMastra> | undefined;
   const apiRoutes = createRuntimeRoutes({
     config,
     agentSystem,
     teamRuntime,
     orchestrator,
-    getMastra: () => {
-      if (mastraRef === undefined) throw new Error('Mastra instance not ready');
-      return mastraRef;
-    },
+    getMastra: () => mastra,
   });
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
     config.database.poolUrls.memory,
@@ -80,7 +76,6 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     apiRoutes,
     workflows,
   );
-  mastraRef = mastra;
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);
 

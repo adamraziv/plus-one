@@ -140,20 +140,6 @@ function finalResponse(body = 'Structured response.'): OrchestratorFinalResponse
   });
 }
 
-function unsupportedResponse(body = 'I cannot access that data.'): OrchestratorFinalResponseV1 {
-  return OrchestratorFinalResponseSchemaV1.parse({
-    ...finalResponse(body),
-    policyBoundary: 'unsupported_capability',
-  });
-}
-
-function personalizedResponse(body = 'Personalized finance response.'): OrchestratorFinalResponseV1 {
-  return OrchestratorFinalResponseSchemaV1.parse({
-    ...finalResponse(body),
-    policyBoundary: 'personalized_finance',
-  });
-}
-
 function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {}) {
   return {
     schemaName: 'query-lead-request-draft',
