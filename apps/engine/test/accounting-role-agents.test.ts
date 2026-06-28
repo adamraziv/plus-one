@@ -9,6 +9,8 @@ import {
 import { accountingSkills } from '@plus-one/accounting';
 import {
   createAccountingRoleAgents,
+  createJournalCheckerAgent,
+  createJournalMakerAgent,
   createTransactionCaptureCheckerAgent,
   createTransactionCaptureMakerAgent,
 } from '../src/agents/accounting/index.js';
@@ -142,9 +144,9 @@ describe('Accounting Mastra role agents', () => {
           schemaVersion: 1,
           missingFields: ['payment_account', 'occurred_on', 'category'],
           questions: [
-            'Which account was used?',
+            'Which internal payment account should this use?',
             'On what date did the transaction occur?',
-            'What category should this use?',
+            'Which internal category account should this use?',
           ],
           reason: 'The transaction cannot be posted without account, date, and category.',
         },
@@ -235,6 +237,127 @@ describe('Accounting Mastra role agents', () => {
           schemaName: 'accounting-clarification',
           missingFields: ['payment_account', 'occurred_on', 'category'],
         },
+      },
+    });
+  });
+
+  it('returns journal transfer clarifications without calling the model', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createJournalMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'accounting-journal')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'journal-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'journal-work-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'journal-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        operation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-journal', description: 'Return one checked accounting result.' },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      object: {
+        output: {
+          schemaName: 'accounting-clarification',
+          missingFields: ['payment_account', 'occurred_on'],
+        },
+      },
+    });
+  });
+
+  it('accepts journal transfer clarifications without calling the model', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createJournalCheckerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'b'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-clarification',
+          schemaVersion: 1,
+          missingFields: ['payment_account', 'occurred_on'],
+          questions: [
+            'Which internal account should be the source for this transfer?',
+            'Which internal account should be the destination for this transfer?',
+            'On what date should this transfer be recorded?',
+          ],
+          reason: 'The transfer cannot be posted until the exact internal source account, destination account, and effective date are confirmed.',
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'accounting-journal')!;
+    const task = VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'journal-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'journal-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        operation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
+      },
+      permittedEvidence: [],
+      selectedSkill: skill.identity,
+      rubric: { rubricName: 'journal-rubric', rubricVersion: 1, instructions: ['Check.'] },
+      policyLabels: ['personalized_finance'],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      object: {
+        verdict: 'accepted',
+        coveredArtifactId: makerArtifact.artifactId,
+        coveredArtifactHash: makerArtifact.artifactHash,
+        findings: [],
       },
     });
   });

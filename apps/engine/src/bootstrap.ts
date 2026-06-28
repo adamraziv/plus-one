@@ -10,9 +10,11 @@ import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
 import type { RoleAgentTools } from './mastra/role-agent.js';
 import { validateConfiguredModels } from './model-catalog.js';
+import { OrchestratorAgent } from './agents/orchestrator.js';
 import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
+import { createOrchestratorLoopWorkflow } from './workflows/orchestrator-loop.js';
 
 interface BootstrapDependencies {
   environment?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -53,11 +55,26 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     ...(dependencies.orchestratorAgent === undefined ? {} : { orchestratorAgent: dependencies.orchestratorAgent }),
   });
   const teamRuntime = createTeamRuntime({ pools, agentSystem });
-  const apiRoutes = createRuntimeRoutes({ config, agentSystem, teamRuntime });
+  const orchestrator = new OrchestratorAgent({
+    model: config.models.orchestrator,
+    teams: agentSystem.teams,
+    teamRuntime,
+  });
+  const workflows = {
+    'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
+  };
+  const apiRoutes = createRuntimeRoutes({
+    config,
+    agentSystem,
+    teamRuntime,
+    orchestrator,
+    getMastra: () => mastra,
+  });
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
     config.database.poolUrls.memory,
     agentSystem.mastraAgents,
     apiRoutes,
+    workflows,
   );
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);

@@ -31,6 +31,7 @@ export const queryToolPermissions = [
   { team: 'query', roleName: 'query-lead', roleVersion: 1, toolIds: [] as const },
   { team: 'query', roleName: 'query-maker', roleVersion: 1,
     toolIds: ['query_account_list', 'query_current_balances', 'query_categorized_transactions',
+      'query_category_spend_monthly',
       'query_budget_variance', 'query_savings_goal_progress', 'query_debt_progress',
       'query_reconciliation_status', 'query_source_freshness'] },
   { team: 'query', roleName: 'query-checker', roleVersion: 1, toolIds: [] as const },

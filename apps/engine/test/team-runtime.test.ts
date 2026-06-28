@@ -23,8 +23,18 @@ const message = InboundChannelMessageSchemaV1.parse({
   metadata: { destination: { chatId: 'telegram-chat-42' } },
 });
 
+function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {}) {
+  return {
+    schemaName: 'query-lead-request-draft',
+    schemaVersion: 1,
+    businessQuestion,
+    requiredCalculations: [],
+    ...extra,
+  };
+}
+
 describe('normalizeAccountingLeadRequest', () => {
-  it('canonicalizes transaction capture requests from inbound context', async () => {
+  it('canonicalizes typed transaction capture drafts without parsing prose', async () => {
     const pools = {
       accounting: {
         query: vi.fn(async () => ({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })),
@@ -36,9 +46,16 @@ describe('normalizeAccountingLeadRequest', () => {
       schemaVersion: 1,
       intent: 'transaction_capture',
       request: {
-        description: 'buying a burger',
-        amount: 10,
-        currency: 'USD',
+        schemaName: 'transaction-capture-request-draft',
+        schemaVersion: 1,
+        instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
+        known: {
+          amount: '10.00',
+          currency: 'USD',
+          occurredOn: '2026-06-27',
+          paymentAccountName: 'checking',
+          categoryName: 'dining out',
+        },
       },
     });
 
@@ -52,21 +69,77 @@ describe('normalizeAccountingLeadRequest', () => {
         householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
         bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
         explicitInstruction: true,
-        instruction: 'add $10 of buying a burger',
+        instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
         known: {
           amount: '10.00',
           currency: 'USD',
+          occurredOn: '2026-06-27',
         },
+      },
+    });
+  });
+
+  it('does not extract amount or currency from message text when no typed draft supplies them', async () => {
+    const pools = {
+      accounting: {
+        query: vi.fn(async () => ({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })),
+      },
+    } as never;
+
+    const normalized = await normalizeAccountingLeadRequest(pools, message, {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'transaction_capture',
+      request: {},
+    });
+
+    expect(normalized).toMatchObject({
+      request: {
+        instruction: 'add $10 of buying a burger',
+        known: {},
+      },
+    });
+  });
+
+  it('canonicalizes typed journal drafts by resolving the household book id', async () => {
+    const pools = {
+      accounting: {
+        query: vi.fn(async () => ({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })),
+      },
+    } as never;
+
+    const normalized = await normalizeAccountingLeadRequest(pools, message, {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'journal',
+      request: {
+        operation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
+      },
+    });
+
+    expect(normalized).toMatchObject({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'journal',
+      request: {
+        schemaName: 'journal-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        operation: 'transfer',
+        instruction: 'transfer $1000 from my savings to my checking account',
       },
     });
   });
 });
 
 describe('normalizeQueryLeadRequest', () => {
-  it('canonicalizes a thin account-list request from inbound context', () => {
-    const normalized = normalizeQueryLeadRequest(message, {
-      businessQuestion: 'List our accounts.',
-    });
+  it('canonicalizes a typed query draft using model-supplied grain and coverage', () => {
+    const normalized = normalizeQueryLeadRequest(message, queryDraft('List our accounts.', {
+      desiredGrain: ['household', 'account'],
+      coverage: ['account list'],
+    }));
 
     const parsed = EvidenceRequestSchemaV1.parse(normalized);
     expect(parsed).toMatchObject({
@@ -85,26 +158,18 @@ describe('normalizeQueryLeadRequest', () => {
     expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 
-  it('canonicalizes a thin balances request from inbound context', () => {
+  it('uses generic coverage for legacy thin query objects instead of keyword regex', () => {
     const normalized = normalizeQueryLeadRequest(message, {
       businessQuestion: 'What are our balances?',
     });
 
     const parsed = EvidenceRequestSchemaV1.parse(normalized);
     expect(parsed).toMatchObject({
-      schemaName: 'evidence-request',
-      schemaVersion: 1,
-      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       businessQuestion: 'What are our balances?',
-      intendedUse: 'household_finance_answer',
-      timeframe: { start: '2026-06-24', end: '2026-06-24' },
-      desiredGrain: ['household', 'account'],
-      filters: [],
-      requiredFreshness: 'latest available reporting projection',
+      desiredGrain: ['household'],
       requiredCalculations: [],
-      coverage: ['balance snapshot'],
+      coverage: ['requested household finance answer'],
     });
-    expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 
   it('keeps a valid EvidenceRequestV1 unchanged', () => {
@@ -129,9 +194,10 @@ describe('normalizeQueryLeadRequest', () => {
 
 describe('makerInputForLeadWorkItem', () => {
   it('uses the normalized Query request as query-evidence maker input, but leaves query-analyst maker input unchanged', () => {
-    const normalized = normalizeQueryLeadRequest(message, {
-      businessQuestion: 'List our accounts.',
-    });
+    const normalized = normalizeQueryLeadRequest(message, queryDraft('List our accounts.', {
+      desiredGrain: ['household', 'account'],
+      coverage: ['account list'],
+    }));
     const analystInput = {
       schemaName: 'analyst-task',
       schemaVersion: 1,
@@ -159,9 +225,10 @@ describe('makerInputForLeadWorkItem', () => {
 
 describe('deterministicLeadPlanForRequest', () => {
   it('builds the one valid Query lead plan for the normalized account-list slice', () => {
-    const request = normalizeQueryLeadRequest(message, {
-      businessQuestion: 'List our accounts.',
-    });
+    const request = normalizeQueryLeadRequest(message, queryDraft('List our accounts.', {
+      desiredGrain: ['household', 'account'],
+      coverage: ['account list'],
+    }));
 
     expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
       schemaName: 'team-lead-plan',
@@ -177,16 +244,10 @@ describe('deterministicLeadPlanForRequest', () => {
       businessQuestion: 'What are our balances?',
     });
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
-      schemaName: 'team-lead-plan',
-      schemaVersion: 1,
-      recommendedStrategyName: 'single-maker-checker',
-      work: [{ workCellId: 'query-evidence', makerInput: request }],
-      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-    });
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
-  it('leaves calculation-heavy Query requests on the modeled team-lead path', () => {
+  it('leaves calculation requests with known coverage on the modeled team-lead path', () => {
     const request = EvidenceRequestSchemaV1.parse({
       schemaName: 'evidence-request',
       schemaVersion: 1,
@@ -205,7 +266,51 @@ describe('deterministicLeadPlanForRequest', () => {
     expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
-  it('leaves typed Accounting requests on the modeled team-lead path', () => {
+  it('leaves calculation-heavy Query requests on the modeled team-lead path', () => {
+    const request = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      businessQuestion: 'What are my top expenses this month?',
+      intendedUse: 'expense_tracking',
+      timeframe: { start: '2026-06-01', end: '2026-06-30' },
+      desiredGrain: ['category'],
+      filters: [],
+      requiredFreshness: 'latest',
+      requiredCalculations: ['sum'],
+      coverage: ['all'],
+    });
+
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
+  });
+
+  it('uses deterministic Query evidence for explicit category spend coverage', () => {
+    const request = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      businessQuestion: 'What are my top expenses this month?',
+      intendedUse: 'expense_tracking',
+      timeframe: { start: '2026-06-01', end: '2026-06-30' },
+      desiredGrain: ['household', 'month', 'category'],
+      filters: [],
+      requiredFreshness: 'latest',
+      requiredCalculations: [],
+      coverage: ['category spend monthly'],
+    });
+
+    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'query-evidence', makerInput: request }],
+      stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
+  });
+
+  it('uses deterministic Accounting routing for typed accounting requests', () => {
     const request = {
       schemaName: 'accounting-lead-request',
       schemaVersion: 1,
@@ -221,6 +326,15 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     };
 
-    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toBeUndefined();
+    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'transaction-capture', makerInput: request.request }],
+      stopCondition: {
+        code: 'checked-transaction-capture',
+        description: 'Return one checked accounting result.',
+      },
+    });
   });
 });

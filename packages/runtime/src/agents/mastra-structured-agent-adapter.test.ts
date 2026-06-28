@@ -38,12 +38,18 @@ describe('MastraStructuredAgentAdapter', () => {
     });
     const registry = new AgentRegistry();
     registry.register({ agentId: 'query-maker', modelId: 'provider/model-a',
-      roleKind: 'maker', memoryEnabled: false, agent: { generate } as never });
+      roleKind: 'maker', memoryEnabled: false, agent: {
+        generate,
+        model: { id: 'provider/model-a', url: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      } as never });
     const adapter = new MastraStructuredAgentAdapter(registry);
     await expect(adapter.generate(call({ activeTools: ['query_balance'] }))).resolves.toEqual({ answer: '42' });
     expect(generate).toHaveBeenCalledWith([{ role: 'user', content: '{}' }],
       expect.objectContaining({ structuredOutput: expect.objectContaining({
-        schema: outputSchema, errorStrategy: 'strict', jsonPromptInjection: true,
+        schema: outputSchema,
+        errorStrategy: 'strict',
+        jsonPromptInjection: true,
+        model: { id: 'provider/model-a', url: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       }), activeTools: ['query_balance'],
         maxSteps: 4, maxRetries: 1, toolCallConcurrency: 1, maxProcessorRetries: 0,
         runId: 'run_01JNZQ4A9B8C7D6E5F4G3H2J1K', instructions: 'maker' }));

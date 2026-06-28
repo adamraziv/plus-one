@@ -17,6 +17,7 @@ describe('ReportingCatalog', () => {
       'reporting.household_net_worth_daily',
       'reporting.journal_activity',
       'reporting.categorized_transactions',
+      'reporting.category_spend_monthly',
       'reporting.cash_flow_monthly',
       'reporting.obligation_occurrences',
       'reporting.budget_variance',

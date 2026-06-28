@@ -23,6 +23,8 @@ export function createQueryTeamLeadAgent(input: QueryRoleAgentInput): QueryRoleA
       'Plan shape rule: recommendedStrategyName must be exactly single-maker-checker for this team.',
       'Plan shape rule: stopCondition.code must use lowercase hyphenated ids only; use query-answer for query-evidence and query-analysis for query-analyst.',
       'Plan shape rule: every work item makerInput must be a JSON object and never undefined.',
+      'Plan shape rule: when workCellId is query-evidence, makerInput must be a complete EvidenceRequestV1 with schemaName, schemaVersion, timeframe, desiredGrain, filters, requiredFreshness, requiredCalculations, and coverage.',
+      'Routing map: account lists -> account list; current balances -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source freshness -> source freshness.',
       'Routing rule: use query-evidence for governed financial reads.',
       'Routing rule: use query-analyst only when checked query data must be calculated in the sandbox.',
       'Constraint: do not answer household financial questions directly from memory, prior conversation, hidden state, or unavailable tools.',

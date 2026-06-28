@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import {
   PostgresArtifactRepository,
   PostgresVerificationLedgerRepository,
@@ -6,6 +7,7 @@ import {
 } from '@plus-one/database';
 import {
   AccountingLeadRequestSchemaV1,
+  JournalWorkRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
   accountingSkills,
   validateAccountingLeadPlan,
@@ -38,6 +40,11 @@ import {
 } from '@plus-one/runtime';
 import type { AgentSystem } from './agent-catalog.js';
 import type { OrchestratorTeamRuntime } from './tools/delegate-team.js';
+import {
+  QueryLeadRequestDraftSchemaV1,
+  TransactionCaptureRequestDraftSchemaV1,
+  type TransactionCaptureRequestDraftV1,
+} from './tools/delegate-team-schemas.js';
 
 const skills = [
   ...querySkills,
@@ -143,9 +150,30 @@ export async function normalizeAccountingLeadRequest(
   request: JsonValue,
 ): Promise<JsonValue> {
   const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
-  if (!parsed.success || parsed.data.intent !== 'transaction_capture') return request;
+  if (!parsed.success) return request;
+  if (parsed.data.intent === 'journal') {
+    if (JournalWorkRequestSchemaV1.safeParse(parsed.data.request).success) return request;
+    const draft = JournalWorkRequestDraftSchema.safeParse(parsed.data.request);
+    if (!draft.success) return request;
+    const bookId = await resolveHouseholdBookId(pools, message.householdId);
+    return JSON.parse(JSON.stringify(AccountingLeadRequestSchemaV1.parse({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'journal',
+      request: JournalWorkRequestSchemaV1.parse({
+        schemaName: 'journal-work-request',
+        schemaVersion: 1,
+        householdId: message.householdId,
+        bookId,
+        operation: draft.data.operation,
+        instruction: draft.data.instruction,
+      }),
+    }))) as JsonValue;
+  }
+  if (parsed.data.intent !== 'transaction_capture') return request;
   if (TransactionCaptureRequestSchemaV1.safeParse(parsed.data.request).success) return request;
 
+  const draft = TransactionCaptureRequestDraftSchemaV1.safeParse(parsed.data.request);
   const bookId = await resolveHouseholdBookId(pools, message.householdId);
   const normalized = AccountingLeadRequestSchemaV1.parse({
     schemaName: 'accounting-lead-request',
@@ -157,11 +185,8 @@ export async function normalizeAccountingLeadRequest(
       householdId: message.householdId,
       bookId,
       explicitInstruction: true,
-      instruction: instructionText(message, parsed.data),
-      known: {
-        ...(amountFrom(message.body, parsed.data) === undefined ? {} : { amount: amountFrom(message.body, parsed.data) }),
-        ...(currencyFrom(message.body, parsed.data) === undefined ? {} : { currency: currencyFrom(message.body, parsed.data) }),
-      },
+      instruction: draft.success ? draft.data.instruction : instructionText(message, parsed.data),
+      known: draft.success ? canonicalTransactionKnown(draft.data.known) : {},
     }),
   });
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
@@ -174,7 +199,8 @@ export function normalizeQueryLeadRequest(
   const parsed = EvidenceRequestSchemaV1.safeParse(request);
   if (parsed.success) return JSON.parse(JSON.stringify(parsed.data)) as JsonValue;
 
-  const businessQuestion = queryBusinessQuestion(message, request);
+  const draft = QueryLeadRequestDraftSchemaV1.safeParse(request);
+  const businessQuestion = draft.success ? draft.data.businessQuestion : queryBusinessQuestion(message, request);
   const date = message.receivedAt.slice(0, 10);
   return JSON.parse(JSON.stringify(EvidenceRequestSchemaV1.parse({
     schemaName: 'evidence-request',
@@ -183,12 +209,18 @@ export function normalizeQueryLeadRequest(
     requestId: nextId('evidence'),
     businessQuestion,
     intendedUse: 'household_finance_answer',
-    timeframe: { start: date, end: date },
-    desiredGrain: desiredGrainForQuestion(businessQuestion),
+    timeframe: draft.success && draft.data.timeframe !== undefined
+      ? draft.data.timeframe
+      : { start: date, end: date },
+    desiredGrain: draft.success && draft.data.desiredGrain !== undefined
+      ? draft.data.desiredGrain
+      : ['household'],
     filters: [],
     requiredFreshness: 'latest available reporting projection',
-    requiredCalculations: [],
-    coverage: [coverageForQuestion(businessQuestion)],
+    requiredCalculations: draft.success ? draft.data.requiredCalculations : [],
+    coverage: draft.success && draft.data.coverage !== undefined
+      ? draft.data.coverage
+      : ['requested household finance answer'],
   }))) as JsonValue;
 }
 
@@ -198,10 +230,10 @@ export function makerInputForLeadWorkItem(
   planMakerInput: JsonValue,
   normalizedRequest: JsonValue,
 ): JsonValue {
-  if (team.team === 'query'
-    && workCellId === 'query-evidence'
-    && EvidenceRequestSchemaV1.safeParse(normalizedRequest).success) {
-    return normalizedRequest;
+  if (team.team === 'query' && workCellId === 'query-evidence') {
+    const plan = EvidenceRequestSchemaV1.safeParse(planMakerInput);
+    if (plan.success) return JSON.parse(JSON.stringify(plan.data)) as JsonValue;
+    if (EvidenceRequestSchemaV1.safeParse(normalizedRequest).success) return normalizedRequest;
   }
   return planMakerInput;
 }
@@ -212,7 +244,11 @@ export function deterministicLeadPlanForRequest(
 ) {
   if (team.team === 'query') {
     const parsed = EvidenceRequestSchemaV1.safeParse(request);
-    if (!parsed.success || parsed.data.requiredCalculations.length > 0) return undefined;
+    if (!parsed.success
+      || parsed.data.requiredCalculations.length > 0
+      || !parsed.data.coverage.some((coverage) => deterministicQueryCoverages.has(coverage))) {
+      return undefined;
+    }
     return TeamLeadPlanSchemaV1.parse({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
@@ -221,8 +257,78 @@ export function deterministicLeadPlanForRequest(
       stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     });
   }
+  if (team.team === 'accounting') {
+    const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
+    if (!parsed.success) return undefined;
+    const plan = deterministicAccountingPlans[parsed.data.intent];
+    return TeamLeadPlanSchemaV1.parse({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: plan.workCellId, makerInput: parsed.data.request }],
+      stopCondition: {
+        code: plan.stopCode,
+        description: plan.stopDescription,
+      },
+    });
+  }
   return undefined;
 }
+
+const deterministicQueryCoverages = new Set([
+  'account list',
+  'reporting.accounts',
+  'balance snapshot',
+  'reporting.current_balances',
+  'reporting.account_current_balances',
+  'categorized transactions',
+  'reporting.categorized_transactions',
+  'category spend monthly',
+  'reporting.category_spend_monthly',
+  'budget variance',
+  'reporting.budget_variance',
+  'savings goal progress',
+  'reporting.savings_goal_progress',
+  'debt progress',
+  'reporting.debt_progress',
+  'reconciliation status',
+  'reporting.reconciliation_status',
+  'source freshness',
+  'reporting.source_freshness',
+]);
+
+const deterministicAccountingPlans = {
+  transaction_capture: {
+    workCellId: 'transaction-capture',
+    stopCode: 'checked-transaction-capture',
+    stopDescription: 'Return one checked accounting result.',
+  },
+  ingestion: {
+    workCellId: 'ingestion',
+    stopCode: 'checked-ingestion',
+    stopDescription: 'Return one checked import proposal.',
+  },
+  journal: {
+    workCellId: 'journal',
+    stopCode: 'checked-journal',
+    stopDescription: 'Return one checked accounting result.',
+  },
+  chart_of_accounts: {
+    workCellId: 'chart-of-accounts',
+    stopCode: 'checked-chart-change',
+    stopDescription: 'Return one checked chart change.',
+  },
+  reconciliation: {
+    workCellId: 'reconciliation',
+    stopCode: 'checked-reconciliation',
+    stopDescription: 'Return one checked reconciliation proposal.',
+  },
+} as const;
+
+const JournalWorkRequestDraftSchema = z.object({
+  operation: z.enum(['post', 'transfer', 'split', 'adjustment', 'reverse_replace', 'fx_realized']),
+  instruction: z.string().min(1).max(4_000),
+}).strict();
 
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {
   const result = await pools.accounting.query<{ book_id: string }>(
@@ -254,24 +360,12 @@ function instructionText(message: InboundChannelMessageV1, request: AccountingLe
   return message.body;
 }
 
-function amountFrom(body: string, request: AccountingLeadRequestV1): string | undefined {
-  const nested = request.request;
-  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
-    const amount = nested.amount;
-    if (typeof amount === 'string' && amount.length > 0) return amount;
-    if (typeof amount === 'number' && Number.isFinite(amount)) return amount.toFixed(2);
-  }
-  const match = body.match(/\$([0-9]+(?:\.[0-9]{1,2})?)/);
-  return match?.[1] === undefined ? undefined : Number.parseFloat(match[1]).toFixed(2);
-}
-
-function currencyFrom(body: string, request: AccountingLeadRequestV1): string | undefined {
-  const nested = request.request;
-  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
-    const currency = nested.currency;
-    if (typeof currency === 'string' && currency.length > 0) return currency;
-  }
-  return body.includes('$') ? 'USD' : undefined;
+function canonicalTransactionKnown(known: TransactionCaptureRequestDraftV1['known']) {
+  return {
+    ...(known.amount === undefined ? {} : { amount: known.amount }),
+    ...(known.currency === undefined ? {} : { currency: known.currency }),
+    ...(known.occurredOn === undefined ? {} : { occurredOn: known.occurredOn }),
+  };
 }
 
 function queryBusinessQuestion(message: InboundChannelMessageV1, request: JsonValue): string {
@@ -282,38 +376,6 @@ function queryBusinessQuestion(message: InboundChannelMessageV1, request: JsonVa
     }
   }
   return message.body.trim();
-}
-
-function isAccountListQuestion(question: string): boolean {
-  const normalized = question.trim().toLowerCase();
-  return /(?:^|\b)(list|show|what|which)\b[\s\w]*\baccounts?\b/.test(normalized)
-    && !/\bbalances?\b/.test(normalized);
-}
-
-function coverageForQuestion(question: string): string {
-  const normalized = question.trim().toLowerCase();
-  if (isAccountListQuestion(normalized)) return 'account list';
-  if (/\bbalances?\b/.test(normalized)) return 'balance snapshot';
-  if (/\btransactions?\b|\bspend(?:ing|s)?\b|\bspent\b/.test(normalized)) return 'categorized transactions';
-  if (/\bbudget\b|\bvariance\b/.test(normalized)) return 'budget variance';
-  if (/\bsavings?\b|\bgoals?\b/.test(normalized)) return 'savings goal progress';
-  if (/\bdebt\b|\bloan\b|\bliabilit(?:y|ies)\b/.test(normalized)) return 'debt progress';
-  if (/\breconcil(?:e|iation)\b|\bstatement\b/.test(normalized)) return 'reconciliation status';
-  if (/\bfreshness\b|\bstale\b|\bsource\b/.test(normalized)) return 'source freshness';
-  return 'requested household finance answer';
-}
-
-function desiredGrainForQuestion(question: string): string[] {
-  const coverage = coverageForQuestion(question);
-  if (coverage === 'account list' || coverage === 'balance snapshot' || coverage === 'debt progress'
-    || coverage === 'reconciliation status') {
-    return ['household', 'account'];
-  }
-  if (coverage === 'categorized transactions') return ['household', 'account', 'journal'];
-  if (coverage === 'budget variance') return ['household', 'category'];
-  if (coverage === 'savings goal progress') return ['household', 'goal'];
-  if (coverage === 'source freshness') return ['household', 'source'];
-  return ['household'];
 }
 
 function workInputFor(

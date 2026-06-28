@@ -134,6 +134,97 @@ describe('TeamExecutor', () => {
     expect(runtime.complete).not.toHaveBeenCalled();
   });
 
+  it('treats an accepted clarification artifact as insufficient evidence', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      beginChecker: vi.fn(),
+      validateMaker: vi.fn(async (input) => ({
+        ...input,
+        artifactType: 'maker_output',
+        schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+        canonicalizationVersion: 'rfc8785-v1',
+        hashAlgorithm: 'sha256',
+        artifactHash: 'a'.repeat(64),
+        createdAt: '2026-06-15T08:00:00.000Z',
+      })),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const runner = { run: vi.fn()
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
+        output: {
+          schemaName: 'lookup-clarification',
+          schemaVersion: 1,
+          reason: 'Need the missing field.',
+          questions: ['Which account should be used?'],
+        },
+        claims: [{ claimId: 'c1', text: 'Need clarification', evidenceArtifactIds: [] }],
+        assumptions: [],
+        uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'accepted',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        coveredArtifactHash: 'a'.repeat(64),
+        findings: [],
+      }) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({
+          systemPrompt: 'maker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+        forChecker: vi.fn(() => ({
+          systemPrompt: 'checker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({
+        maxAttempts: 1,
+        teamDeadlineMs: 5_000,
+        identity: { policyName: 'test', policyVersion: 1 },
+      })) } as never,
+      ids: { nextArtifactId: vi.fn()
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K') },
+    });
+
+    const result = await executor.executeWorkCell({
+      ...makeExecutionInput(),
+      completionMode: 'checked_mutation',
+      workCell: {
+        ...makeExecutionInput().workCell,
+        makerOutputSchema: z.any(),
+        evaluateStopCondition: () => ({
+          status: 'verified' as const,
+          reason: 'Should be overridden by clarification handling.',
+          outstanding: [],
+        }),
+      },
+    });
+
+    expect(result.status).toBe('insufficient_evidence');
+    expect(result.completionState).toBe('terminal');
+    expect(result.outstanding).toContain('Which account should be used?');
+  });
+
   it('retries maker output that references evidence outside permittedEvidence before freezing it', async () => {
     const runtime = {
       createTask: vi.fn(),

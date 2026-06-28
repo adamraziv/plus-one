@@ -10,6 +10,7 @@ const allowedRelations = [
   'reporting.household_net_worth_daily',
   'reporting.journal_activity',
   'reporting.categorized_transactions',
+  'reporting.category_spend_monthly',
   'reporting.cash_flow_monthly',
   'reporting.obligation_occurrences',
   'reporting.budget_variance',
@@ -36,6 +37,9 @@ describe('QueryToolRegistry', () => {
       { toolName: 'categorized_transactions', relationNames: ['reporting.categorized_transactions'],
         sql: 'SELECT posting_id, account_id, amount FROM reporting.categorized_transactions WHERE household_id = $1 LIMIT 100',
         parameters: ['$1'], limit: 100, description: 'categorized transactions' },
+      { toolName: 'category_spend_monthly', relationNames: ['reporting.category_spend_monthly'],
+        sql: 'SELECT month_start, category_name, native_amount FROM reporting.category_spend_monthly WHERE household_id = $1 LIMIT 100',
+        parameters: ['$1'], limit: 100, description: 'category spend monthly' },
       { toolName: 'budget_variance', relationNames: ['reporting.budget_variance'],
         sql: 'SELECT planned_amount, actual_amount FROM reporting.budget_variance WHERE household_id = $1 LIMIT 100',
         parameters: ['$1'], limit: 100, description: 'budget variance' },
@@ -58,6 +62,7 @@ describe('QueryToolRegistry', () => {
     const names = registry.list().map((entry) => entry.toolName);
     expect(names).toEqual([
       'account_list', 'budget_variance', 'categorized_transactions',
+      'category_spend_monthly',
       'current_balances', 'debt_progress', 'reconciliation_status',
       'savings_goal_progress', 'source_freshness',
     ]);

@@ -97,7 +97,7 @@ function missingFields(request: ReturnType<typeof TransactionCaptureRequestSchem
 function questionFor(field: ReturnType<typeof missingFields>[number]): string {
   if (field === 'amount') return 'What amount should be recorded?';
   if (field === 'currency') return 'What currency should be used?';
-  if (field === 'payment_account') return 'Which account was used to pay?';
+  if (field === 'payment_account') return 'Which internal payment account should this use?';
   if (field === 'occurred_on') return 'On what date did the transaction occur?';
-  return 'Which category account should this use?';
+  return 'Which internal category account should this use?';
 }

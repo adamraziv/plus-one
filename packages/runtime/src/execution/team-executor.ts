@@ -188,12 +188,15 @@ export class TeamExecutor {
       let terminal: { status: 'verified' | 'partial' | 'insufficient_evidence' | 'conflicted' | 'failed';
         reason: string; outstanding: string[] };
       try {
-        const evaluated = verdict.verdict === 'accepted'
+        const clarification = verdict.verdict === 'accepted'
+          ? acceptedClarification(makerOutput.output)
+          : undefined;
+        const evaluated = clarification ?? (verdict.verdict === 'accepted'
           ? input.workCell.evaluateStopCondition({
               condition: input.stopCondition, maker: makerOutput, verdict,
               permittedEvidence: input.permittedEvidence,
             })
-          : this.terminalFor(verdict);
+          : this.terminalFor(verdict));
         terminal = {
           status: TeamResultStatusSchemaV1.parse(evaluated.status),
           reason: z.string().min(1).parse(evaluated.reason),
@@ -245,6 +248,33 @@ export class TeamExecutor {
     return { status: 'failed', reason: 'The checker rejected the artifact or revision attempts were exhausted.',
       outstanding: verdict.findings.map((finding) => finding.message) };
   }
+}
+
+function acceptedClarification(output: unknown):
+  { status: 'insufficient_evidence'; reason: string; outstanding: string[] } | undefined {
+  if (output === null || typeof output !== 'object' || Array.isArray(output)) return undefined;
+  const schemaName = typeof (output as { schemaName?: unknown }).schemaName === 'string'
+    ? (output as { schemaName: string }).schemaName
+    : undefined;
+  if (schemaName === undefined || !schemaName.endsWith('clarification')) return undefined;
+  const reason = typeof (output as { reason?: unknown }).reason === 'string'
+    ? (output as { reason: string }).reason
+    : 'Maker requested clarification.';
+  const questions = Array.isArray((output as { questions?: unknown }).questions)
+    ? (output as { questions: unknown[] }).questions.filter((value): value is string => typeof value === 'string')
+    : [];
+  const missingFields = Array.isArray((output as { missingFields?: unknown }).missingFields)
+    ? (output as { missingFields: unknown[] }).missingFields.filter((value): value is string => typeof value === 'string')
+    : [];
+  const missingEvidence = Array.isArray((output as { missingEvidence?: unknown }).missingEvidence)
+    ? (output as { missingEvidence: unknown[] }).missingEvidence.filter((value): value is string => typeof value === 'string')
+    : [];
+  const outstanding = [...questions, ...missingFields, ...missingEvidence];
+  return {
+    status: 'insufficient_evidence',
+    reason,
+    outstanding: outstanding.length === 0 ? [reason] : outstanding,
+  };
 }
 
 function synthesizeClaimsIfNeeded(

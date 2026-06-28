@@ -41,6 +41,14 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     description: 'Read categorized transactions.',
   },
   {
+    toolName: 'category_spend_monthly',
+    relationNames: ['reporting.category_spend_monthly'],
+    sql: 'SELECT month_start, account_id, category_name, native_amount, native_currency FROM reporting.category_spend_monthly WHERE household_id = $1 LIMIT 100',
+    parameters: ['$1'],
+    limit: 100,
+    description: 'Read monthly expense totals by category.',
+  },
+  {
     toolName: 'budget_variance',
     relationNames: ['reporting.budget_variance'],
     sql: 'SELECT scope_key, category_key, period_start, period_end, planned_amount, planned_currency, actual_amount FROM reporting.budget_variance WHERE household_id = $1 LIMIT 100',

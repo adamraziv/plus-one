@@ -223,6 +223,7 @@ function grainForRelation(relationName: string): string[] {
     'reporting.household_net_worth_daily': ['household', 'date'],
     'reporting.journal_activity': ['household', 'journal'],
     'reporting.categorized_transactions': ['household', 'account', 'journal'],
+    'reporting.category_spend_monthly': ['household', 'month', 'category'],
     'reporting.cash_flow_monthly': ['household', 'month', 'accounting class', 'currency'],
     'reporting.obligation_occurrences': ['household', 'obligation occurrence'],
     'reporting.budget_variance': ['household', 'budget category', 'period'],
