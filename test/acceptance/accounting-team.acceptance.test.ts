@@ -217,6 +217,7 @@ describe('accounting team acceptance', () => {
       workCellId,
       makerOutputs: [makerOutputFor(workCellId, 'clarification')],
       checkerVerdicts: ['accepted'],
+      missingPaymentAccount: intent === 'transaction_capture',
     });
 
     expect(result.teamResult.status).toBe('insufficient_evidence');
@@ -230,6 +231,7 @@ async function runAccountingScenario(input: {
   workCellId: 'transaction-capture' | 'ingestion' | 'journal' | 'chart-of-accounts' | 'reconciliation';
   makerOutputs: MakerArtifactV1[];
   checkerVerdicts: CheckerVerdictV1['verdict'][];
+  missingPaymentAccount?: boolean;
 }) {
   const calls: string[] = [];
   const makerOutputs = [...input.makerOutputs];
@@ -242,7 +244,9 @@ async function runAccountingScenario(input: {
           schemaName: 'team-lead-plan',
           schemaVersion: 1,
           recommendedStrategyName: 'single-maker-checker',
-          work: [{ workCellId: input.workCellId, makerInput: makerInputFor(input.workCellId) }],
+          work: [{ workCellId: input.workCellId, makerInput: makerInputFor(input.workCellId, {
+            missingPaymentAccount: input.missingPaymentAccount === true,
+          }) }],
           stopCondition: { code: 'accounting-result', description: 'Return one checked accounting result.' },
         }) };
       }
@@ -359,7 +363,14 @@ async function runAccountingScenario(input: {
         schemaName: 'accounting-lead-request',
         schemaVersion: 1,
         intent: input.intent,
-        request: { householdId, bookId },
+        request: input.intent === 'transaction_capture'
+          ? {
+            schemaName: 'transaction-capture-request-draft',
+            schemaVersion: 1,
+            instruction: 'Handle accounting request.',
+            known: {},
+          }
+          : { householdId, bookId },
       },
     });
     return { object: OrchestratorFinalResponseSchemaV1.parse({
@@ -453,7 +464,7 @@ function outputSchemaFor(workCellId: string) {
   return { schemaName: 'accounting-work-result', schemaVersion: 1 };
 }
 
-function makerInputFor(workCellId: string): JsonValue {
+function makerInputFor(workCellId: string, options: { missingPaymentAccount?: boolean } = {}): JsonValue {
   if (workCellId === 'ingestion') {
     return {
       schemaName: 'ingestion-work-request',
@@ -504,7 +515,9 @@ function makerInputFor(workCellId: string): JsonValue {
     known: {
       amount: '12.34',
       currency: 'USD',
-      paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      ...(options.missingPaymentAccount === true ? {} : {
+        paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      }),
       occurredOn: '2026-06-23',
       categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
     },

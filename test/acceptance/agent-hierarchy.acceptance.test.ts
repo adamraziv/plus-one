@@ -270,7 +270,13 @@ describe('agent hierarchy acceptance', () => {
       expect(messages).toContain('List accounts.');
       const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: { businessQuestion: 'List accounts.' },
+        request: {
+          schemaName: 'query-lead-request-draft',
+          schemaVersion: 1,
+          businessQuestion: 'List accounts.',
+          desiredGrain: ['household', 'account'],
+          coverage: ['reporting.accounts'],
+        },
       });
       return { object: OrchestratorFinalResponseSchemaV1.parse({
         schemaName: 'orchestrator-final-response',
@@ -312,7 +318,9 @@ describe('agent hierarchy acceptance', () => {
       metadata: { destination: { chatId: 'telegram-chat-42' } },
     }) });
 
-    expect(calls).toEqual(['query-lead', 'query-maker', 'query-checker']);
+    expect(calls).toEqual(['query-lead', 'query-maker']);
+    await expect(verificationLedger.findLatestVerdict(householdId, taskId))
+      .resolves.toMatchObject({ verdict: 'accepted' });
     expect(teamRuntime.runTeamLead).toHaveBeenCalledWith(expect.objectContaining({ team: queryTeamDefinition }));
     expect(response.body).toContain('The checked evidence includes one account row.');
     expect(response.delivery.destination).toEqual({ chatId: 'telegram-chat-42' });
@@ -336,7 +344,7 @@ function queryResult(rows: Record<string, unknown>[]) {
     grain: ['household', 'account'],
     rows,
     fieldDefinitions: ['account_id', 'name'],
-    sourceReferences: ['relation=reporting.accounts'],
+    sourceReferences: ['relation=reporting.accounts', `filter=household_id:eq:${householdId}`],
     freshness: 'fresh',
     coverageWarnings: [],
   });

@@ -53,7 +53,8 @@ describe('reporting schema', () => {
         'SELECT relation_name FROM reporting.relation_metadata ORDER BY relation_name',
       );
       expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.current_balances');
-      expect(metadata.rows).toHaveLength(13);
+      expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.category_spend_monthly');
+      expect(metadata.rows).toHaveLength(14);
 
       const currentBalanceHousehold = await owner.query<{ data_type: string }>(
         `SELECT data_type FROM information_schema.columns
