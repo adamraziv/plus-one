@@ -74,6 +74,7 @@ describe('migration discovery', () => {
       '0013_query_public_current_balances.sql',
       '0014_mastra_workflow_storage.sql',
       '0015_category_spend_monthly.sql',
+      '0016_mastra_observational_memory_storage.sql',
     ]);
 
     for (const migration of migrations) {

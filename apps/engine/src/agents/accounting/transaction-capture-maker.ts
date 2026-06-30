@@ -37,7 +37,9 @@ export function createTransactionCaptureMakerAgent(input: AccountingRoleAgentInp
     (messages: unknown, options: unknown) => Promise<unknown>;
   fallback.generate = (async (messages: unknown, options: unknown) => {
     const invocation = parseMakerInvocation(messages as readonly { role: string; content: string }[]);
-    const artifact = invocation === undefined ? undefined : clarificationArtifact(invocation);
+    const artifact = invocation === undefined
+      ? undefined
+      : clarificationArtifact(invocation) ?? deterministicProposalArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
     return { object: artifact };
   }) as typeof fallback.generate;
@@ -84,6 +86,71 @@ function clarificationArtifact(invocation: NonNullable<ReturnType<typeof parseMa
   });
 }
 
+function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof parseMakerInvocation>>) {
+  const request = TransactionCaptureRequestSchemaV1.safeParse(invocation.input);
+  if (!request.success || !isDeterministicProposalReady(request.data)) return undefined;
+  const suffix = idSuffix(invocation.taskId);
+  const amount = request.data.known.amount!;
+  const currency = request.data.known.currency!;
+  const occurredOn = request.data.known.occurredOn!;
+  const output = {
+    schemaName: 'accounting-journal-mutation-proposal',
+    schemaVersion: 1,
+    operation: 'post',
+    draft: {
+      draftSeriesId: `draftseries_${suffix}`,
+      version: 1,
+      journal: {
+        schemaName: 'post-journal-proposal',
+        schemaVersion: 1,
+        householdId: request.data.householdId,
+        bookId: request.data.bookId,
+        journalId: `journal_${suffix}`,
+        draftId: `draft_${suffix}`,
+        periodId: request.data.periodId,
+        taskId: invocation.taskId,
+        journalType: 'ordinary',
+        transactionCurrency: currency,
+        occurredOn,
+        effectiveOn: occurredOn,
+        description: request.data.instruction,
+        tagIds: [],
+        postings: [
+          {
+            accountId: request.data.known.categoryAccountId,
+            direction: 'debit',
+            transactionAmount: amount,
+            accountNativeAmount: amount,
+            accountNativeCurrency: request.data.categoryAccountCurrency,
+            tagIds: [],
+          },
+          {
+            accountId: request.data.known.paymentAccountId,
+            direction: 'credit',
+            transactionAmount: amount,
+            accountNativeAmount: amount,
+            accountNativeCurrency: request.data.paymentAccountCurrency,
+            tagIds: [],
+          },
+        ],
+      },
+    },
+  };
+  return MakerArtifactSchemaV1.parse({
+    schemaName: 'maker-artifact',
+    schemaVersion: 1,
+    outputSchema: invocation.outputSchema,
+    output,
+    claims: [{
+      claimId: 'transaction-capture-proposal',
+      text: 'Prepared a balanced transaction capture journal proposal.',
+      evidenceArtifactIds: [],
+    }],
+    assumptions: [],
+    uncertainty: [],
+  });
+}
+
 function missingFields(request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>) {
   return [
     ...(request.known.amount === undefined ? ['amount' as const] : []),
@@ -92,6 +159,20 @@ function missingFields(request: ReturnType<typeof TransactionCaptureRequestSchem
     ...(request.known.occurredOn === undefined ? ['occurred_on' as const] : []),
     ...(request.known.categoryAccountId === undefined ? ['category' as const] : []),
   ];
+}
+
+function isDeterministicProposalReady(request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>) {
+  return missingFields(request).length === 0
+    && request.periodId !== undefined
+    && request.paymentAccountCurrency !== undefined
+    && request.categoryAccountCurrency !== undefined
+    && request.paymentAccountCurrency === request.known.currency
+    && request.categoryAccountCurrency === request.known.currency;
+}
+
+function idSuffix(taskId: string): string {
+  const separator = taskId.indexOf('_');
+  return separator === -1 ? taskId : taskId.slice(separator + 1);
 }
 
 function questionFor(field: ReturnType<typeof missingFields>[number]): string {

@@ -16,6 +16,7 @@ export async function startMastraDevServer(input: {
   const child = spawn('pnpm', ['dev:mastra'], {
     cwd: input.cwd ?? process.cwd(),
     env: { ...process.env, ...input.env },
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -44,8 +45,14 @@ export async function startMastraDevServer(input: {
     await sleep(250);
   }
 
+  const port = output.match(/Studio:\s+http:\/\/localhost:(\d+)/i)?.[1];
+  if (port === undefined) {
+    await stopChild(child);
+    throw new Error(`Mastra dev server did not report a Studio port.\n${output}`);
+  }
+
   return {
-    baseUrl: 'http://127.0.0.1:4111',
+    baseUrl: `http://127.0.0.1:${port}`,
     output: () => output,
     stop: async () => {
       await stopChild(child);
@@ -55,10 +62,25 @@ export async function startMastraDevServer(input: {
 
 async function stopChild(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null) return;
-  child.kill('SIGINT');
+  const pid = child.pid;
+  if (pid !== undefined) {
+    try {
+      process.kill(-pid, 'SIGINT');
+    } catch {
+      child.kill('SIGINT');
+    }
+  } else {
+    child.kill('SIGINT');
+  }
   await Promise.race([
     once(child, 'exit'),
     sleep(5_000).then(() => {
+      if (pid !== undefined) {
+        try {
+          process.kill(-pid, 'SIGKILL');
+          return;
+        } catch {}
+      }
       child.kill('SIGKILL');
     }),
   ]);

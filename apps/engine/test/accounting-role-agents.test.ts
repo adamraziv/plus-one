@@ -241,6 +241,214 @@ describe('Accounting Mastra role agents', () => {
     });
   });
 
+  it('returns deterministic transaction-capture proposals without calling the model when required fields, period, and account currencies are present', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createTransactionCaptureMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'transaction-capture')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'transaction-capture-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'transaction-capture-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'Record a USD 10.00 grocery purchase.',
+        paymentAccountCurrency: 'USD',
+        categoryAccountCurrency: 'USD',
+        known: {
+          amount: '10.00',
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          occurredOn: '2026-06-27',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        },
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      object: {
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-journal-mutation-proposal',
+          schemaVersion: 1,
+          operation: 'post',
+          draft: {
+            draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            version: 1,
+            journal: {
+              schemaName: 'post-journal-proposal',
+              schemaVersion: 1,
+              householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              transactionCurrency: 'USD',
+              occurredOn: '2026-06-27',
+              effectiveOn: '2026-06-27',
+              postings: [
+                {
+                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+                  direction: 'debit',
+                  transactionAmount: '10.00',
+                  accountNativeAmount: '10.00',
+                  accountNativeCurrency: 'USD',
+                },
+                {
+                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+                  direction: 'credit',
+                  transactionAmount: '10.00',
+                  accountNativeAmount: '10.00',
+                  accountNativeCurrency: 'USD',
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('accepts deterministic transaction-capture proposals without calling the model when they match the fully-known request', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createTransactionCaptureCheckerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'b'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-journal-mutation-proposal',
+          schemaVersion: 1,
+          operation: 'post',
+          draft: {
+            draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            version: 1,
+            journal: {
+              schemaName: 'post-journal-proposal',
+              schemaVersion: 1,
+              householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              journalType: 'ordinary',
+              transactionCurrency: 'USD',
+              occurredOn: '2026-06-27',
+              effectiveOn: '2026-06-27',
+              description: 'Record a USD 10.00 grocery purchase.',
+              tagIds: [],
+              postings: [
+                {
+                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+                  direction: 'debit',
+                  transactionAmount: '10.00',
+                  accountNativeAmount: '10.00',
+                  accountNativeCurrency: 'USD',
+                  tagIds: [],
+                },
+                {
+                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+                  direction: 'credit',
+                  transactionAmount: '10.00',
+                  accountNativeAmount: '10.00',
+                  accountNativeCurrency: 'USD',
+                  tagIds: [],
+                },
+              ],
+            },
+          },
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'transaction-capture')!;
+    const task = VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'transaction-capture-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'Record a USD 10.00 grocery purchase.',
+        paymentAccountCurrency: 'USD',
+        categoryAccountCurrency: 'USD',
+        known: {
+          amount: '10.00',
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          occurredOn: '2026-06-27',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        },
+      },
+      permittedEvidence: [],
+      selectedSkill: skill.identity,
+      rubric: { rubricName: 'transaction-capture-rubric', rubricVersion: 1, instructions: ['Check.'] },
+      policyLabels: ['personalized_finance'],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      object: {
+        verdict: 'accepted',
+        coveredArtifactId: makerArtifact.artifactId,
+        coveredArtifactHash: makerArtifact.artifactHash,
+        findings: [],
+      },
+    });
+  });
+
   it('returns journal transfer clarifications without calling the model', async () => {
     const modelGenerate = vi.fn(async () => {
       throw new Error('model should not be called');

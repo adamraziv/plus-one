@@ -17,8 +17,9 @@ describe('Mastra dev server acceptance', () => {
       ],
     });
 
-    expect(server.output()).toContain('Studio: http://localhost:4111');
-    expect(server.output()).toContain('API:    http://localhost:4111/api');
+    const port = new URL(server.baseUrl).port;
+    expect(server.output()).toContain(`Studio: http://localhost:${port}`);
+    expect(server.output()).toContain(`API:    http://localhost:${port}/api`);
 
     const prefixed = await fetch(`${server.baseUrl}/api/plus-one/inbound`, {
       method: 'POST',

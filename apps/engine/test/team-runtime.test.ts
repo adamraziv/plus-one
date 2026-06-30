@@ -35,9 +35,14 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
 
 describe('normalizeAccountingLeadRequest', () => {
   it('canonicalizes typed transaction capture drafts without parsing prose', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })
+      .mockResolvedValueOnce({ rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K', native_currency: 'USD' }] })
+      .mockResolvedValueOnce({ rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K', native_currency: 'USD' }] })
+      .mockResolvedValueOnce({ rows: [{ period_id: 'period_01JNZQ4A9B8C7D6E5F4G3H2J4K' }] });
     const pools = {
       accounting: {
-        query: vi.fn(async () => ({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })),
+        query,
       },
     } as never;
 
@@ -68,12 +73,17 @@ describe('normalizeAccountingLeadRequest', () => {
         schemaVersion: 1,
         householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
         bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J4K',
         explicitInstruction: true,
         instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
+        paymentAccountCurrency: 'USD',
+        categoryAccountCurrency: 'USD',
         known: {
           amount: '10.00',
           currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
           occurredOn: '2026-06-27',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
         },
       },
     });

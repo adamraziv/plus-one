@@ -43,14 +43,14 @@ describe('bootstrap close acceptance', () => {
       output += chunk.toString();
     });
 
-    const exit = Promise.race([
-      once(child, 'exit'),
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`bootstrap() process did not exit.\n${output}`)), 90_000);
-      }),
-    ]);
-
-    const [code] = await exit as [number | null, NodeJS.Signals | null];
-    expect(code).toBe(0);
+    try {
+      const [code] = await once(child, 'exit', {
+        signal: AbortSignal.timeout(90_000),
+      }) as [number | null, NodeJS.Signals | null];
+      expect(code).toBe(0);
+    } catch (error) {
+      child.kill('SIGKILL');
+      throw new Error(`bootstrap() process did not exit.\n${output}`, { cause: error });
+    }
   }, 120_000);
 });

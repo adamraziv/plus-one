@@ -52,7 +52,7 @@ describe('inbound route contract', () => {
           status,
           headers: { 'content-type': 'application/json' },
         }),
-    } as never);
+    } as never, async () => undefined);
 
     expect(run).not.toHaveBeenCalled();
     expect(response.status).toBe(400);
