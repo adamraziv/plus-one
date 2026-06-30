@@ -29,8 +29,6 @@ describe('createOrchestratorSessionMemory', () => {
         messages: [dbMessage('assistant', 'Earlier clean reply')],
         hasObservations: true,
         omRecord: null,
-        continuationMessage: undefined,
-        otherThreadsContext: undefined,
       })),
       saveMessages: vi.fn(),
       close: vi.fn(),

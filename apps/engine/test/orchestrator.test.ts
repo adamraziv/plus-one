@@ -9,6 +9,7 @@ import {
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../src/agents/orchestrator.js';
+import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
 import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -150,7 +151,89 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
   };
 }
 
+function memoryMessage(role: 'user' | 'assistant', body: string) {
+  return {
+    id: `${role}-${body}`,
+    role,
+    createdAt: new Date('2026-06-30T00:00:00.000Z'),
+    threadId: conversationId,
+    resourceId: householdId,
+    content: { format: 2 as const, parts: [{ type: 'text' as const, text: body }] },
+  };
+}
+
 describe('OrchestratorAgent', () => {
+  it('uses prepared thread context and persists the final user-facing reply', async () => {
+    const sessionMemory: OrchestratorSessionMemoryPort = {
+      prepareInput: vi.fn(async () => [
+        memoryMessage('assistant', 'Earlier clean reply'),
+        memoryMessage('user', 'Use checking for that transfer.'),
+      ]),
+      persistTurn: vi.fn(),
+      close: vi.fn(),
+    };
+    const mainGenerate = vi.fn(async (messages) => {
+      expect(messages).toEqual([
+        expect.objectContaining({ role: 'assistant' }),
+        expect.objectContaining({ role: 'user' }),
+      ]);
+      return { text: 'raw reasoning answer' };
+    });
+    const accountingIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateTransactionCapture: false, known: {} },
+    }));
+    const queryIntentGenerate = vi.fn(async () => ({
+      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
+    }));
+    const finalizerGenerate = vi.fn(async () => ({
+      object: {
+        body: 'Final clean answer.',
+        policyBoundary: 'informational_only',
+        citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+        assumptions: [],
+        freshness: ['current invocation only'],
+        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+        unsupportedCapabilities: [],
+        recommendationActions: [],
+      },
+    }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (config.id === 'orchestrator-accounting-intent') {
+          return { ...config, generate: accountingIntentGenerate } as never;
+        }
+        if (config.id === 'orchestrator-query-intent') {
+          return { ...config, generate: queryIntentGenerate } as never;
+        }
+        return {
+          ...config,
+          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
+            ? finalizerGenerate
+            : mainGenerate,
+        } as never;
+      },
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    await expect(orchestrator.run({ message: message('Use checking for that transfer.') }))
+      .resolves.toMatchObject({ body: 'Final clean answer.' });
+
+    expect(sessionMemory.prepareInput).toHaveBeenCalledWith({
+      threadId: conversationId,
+      resourceId: householdId,
+      userText: 'Use checking for that transfer.',
+    });
+    expect(sessionMemory.persistTurn).toHaveBeenCalledWith({
+      threadId: conversationId,
+      resourceId: householdId,
+      userText: 'Use checking for that transfer.',
+      assistantText: 'Final clean answer.',
+    });
+  });
+
   it('lets the orchestrator agent delegate through the existing team lead runtime', async () => {
     const runTeamLead = vi.fn(async (input) => {
       expect(input.request).toMatchObject({ businessQuestion: 'List our accounts.' });

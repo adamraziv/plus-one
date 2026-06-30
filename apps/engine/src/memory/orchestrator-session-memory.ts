@@ -11,8 +11,19 @@ export interface OrchestratorSessionMemoryStore {
   getContext(input: { threadId: string; resourceId?: string }): Promise<{
     systemMessage: string | undefined;
     messages: MastraDBMessage[];
-    continuationMessage?: MastraDBMessage;
+    continuationMessage?: MastraDBMessage | undefined;
   }>;
+  getThreadById?(input: { threadId: string; resourceId?: string }): Promise<unknown>;
+  saveThread?(input: {
+    thread: {
+      id: string;
+      resourceId: string;
+      title: string;
+      metadata: Record<string, unknown>;
+      createdAt: Date;
+      updatedAt: Date;
+    };
+  }): Promise<unknown>;
   saveMessages(input: { messages: MastraDBMessage[] }): Promise<unknown>;
   close?(): Promise<void>;
 }
@@ -56,8 +67,12 @@ export function createOrchestratorSessionMemory(input:
 
   return new OrchestratorSessionMemory({
     getContext: (contextInput) => memory.getContext(contextInput),
+    getThreadById: (threadInput) => memory.getThreadById(threadInput),
+    saveThread: (threadInput) => memory.saveThread(threadInput),
     saveMessages: (saveInput) => memory.saveMessages(saveInput),
-    close: () => storage.close(),
+    close: async () => {
+      await storage.close?.();
+    },
   });
 }
 
@@ -87,16 +102,36 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     userText: string;
     assistantText: string;
   }): Promise<void> {
+    await this.ensureThread(input.threadId, input.resourceId);
+    const createdAt = new Date();
     await this.store.saveMessages({
       messages: [
-        chatMessage('user', input.userText, input.threadId, input.resourceId),
-        chatMessage('assistant', input.assistantText, input.threadId, input.resourceId),
+        chatMessage('user', input.userText, input.threadId, input.resourceId, createdAt),
+        chatMessage('assistant', input.assistantText, input.threadId, input.resourceId, new Date(createdAt.getTime() + 1)),
       ],
     });
   }
 
   async close(): Promise<void> {
     await this.store.close?.();
+  }
+
+  private async ensureThread(threadId: string, resourceId: string): Promise<void> {
+    const getThreadById = this.store.getThreadById;
+    const saveThread = this.store.saveThread;
+    if (getThreadById === undefined || saveThread === undefined) return;
+    if (await getThreadById({ threadId, resourceId }) !== null) return;
+    const now = new Date();
+    await saveThread({
+      thread: {
+        id: threadId,
+        resourceId,
+        title: 'Orchestrator conversation',
+        metadata: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
   }
 }
 
@@ -105,11 +140,12 @@ function chatMessage(
   text: string,
   threadId?: string,
   resourceId?: string,
+  createdAt = new Date(),
 ): MastraDBMessage {
   return {
     id: randomUUID(),
     role,
-    createdAt: new Date(),
+    createdAt,
     ...(threadId === undefined ? {} : { threadId }),
     ...(resourceId === undefined ? {} : { resourceId }),
     content: {

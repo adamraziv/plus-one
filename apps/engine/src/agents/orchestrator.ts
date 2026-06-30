@@ -15,6 +15,7 @@ import {
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
+import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
 import { QueryLeadRequestDraftSchemaV1 } from '../tools/delegate-team-schemas.js';
 import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
 
@@ -180,6 +181,7 @@ export class OrchestratorAgent {
     model: EngineLlmModelConfig;
     teams: readonly TeamDefinition[];
     teamRuntime: OrchestratorTeamRuntime;
+    sessionMemory?: OrchestratorSessionMemoryPort;
     agentFactory?: (config: ConstructorParameters<typeof Agent<string, ToolsInput, unknown>>[0]) =>
       Agent<string, ToolsInput, unknown>;
   }) {
@@ -245,18 +247,10 @@ export class OrchestratorAgent {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const signal = input.signal ?? AbortSignal.timeout(60_000);
     const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
-    return this.activeInvocation.run(invocation, async () => {
-      const prompt = [
-        'InboundChannelMessageV1 context:',
-        JSON.stringify(message),
-      ].join('\n');
+    const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
+      const prompt = await this.orchestratorInput(message);
       try {
-        const result = await this.agent.generate(prompt, {
-          memory: {
-            thread: message.conversationId,
-            resource: message.householdId,
-          },
-        });
+        const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
         if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
           return turnFromTeamResults(message, invocation.teamResults);
         }
@@ -287,6 +281,37 @@ export class OrchestratorAgent {
         return turnFromTeamResults(message, invocation.teamResults);
       }
     });
+    await this.dependencies.sessionMemory?.persistTurn({
+      threadId: message.conversationId,
+      resourceId: message.householdId,
+      userText: message.body,
+      assistantText: turn.response.body,
+    });
+    return turn;
+  }
+
+  private async orchestratorInput(message: InboundChannelMessageV1) {
+    if (this.dependencies.sessionMemory !== undefined) {
+      return await this.dependencies.sessionMemory.prepareInput({
+        threadId: message.conversationId,
+        resourceId: message.householdId,
+        userText: message.body,
+      });
+    }
+    return [
+      'InboundChannelMessageV1 context:',
+      JSON.stringify(message),
+    ].join('\n');
+  }
+
+  private orchestratorGenerateOptions(message: InboundChannelMessageV1) {
+    if (this.dependencies.sessionMemory !== undefined) return {};
+    return {
+      memory: {
+        thread: message.conversationId,
+        resource: message.householdId,
+      },
+    };
   }
 
   private async delegateTeam(

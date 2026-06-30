@@ -3,6 +3,7 @@ import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
 import type { AgentSystem } from './agent-catalog.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
 import type { EngineConfig } from './config.js';
+import type { OrchestratorSessionMemoryPort } from './memory/orchestrator-session-memory.js';
 import type { OrchestratorTeamRuntime } from './tools/delegate-team.js';
 import { runOrchestratorLoop } from './workflows/orchestrator-loop.js';
 import type { Mastra } from '@mastra/core';
@@ -12,12 +13,14 @@ export function createRuntimeRoutes(input: {
   agentSystem: AgentSystem;
   teamRuntime: OrchestratorTeamRuntime;
   orchestrator?: OrchestratorAgent;
+  sessionMemory?: OrchestratorSessionMemoryPort;
   getMastra?: () => Mastra;
 }) {
   const orchestrator = input.orchestrator ?? new OrchestratorAgent({
     model: input.config.models.orchestrator,
     teams: input.agentSystem.teams,
     teamRuntime: input.teamRuntime,
+    ...(input.sessionMemory === undefined ? {} : { sessionMemory: input.sessionMemory }),
   });
 
   return [
