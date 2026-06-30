@@ -40,6 +40,7 @@ describe('platform migrations', () => {
       '0014_mastra_workflow_storage.sql',
       '0015_category_spend_monthly.sql',
       '0016_mastra_observational_memory_storage.sql',
+      '0017_channel_conversation_active_lanes.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();
