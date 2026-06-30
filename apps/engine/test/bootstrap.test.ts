@@ -54,11 +54,15 @@ describe('engine scaffold', () => {
     expect(mastra.getWorkflow('orchestrator-loop')).toBeDefined();
   });
 
-  it('passes the memory URL to the Mastra factory and closes pools through the runtime handle', async () => {
+  it('passes the memory URL to the Mastra factory and closes runtime storage before closing pools', async () => {
     const pools = {} as never;
+    const lifecycle: string[] = [];
     const close = vi.fn(async () => undefined);
+    const shutdown = vi.fn(async () => {
+      lifecycle.push('shutdown');
+    });
     const validateModels = vi.fn(async () => undefined);
-    const mastra = createMastra(environment.DATABASE_MEMORY_URL);
+    const mastra = { ...createMastra(environment.DATABASE_MEMORY_URL), shutdown } as never;
     const agentSystem = { teams: [], mastraAgents: { orchestrator: {} } };
     const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown, apiRoutes?: unknown[]) => {
       expect(memoryConnectionString).toBe(environment.DATABASE_MEMORY_URL);
@@ -77,7 +81,12 @@ describe('engine scaffold', () => {
     });
     expect(runtime.agentSystem).toBe(agentSystem);
     expect(createMastraInstance).toHaveBeenCalledTimes(1);
+    close.mockImplementation(async () => {
+      lifecycle.push('close');
+    });
     await runtime.close();
+    expect(shutdown).toHaveBeenCalledTimes(1);
+    expect(lifecycle).toEqual(['shutdown', 'close']);
     expect(close).toHaveBeenCalledWith(pools);
   });
 
@@ -166,7 +175,7 @@ describe('engine scaffold', () => {
       validateModels,
       createPools,
       verifyPools: vi.fn(async () => undefined),
-      createMastraInstance: vi.fn(() => ({}) as never),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
       createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
     });
 

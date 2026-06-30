@@ -1,5 +1,6 @@
 import { registerApiRoute } from '@mastra/core/server';
 import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
+import { ZodError } from 'zod';
 import type { AgentSystem } from './agent-catalog.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
 import type { EngineConfig } from './config.js';
@@ -28,12 +29,25 @@ export function createRuntimeRoutes(input: {
       method: 'POST',
       requiresAuth: false,
       handler: async (context) => {
-        const message = InboundChannelMessageSchemaV1.parse(await context.req.json());
-        if (input.getMastra === undefined) {
-          return context.json(await orchestrator.run({ message }));
+        try {
+          const message = InboundChannelMessageSchemaV1.parse(await context.req.json());
+          if (input.getMastra === undefined) {
+            return context.json(await orchestrator.run({ message }));
+          }
+          const workflow = input.getMastra().getWorkflow('orchestrator-loop');
+          return context.json(await runOrchestratorLoop({ workflow, message }));
+        } catch (error) {
+          if (error instanceof ZodError) {
+            return context.json({
+              error: 'Invalid inbound-channel-message',
+              issues: error.issues.map((issue) => ({
+                path: issue.path.join('.'),
+                message: issue.message,
+              })),
+            }, 400);
+          }
+          throw error;
         }
-        const workflow = input.getMastra().getWorkflow('orchestrator-loop');
-        return context.json(await runOrchestratorLoop({ workflow, message }));
       },
     }),
   ];

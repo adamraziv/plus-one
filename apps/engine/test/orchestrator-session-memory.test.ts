@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MastraDBMessage } from '@mastra/core/agent';
+import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
 import {
   createOrchestratorSessionMemory,
   type OrchestratorSessionMemoryStore,
@@ -21,38 +22,49 @@ function dbMessage(role: 'system' | 'user' | 'assistant', body: string): MastraD
   };
 }
 
+function inboundMessage(overrides: Partial<ReturnType<typeof InboundChannelMessageSchemaV1.parse>> = {}) {
+  return InboundChannelMessageSchemaV1.parse({
+    schemaName: 'inbound-channel-message',
+    schemaVersion: 1,
+    conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    channel: 'telegram',
+    externalMessageId: 'telegram-message-1',
+    receivedAt: '2026-06-30T00:00:00.000Z',
+    speaker: { principalRef: 'telegram:user:test', displayName: 'Test User' },
+    body: 'Use checking for that transfer.',
+    attachments: [],
+    metadata: { destination: { chatId: 'chat-1' } },
+    ...overrides,
+  });
+}
+
 describe('createOrchestratorSessionMemory', () => {
-  it('loads thread context and appends the current user turn', async () => {
+  it('builds the current user turn from full inbound message context', async () => {
     const store: OrchestratorSessionMemoryStore = {
       getContext: vi.fn(async () => ({
-        systemMessage: 'Condensed thread context',
+        systemMessage: undefined,
         messages: [dbMessage('assistant', 'Earlier clean reply')],
-        hasObservations: true,
-        omRecord: null,
       })),
       saveMessages: vi.fn(),
       close: vi.fn(),
     };
     const memory = createOrchestratorSessionMemory({ store });
+    const message = inboundMessage();
 
-    const messages = await memory.prepareInput({
-      threadId: 'conversation_01',
-      resourceId: 'hh_01',
-      userText: 'Use checking for that transfer.',
-    });
+    const messages = await memory.prepareInput({ message });
 
     expect(store.getContext).toHaveBeenCalledWith({
-      threadId: 'conversation_01',
-      resourceId: 'hh_01',
+      threadId: message.conversationId,
+      resourceId: message.householdId,
     });
-    expect(messages.map((message) => [message.role, text(message)])).toEqual([
-      ['system', 'Condensed thread context'],
+    expect(messages.map((entry) => [entry.role, text(entry)])).toEqual([
       ['assistant', 'Earlier clean reply'],
-      ['user', 'Use checking for that transfer.'],
+      ['user', ['InboundChannelMessageV1 context:', JSON.stringify(message)].join('\n')],
     ]);
   });
 
-  it('persists only the clean user and final assistant turns', async () => {
+  it('reuses the same persisted message ids when the same inbound message is saved twice', async () => {
     const saveMessages = vi.fn();
     const store: OrchestratorSessionMemoryStore = {
       getContext: vi.fn(),
@@ -60,16 +72,22 @@ describe('createOrchestratorSessionMemory', () => {
       close: vi.fn(),
     };
     const memory = createOrchestratorSessionMemory({ store });
+    const message = inboundMessage({ body: 'Record a $10 burger.' });
 
     await memory.persistTurn({
-      threadId: 'conversation_01',
-      resourceId: 'hh_01',
-      userText: 'Record a $10 burger.',
+      message,
+      assistantText: 'Which account should I use?',
+    });
+    await memory.persistTurn({
+      message,
       assistantText: 'Which account should I use?',
     });
 
-    const saved = saveMessages.mock.calls[0]?.[0].messages as MastraDBMessage[];
-    expect(saved.map((message) => [message.role, text(message)])).toEqual([
+    const first = saveMessages.mock.calls[0]?.[0].messages as MastraDBMessage[];
+    const second = saveMessages.mock.calls[1]?.[0].messages as MastraDBMessage[];
+
+    expect(second.map((entry) => entry.id)).toEqual(first.map((entry) => entry.id));
+    expect(first.map((entry) => [entry.role, text(entry)])).toEqual([
       ['user', 'Record a $10 burger.'],
       ['assistant', 'Which account should I use?'],
     ]);

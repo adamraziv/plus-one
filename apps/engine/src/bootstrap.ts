@@ -83,6 +83,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     apiRoutes,
     workflows,
   );
+  orchestrator.registerMastra(mastra);
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);
 
@@ -92,6 +93,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     pools,
     agentSystem,
     close: async (): Promise<void> => {
+      await mastra.shutdown();
       await sessionMemory.close();
       await (dependencies.closePools ?? closeDatabasePools)(pools);
     },

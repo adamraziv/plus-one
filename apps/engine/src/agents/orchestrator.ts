@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import { Agent, type ToolsInput } from '@mastra/core/agent';
+import type { Mastra } from '@mastra/core';
+import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { z } from 'zod';
 import {
   CurrencyCodeSchema,
@@ -58,6 +59,8 @@ const accountingIntentInstructions = [
   'Return shouldDelegateTransactionCapture true even when account, category, or date details are incomplete; the downstream accounting team will ask clarifying questions.',
   'Return false for read questions, capability questions, external payments, trades, tax filings, provider account changes, or unclear chit-chat.',
   'When true, preserve the original instruction and extract only user-stated amount, currency, occurredOn date, paymentAccountName, and categoryName.',
+  'When the latest user message answers a prior clarification, merge it with earlier user-stated transaction details from the same conversation.',
+  'Assistant messages may explain what the user is clarifying, but only user messages may supply amount, currency, paymentAccountName, occurredOn, or categoryName values.',
   'Do not invent internal account ids or category ids.',
   'Never answer the user, refuse access, or mention security limitations. Only classify the intent into the requested JSON object.',
   'Return only the requested structured object.',
@@ -243,65 +246,70 @@ export class OrchestratorAgent {
     return result.response;
   }
 
+  registerMastra(mastra: Mastra): void {
+    this.agent.__registerMastra(mastra);
+    this.finalizerAgent.__registerMastra(mastra);
+    this.accountingIntentAgent.__registerMastra(mastra);
+    this.queryIntentAgent.__registerMastra(mastra);
+  }
+
   async runTurn(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorTurnResult> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
-    const signal = input.signal ?? AbortSignal.timeout(60_000);
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
     const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
-    const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
-      const prompt = await this.orchestratorInput(message);
-      try {
-        const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
-        if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-          return turnFromTeamResults(message, invocation.teamResults);
-        }
-        if (invocation.teamResults.length === 0) {
-          const accountingRequest = await this.accountingRequestFromIntent(message);
-          if (accountingRequest !== undefined) {
-            await this.delegateTeam(message, 'accounting', accountingRequest, signal);
+    try {
+      const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
+        const prompt = await this.orchestratorInput(message);
+        const accountingIntentPrompt = accountingIntentPromptFromOrchestratorInput(message, prompt);
+        const queryIntentPrompt = intentPromptFromOrchestratorInput(prompt);
+        try {
+          const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
+          if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
             return turnFromTeamResults(message, invocation.teamResults);
           }
-          const queryRequest = await this.queryRequestFromIntent(message);
-          if (queryRequest !== undefined) {
-            await this.delegateTeam(message, 'query', queryRequest, signal);
-            if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+          if (invocation.teamResults.length === 0) {
+            const accountingRequest = await this.accountingRequestFromIntent(message, accountingIntentPrompt);
+            if (accountingRequest !== undefined) {
+              await this.delegateTeam(message, 'accounting', accountingRequest, signal);
               return turnFromTeamResults(message, invocation.teamResults);
             }
-            const direct = parseFinalResponse(result.object);
-            return {
-              kind: 'final',
-              response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
-            };
+            const queryRequest = await this.queryRequestFromIntent(message, queryIntentPrompt);
+            if (queryRequest !== undefined) {
+              await this.delegateTeam(message, 'query', queryRequest, signal);
+              if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+                return turnFromTeamResults(message, invocation.teamResults);
+              }
+              const direct = parseFinalResponse(result.object);
+              return {
+                kind: 'final',
+                response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
+              };
+            }
           }
+          const direct = parseFinalResponse(result.object);
+          if (direct !== undefined) return { kind: 'final', response: direct };
+          return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
+        } catch (error) {
+          if (invocation.teamResults.length === 0) throw error;
+          return turnFromTeamResults(message, invocation.teamResults);
         }
-        const direct = parseFinalResponse(result.object);
-        if (direct !== undefined) return { kind: 'final', response: direct };
-        return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
-      } catch (error) {
-        if (invocation.teamResults.length === 0) throw error;
-        return turnFromTeamResults(message, invocation.teamResults);
-      }
-    });
-    await this.dependencies.sessionMemory?.persistTurn({
-      threadId: message.conversationId,
-      resourceId: message.householdId,
-      userText: message.body,
-      assistantText: turn.response.body,
-    });
-    return turn;
+      });
+      await this.dependencies.sessionMemory?.persistTurn({
+        message,
+        assistantText: turn.response.body,
+      });
+      return turn;
+    } finally {
+      timeoutSignal?.clear();
+    }
   }
 
   private async orchestratorInput(message: InboundChannelMessageV1) {
     if (this.dependencies.sessionMemory !== undefined) {
-      return await this.dependencies.sessionMemory.prepareInput({
-        threadId: message.conversationId,
-        resourceId: message.householdId,
-        userText: message.body,
-      });
+      return await this.dependencies.sessionMemory.prepareInput({ message });
     }
-    return [
-      'InboundChannelMessageV1 context:',
-      JSON.stringify(message),
-    ].join('\n');
+    return inboundContextPrompt(message);
   }
 
   private orchestratorGenerateOptions(message: InboundChannelMessageV1) {
@@ -325,15 +333,15 @@ export class OrchestratorAgent {
     await this.teamRuntime.runTeamLead({ message, team, request, signal });
   }
 
-  private async accountingRequestFromIntent(message: InboundChannelMessageV1): Promise<JsonValue | undefined> {
+  private async accountingRequestFromIntent(
+    message: InboundChannelMessageV1,
+    prompt = inboundContextPrompt(message),
+  ): Promise<JsonValue | undefined> {
     try {
       const intent = await generateTypedDraft({
         agent: this.accountingIntentAgent,
         schema: AccountingIntentDraftSchema,
-        prompt: [
-          'InboundChannelMessageV1 context:',
-          JSON.stringify(message),
-        ].join('\n'),
+        prompt,
         fallbackJsonContract: accountingIntentJsonContract,
       });
       if (intent.shouldDelegateJournal && intent.journalOperation === 'transfer') {
@@ -364,15 +372,15 @@ export class OrchestratorAgent {
     }
   }
 
-  private async queryRequestFromIntent(message: InboundChannelMessageV1): Promise<JsonValue | undefined> {
+  private async queryRequestFromIntent(
+    message: InboundChannelMessageV1,
+    prompt = inboundContextPrompt(message),
+  ): Promise<JsonValue | undefined> {
     try {
       const intent = await generateTypedDraft({
         agent: this.queryIntentAgent,
         schema: QueryIntentDraftSchema,
-        prompt: [
-          'InboundChannelMessageV1 context:',
-          JSON.stringify(message),
-        ].join('\n'),
+        prompt,
         fallbackJsonContract: queryIntentJsonContract,
       });
       if (!intent.shouldDelegateQuery || intent.businessQuestion === undefined || intent.coverage.length === 0) {
@@ -430,6 +438,20 @@ export class OrchestratorAgent {
   }
 }
 
+function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+    },
+  };
+}
+
 function parseFinalResponse(value: unknown): OrchestratorFinalResponseV1 | undefined {
   const parsed = OrchestratorFinalResponseSchemaV1.safeParse(value);
   return parsed.success ? parsed.data : undefined;
@@ -449,6 +471,54 @@ function isUnderspecifiedQueryDraft(
 ): boolean {
   return draft.coverage === undefined || draft.coverage.length === 0
     || draft.desiredGrain === undefined || draft.desiredGrain.length === 0;
+}
+
+function inboundContextPrompt(message: InboundChannelMessageV1): string {
+  return [
+    'InboundChannelMessageV1 context:',
+    JSON.stringify(message),
+  ].join('\n');
+}
+
+function intentPromptFromOrchestratorInput(prompt: string | MastraDBMessage[]): string {
+  if (typeof prompt === 'string') return prompt;
+  return prompt
+    .map((message) => `${message.role}: ${messageText(message)}`)
+    .join('\n\n');
+}
+
+function accountingIntentPromptFromOrchestratorInput(
+  message: InboundChannelMessageV1,
+  prompt: string | MastraDBMessage[],
+): string {
+  if (typeof prompt === 'string') {
+    return [
+      'Conversation transcript before the latest inbound message:',
+      '(none)',
+      'Latest inbound message JSON:',
+      JSON.stringify(message),
+      'When the latest user message answers a prior clarification, merge it with earlier user-stated transaction details from the same conversation.',
+      'Only carry forward amount, currency, paymentAccountName, occurredOn, and categoryName when the user stated them somewhere in the conversation.',
+      'Ignore assistant-authored missing-field labels or guesses; use assistant messages only to understand what the user is clarifying.',
+    ].join('\n\n');
+  }
+  const priorMessages = prompt.slice(0, -1);
+  return [
+    'Conversation transcript before the latest inbound message:',
+    priorMessages.length === 0 ? '(none)' : priorMessages.map((entry) => `${entry.role}: ${messageText(entry)}`).join('\n\n'),
+    'Latest inbound message JSON:',
+    JSON.stringify(message),
+    'When the latest user message answers a prior clarification, merge it with earlier user-stated transaction details from the same conversation.',
+    'Only carry forward amount, currency, paymentAccountName, occurredOn, and categoryName when the user stated them somewhere in the conversation.',
+    'Ignore assistant-authored missing-field labels or guesses; use assistant messages only to understand what the user is clarifying.',
+  ].join('\n\n');
+}
+
+function messageText(message: MastraDBMessage): string {
+  return message.content.parts
+    .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
 }
 
 async function generateTypedDraft<Output>(input: {

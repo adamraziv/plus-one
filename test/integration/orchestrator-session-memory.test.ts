@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { Pool } from 'pg';
+import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
 import { createMastraMemoryStorage } from '@plus-one/database';
 import { createOrchestratorSessionMemory } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
@@ -15,7 +17,7 @@ afterEach(async () => {
 });
 
 describe('orchestrator session memory', () => {
-  it('persists clean transcript turns separately from workflow snapshots', async () => {
+  it('deduplicates repeated inbound persistence and keeps observational memory empty', async () => {
     context = await createPostgresTestContext('orchestrator_session_memory');
     const sessionMemory = createOrchestratorSessionMemory({
       connectionString: context.roleUrls.memory,
@@ -23,43 +25,53 @@ describe('orchestrator session memory', () => {
     });
     closables.push(sessionMemory);
 
+    const message = InboundChannelMessageSchemaV1.parse({
+      schemaName: 'inbound-channel-message',
+      schemaVersion: 1,
+      conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      channel: 'telegram',
+      externalMessageId: 'telegram-message-1',
+      receivedAt: '2026-06-30T00:00:00.000Z',
+      speaker: { principalRef: 'telegram:user:test', displayName: 'Test User' },
+      body: 'Remember tea as Groceries.',
+      attachments: [],
+      metadata: { destination: { chatId: 'chat-1' } },
+    });
+
     await sessionMemory.persistTurn({
-      threadId: 'conversation_01',
-      resourceId: 'hh_01',
-      userText: 'Record a $10 burger.',
-      assistantText: 'Which account should I use?',
+      message,
+      assistantText: 'Noted. Tea is Groceries.',
+    });
+    await sessionMemory.persistTurn({
+      message,
+      assistantText: 'Noted. Tea is Groceries.',
     });
 
     const storage = createMastraMemoryStorage(context.roleUrls.memory);
     closables.push(storage as { close: () => Promise<void> });
     await storage.init();
     const memory = await storage.getStore('memory');
-    const workflows = await storage.getStore('workflows');
-
-    await workflows?.persistWorkflowSnapshot({
-      workflowName: 'orchestrator-loop',
-      runId: 'run_01',
-      resourceId: 'conversation_01',
-      snapshot: { status: 'suspended', payload: { question: 'Which account?' } } as never,
-    });
-
-    const messages = await memory?.listMessages({ threadId: 'conversation_01', page: 0, perPage: false });
-    const snapshot = await workflows?.loadWorkflowSnapshot({
-      workflowName: 'orchestrator-loop',
-      runId: 'run_01',
-    });
+    const messages = await memory?.listMessages({ threadId: message.conversationId, page: 0, perPage: false });
 
     expect(messages?.messages.map((message) => ({
       role: message.role,
       text: textContent(message.content),
     }))).toEqual([
-      { role: 'user', text: 'Record a $10 burger.' },
-      { role: 'assistant', text: 'Which account should I use?' },
+      { role: 'user', text: 'Remember tea as Groceries.' },
+      { role: 'assistant', text: 'Noted. Tea is Groceries.' },
     ]);
-    expect(snapshot).toMatchObject({
-      status: 'suspended',
-      payload: { question: 'Which account?' },
-    });
+
+    const pool = new Pool({ connectionString: context.roleUrls.memory });
+    try {
+      const rows = await pool.query<{ count: number }>(
+        'SELECT count(*)::int AS count FROM mastra_memory.mastra_observational_memory WHERE "threadId" = $1',
+        [message.conversationId],
+      );
+      expect(rows.rows[0]?.count).toBe(0);
+    } finally {
+      await pool.end();
+    }
   });
 });
 

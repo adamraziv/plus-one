@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { MastraDBMessage } from '@mastra/core/agent';
+import type { InboundChannelMessageV1 } from '@plus-one/contracts';
 import { Memory } from '@mastra/memory';
 import { createMastraMemoryStorage } from '@plus-one/database';
 import type { EngineLlmModelConfig } from '../mastra/role-agent.js';
-import { toMastraModel } from '../mastra/role-agent.js';
 
 const ORCHESTRATOR_LAST_MESSAGES = 20;
 
@@ -29,17 +29,8 @@ export interface OrchestratorSessionMemoryStore {
 }
 
 export interface OrchestratorSessionMemoryPort {
-  prepareInput(input: {
-    threadId: string;
-    resourceId: string;
-    userText: string;
-  }): Promise<MastraDBMessage[]>;
-  persistTurn(input: {
-    threadId: string;
-    resourceId: string;
-    userText: string;
-    assistantText: string;
-  }): Promise<void>;
+  prepareInput(input: { message: InboundChannelMessageV1 }): Promise<MastraDBMessage[]>;
+  persistTurn(input: { message: InboundChannelMessageV1; assistantText: string }): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -58,10 +49,6 @@ export function createOrchestratorSessionMemory(input:
       lastMessages: ORCHESTRATOR_LAST_MESSAGES,
       semanticRecall: false,
       workingMemory: { enabled: false },
-      observationalMemory: {
-        scope: 'thread',
-        model: toMastraModel(input.model),
-      },
     },
   });
 
@@ -79,35 +66,42 @@ export function createOrchestratorSessionMemory(input:
 class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
   constructor(private readonly store: OrchestratorSessionMemoryStore) {}
 
-  async prepareInput(input: {
-    threadId: string;
-    resourceId: string;
-    userText: string;
-  }): Promise<MastraDBMessage[]> {
+  async prepareInput(input: { message: InboundChannelMessageV1 }): Promise<MastraDBMessage[]> {
+    const message = input.message;
     const context = await this.store.getContext({
-      threadId: input.threadId,
-      resourceId: input.resourceId,
+      threadId: message.conversationId,
+      resourceId: message.householdId,
     });
     return [
       ...(context.systemMessage === undefined ? [] : [chatMessage('system', context.systemMessage)]),
       ...context.messages,
       ...(context.continuationMessage === undefined ? [] : [context.continuationMessage]),
-      chatMessage('user', input.userText, input.threadId, input.resourceId),
+      chatMessage('user', orchestratorPrompt(message), message.conversationId, message.householdId),
     ];
   }
 
-  async persistTurn(input: {
-    threadId: string;
-    resourceId: string;
-    userText: string;
-    assistantText: string;
-  }): Promise<void> {
-    await this.ensureThread(input.threadId, input.resourceId);
+  async persistTurn(input: { message: InboundChannelMessageV1; assistantText: string }): Promise<void> {
+    const message = input.message;
+    await this.ensureThread(message.conversationId, message.householdId);
     const createdAt = new Date();
     await this.store.saveMessages({
       messages: [
-        chatMessage('user', input.userText, input.threadId, input.resourceId, createdAt),
-        chatMessage('assistant', input.assistantText, input.threadId, input.resourceId, new Date(createdAt.getTime() + 1)),
+        chatMessage(
+          'user',
+          message.body,
+          message.conversationId,
+          message.householdId,
+          createdAt,
+          stableMessageId(message, 'user'),
+        ),
+        chatMessage(
+          'assistant',
+          input.assistantText,
+          message.conversationId,
+          message.householdId,
+          new Date(createdAt.getTime() + 1),
+          stableMessageId(message, 'assistant'),
+        ),
       ],
     });
   }
@@ -135,15 +129,36 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
   }
 }
 
+function orchestratorPrompt(message: InboundChannelMessageV1): string {
+  return [
+    'InboundChannelMessageV1 context:',
+    JSON.stringify(message),
+  ].join('\n');
+}
+
+function stableMessageId(message: InboundChannelMessageV1, role: 'user' | 'assistant'): ReturnType<typeof randomUUID> {
+  const hex = createHash('sha256')
+    .update(`${message.conversationId}\0${message.externalMessageId}\0${role}`)
+    .digest('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-') as ReturnType<typeof randomUUID>;
+}
+
 function chatMessage(
   role: 'system' | 'user' | 'assistant',
   text: string,
   threadId?: string,
   resourceId?: string,
   createdAt = new Date(),
+  id = randomUUID(),
 ): MastraDBMessage {
   return {
-    id: randomUUID(),
+    id,
     role,
     createdAt,
     ...(threadId === undefined ? {} : { threadId }),

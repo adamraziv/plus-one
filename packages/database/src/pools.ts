@@ -4,14 +4,18 @@ import type { DatabasePoolRole } from './config.js';
 import { normalizeDatabaseError } from './errors.js';
 
 export type DatabasePools = Record<DatabasePoolRole, Pool>;
+const DEFAULT_POOL_OPTIONS = {
+  allowExitOnIdle: true,
+  idleTimeoutMillis: 30_000,
+} as const;
 
 export function createDatabasePools(poolUrls: Record<DatabasePoolRole, string>): DatabasePools {
   return {
-    accounting: new Pool({ connectionString: poolUrls.accounting, max: 5, idleTimeoutMillis: 30_000 }),
-    planning: new Pool({ connectionString: poolUrls.planning, max: 5, idleTimeoutMillis: 30_000 }),
-    operations: new Pool({ connectionString: poolUrls.operations, max: 10, idleTimeoutMillis: 30_000 }),
-    query: new Pool({ connectionString: poolUrls.query, max: 5, idleTimeoutMillis: 30_000 }),
-    memory: new Pool({ connectionString: poolUrls.memory, max: 5, idleTimeoutMillis: 30_000 }),
+    accounting: new Pool({ connectionString: poolUrls.accounting, max: 5, ...DEFAULT_POOL_OPTIONS }),
+    planning: new Pool({ connectionString: poolUrls.planning, max: 5, ...DEFAULT_POOL_OPTIONS }),
+    operations: new Pool({ connectionString: poolUrls.operations, max: 10, ...DEFAULT_POOL_OPTIONS }),
+    query: new Pool({ connectionString: poolUrls.query, max: 5, ...DEFAULT_POOL_OPTIONS }),
+    memory: new Pool({ connectionString: poolUrls.memory, max: 5, ...DEFAULT_POOL_OPTIONS }),
   };
 }
 
