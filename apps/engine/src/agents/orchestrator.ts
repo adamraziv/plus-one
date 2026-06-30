@@ -282,9 +282,7 @@ export class OrchestratorAgent {
       }
     });
     await this.dependencies.sessionMemory?.persistTurn({
-      threadId: message.conversationId,
-      resourceId: message.householdId,
-      userText: message.body,
+      message,
       assistantText: turn.response.body,
     });
     return turn;
@@ -292,11 +290,7 @@ export class OrchestratorAgent {
 
   private async orchestratorInput(message: InboundChannelMessageV1) {
     if (this.dependencies.sessionMemory !== undefined) {
-      return await this.dependencies.sessionMemory.prepareInput({
-        threadId: message.conversationId,
-        resourceId: message.householdId,
-        userText: message.body,
-      });
+      return await this.dependencies.sessionMemory.prepareInput({ message });
     }
     return [
       'InboundChannelMessageV1 context:',

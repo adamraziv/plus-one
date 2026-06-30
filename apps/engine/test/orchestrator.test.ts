@@ -222,14 +222,10 @@ describe('OrchestratorAgent', () => {
       .resolves.toMatchObject({ body: 'Final clean answer.' });
 
     expect(sessionMemory.prepareInput).toHaveBeenCalledWith({
-      threadId: conversationId,
-      resourceId: householdId,
-      userText: 'Use checking for that transfer.',
+      message: message('Use checking for that transfer.'),
     });
     expect(sessionMemory.persistTurn).toHaveBeenCalledWith({
-      threadId: conversationId,
-      resourceId: householdId,
-      userText: 'Use checking for that transfer.',
+      message: message('Use checking for that transfer.'),
       assistantText: 'Final clean answer.',
     });
   });
