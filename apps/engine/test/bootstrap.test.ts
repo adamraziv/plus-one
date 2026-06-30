@@ -90,6 +90,83 @@ describe('engine scaffold', () => {
     expect(close).toHaveBeenCalledWith(pools);
   });
 
+  it('wires the /new command handler into runtime routes', async () => {
+    const lifecycle: string[] = [];
+    const shutdown = vi.fn(async () => {
+      lifecycle.push('shutdown');
+    });
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+        if (sql.includes('INSERT INTO operations.channel_conversations')) {
+          return {
+            rows: [{
+              conversation_id: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+              household_id: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              channel: 'telegram',
+              channel_type: 'direct',
+              external_conversation_id: 'telegram-chat-42',
+              external_thread_id: '',
+              destination: { chatId: 'telegram-chat-42' },
+              created_at: new Date('2026-06-30T00:01:00.000Z'),
+              updated_at: new Date('2026-06-30T00:01:00.000Z'),
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(),
+    };
+    const operationsPool = { connect: vi.fn(async () => client) };
+    const pools = { operations: operationsPool } as never;
+    let apiRoutes: Array<{ path: string; handler(context: unknown): Promise<unknown> }> = [];
+    const mastra = { ...createMastra(environment.DATABASE_MEMORY_URL), shutdown } as never;
+    const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown, routes?: unknown[]) => {
+      apiRoutes = routes as typeof apiRoutes;
+      return mastra;
+    });
+
+    await bootstrap({
+      environment,
+      createPools: () => pools,
+      verifyPools: vi.fn(async () => undefined),
+      closePools: vi.fn(async () => undefined),
+      validateModels: vi.fn(async () => undefined),
+      createMastraInstance,
+      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+    });
+
+    const inboundRoute = apiRoutes.find((route) => route.path === '/plus-one/inbound');
+    expect(inboundRoute).toBeDefined();
+    const json = vi.fn((body: unknown, status?: number) => ({ body, status }));
+    await expect(inboundRoute?.handler({
+      req: {
+        json: vi.fn(async () => ({
+          schemaName: 'inbound-channel-message',
+          schemaVersion: 1,
+          conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          channel: 'telegram',
+          externalMessageId: 'telegram-message-1',
+          receivedAt: '2026-06-30T00:00:00.000Z',
+          speaker: { principalRef: 'telegram:user:test' },
+          body: '/new',
+          attachments: [],
+          metadata: { destination: { chatId: 'telegram-chat-42' } },
+        })),
+      },
+      json,
+    })).resolves.toMatchObject({
+      body: {
+        status: 'command-handled',
+        command: 'new',
+        body: 'Started a new thread.',
+        conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      },
+    });
+    expect(operationsPool.connect).toHaveBeenCalledOnce();
+  });
+
   it('passes configured Query tools into the agent system', async () => {
     const queryTools = { query_account_list: {} };
     const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: {} }) as never);

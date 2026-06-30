@@ -1,8 +1,10 @@
 import {
   ChannelCommandResultSchemaV1,
+  ConversationIdSchema,
   type ChannelCommandResultV1,
   type InboundChannelMessageV1,
 } from '@plus-one/contracts';
+import { ulid } from 'ulid';
 
 export interface ChannelCommandRepository {
   startNewConversation(input: {
@@ -19,6 +21,10 @@ export interface ChannelCommandRepository {
 export interface ConversationIdGenerator {
   nextConversationId(): string;
 }
+
+export const defaultConversationIdGenerator: ConversationIdGenerator = {
+  nextConversationId: () => ConversationIdSchema.parse(`conversation_${ulid()}`),
+};
 
 export class ChannelCommandHandler {
   constructor(private readonly dependencies: {

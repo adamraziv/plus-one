@@ -2,9 +2,11 @@ import type { Agent } from '@mastra/core/agent';
 import {
   closeDatabasePools,
   createDatabasePools,
+  PostgresDeliveryRepository,
   verifyDatabasePools,
   type DatabasePools,
 } from '@plus-one/database';
+import { ChannelCommandHandler, defaultConversationIdGenerator } from '@plus-one/runtime';
 import { createAgentSystem } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
@@ -66,6 +68,10 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     teamRuntime,
     sessionMemory,
   });
+  const channelCommands = new ChannelCommandHandler({
+    repository: new PostgresDeliveryRepository(pools.operations),
+    ids: defaultConversationIdGenerator,
+  });
   const workflows = {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
@@ -75,6 +81,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     teamRuntime,
     orchestrator,
     sessionMemory,
+    commands: channelCommands,
     getMastra: () => mastra,
   });
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
