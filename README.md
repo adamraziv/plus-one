@@ -60,11 +60,23 @@ pnpm dev:mastra
 
 This uses the workspace-installed Mastra CLI and starts the local development server. By default, Mastra serves Studio at `http://localhost:4111`.
 
+Mastra's built-in API surface stays under `http://localhost:4111/api`, but the Plus One custom inbound route is registered directly and is not `/api`-prefixed.
+
 The Plus One inbound route is available at:
 
 ```text
 POST http://localhost:4111/plus-one/inbound
 ```
+
+Inbound payloads must satisfy `InboundChannelMessageV1`. In particular:
+
+- `conversationId` must match `conversation_<26-char ULID>`
+- `householdId` must match `hh_<26-char ULID>`
+
+The current runtime persists:
+
+- transcript memory in `mastra_memory.mastra_messages` and `mastra_memory.mastra_threads`
+- orchestrator workflow snapshots in `mastra_memory.mastra_workflow_snapshot`
 
 ## Common Commands
 
