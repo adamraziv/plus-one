@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
+import type { Mastra } from '@mastra/core';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
 import { z } from 'zod';
 import {
@@ -243,49 +244,61 @@ export class OrchestratorAgent {
     return result.response;
   }
 
+  registerMastra(mastra: Mastra): void {
+    this.agent.__registerMastra(mastra);
+    this.finalizerAgent.__registerMastra(mastra);
+    this.accountingIntentAgent.__registerMastra(mastra);
+    this.queryIntentAgent.__registerMastra(mastra);
+  }
+
   async runTurn(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorTurnResult> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
-    const signal = input.signal ?? AbortSignal.timeout(60_000);
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal?.signal;
     const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
-    const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
-      const prompt = await this.orchestratorInput(message);
-      try {
-        const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
-        if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-          return turnFromTeamResults(message, invocation.teamResults);
-        }
-        if (invocation.teamResults.length === 0) {
-          const accountingRequest = await this.accountingRequestFromIntent(message);
-          if (accountingRequest !== undefined) {
-            await this.delegateTeam(message, 'accounting', accountingRequest, signal);
+    try {
+      const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
+        const prompt = await this.orchestratorInput(message);
+        try {
+          const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
+          if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
             return turnFromTeamResults(message, invocation.teamResults);
           }
-          const queryRequest = await this.queryRequestFromIntent(message);
-          if (queryRequest !== undefined) {
-            await this.delegateTeam(message, 'query', queryRequest, signal);
-            if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+          if (invocation.teamResults.length === 0) {
+            const accountingRequest = await this.accountingRequestFromIntent(message);
+            if (accountingRequest !== undefined) {
+              await this.delegateTeam(message, 'accounting', accountingRequest, signal);
               return turnFromTeamResults(message, invocation.teamResults);
             }
-            const direct = parseFinalResponse(result.object);
-            return {
-              kind: 'final',
-              response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
-            };
+            const queryRequest = await this.queryRequestFromIntent(message);
+            if (queryRequest !== undefined) {
+              await this.delegateTeam(message, 'query', queryRequest, signal);
+              if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+                return turnFromTeamResults(message, invocation.teamResults);
+              }
+              const direct = parseFinalResponse(result.object);
+              return {
+                kind: 'final',
+                response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
+              };
+            }
           }
+          const direct = parseFinalResponse(result.object);
+          if (direct !== undefined) return { kind: 'final', response: direct };
+          return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
+        } catch (error) {
+          if (invocation.teamResults.length === 0) throw error;
+          return turnFromTeamResults(message, invocation.teamResults);
         }
-        const direct = parseFinalResponse(result.object);
-        if (direct !== undefined) return { kind: 'final', response: direct };
-        return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
-      } catch (error) {
-        if (invocation.teamResults.length === 0) throw error;
-        return turnFromTeamResults(message, invocation.teamResults);
-      }
-    });
-    await this.dependencies.sessionMemory?.persistTurn({
-      message,
-      assistantText: turn.response.body,
-    });
-    return turn;
+      });
+      await this.dependencies.sessionMemory?.persistTurn({
+        message,
+        assistantText: turn.response.body,
+      });
+      return turn;
+    } finally {
+      timeoutSignal?.clear();
+    }
   }
 
   private async orchestratorInput(message: InboundChannelMessageV1) {
@@ -422,6 +435,20 @@ export class OrchestratorAgent {
       return responseFromTeamResults(message, teamResults);
     }
   }
+}
+
+function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+    },
+  };
 }
 
 function parseFinalResponse(value: unknown): OrchestratorFinalResponseV1 | undefined {
