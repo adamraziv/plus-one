@@ -1,6 +1,15 @@
 import { MastraCompositeStore } from '@mastra/core/storage';
 import { PostgresStore } from '@mastra/pg';
 
+export function createMastraPostgresStore(connectionString: string): PostgresStore {
+  return new PostgresStore({
+    id: 'plus-one-memory-pg',
+    connectionString,
+    schemaName: 'mastra_memory',
+    disableInit: true,
+  });
+}
+
 function mastraDomains(store: PostgresStore) {
   const memory = store.stores.memory;
   const workflows = store.stores.workflows;
@@ -33,12 +42,5 @@ class MastraMemoryStorage extends MastraCompositeStore {
 }
 
 export function createMastraMemoryStorage(connectionString: string): MastraCompositeStore {
-  return new MastraMemoryStorage(
-    new PostgresStore({
-      id: 'plus-one-memory-pg',
-      connectionString,
-      schemaName: 'mastra_memory',
-      disableInit: true,
-    }),
-  );
+  return new MastraMemoryStorage(createMastraPostgresStore(connectionString));
 }

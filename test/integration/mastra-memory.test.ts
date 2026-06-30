@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMastraMemoryStorage } from '@plus-one/database';
+import { Pool } from 'pg';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 let context: PostgresTestContext | undefined;
@@ -14,6 +15,28 @@ afterEach(async () => {
 });
 
 describe('Mastra memory storage', () => {
+  it('creates the observational memory relation', async () => {
+    context = await createPostgresTestContext('mastra_observational_memory');
+    const pool = new Pool({ connectionString: context.roleUrls.memory });
+
+    try {
+      const relationCheck = await pool.query<{ schema_name: string; relation_name: string }>(
+        `SELECT n.nspname AS schema_name, c.relname AS relation_name
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'mastra_memory'
+           AND c.relname = 'mastra_observational_memory'`,
+      );
+
+      expect(relationCheck.rows[0]).toEqual({
+        schema_name: 'mastra_memory',
+        relation_name: 'mastra_observational_memory',
+      });
+    } finally {
+      await pool.end();
+    }
+  });
+
   it('persists resources, threads, and messages across fresh storage instances', async () => {
     context = await createPostgresTestContext('mastra_memory');
     const createdAt = new Date('2026-06-22T00:00:00.000Z');
