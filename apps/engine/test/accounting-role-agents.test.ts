@@ -2,11 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@mastra/core/agent';
 import {
   ArtifactEnvelopeSchemaV1,
+  CheckerVerdictSchemaV1,
   MakerArtifactSchemaV1,
   MakerInvocationSchemaV1,
   VerificationTaskSchemaV1,
 } from '@plus-one/contracts';
-import { accountingSkills } from '@plus-one/accounting';
+import {
+  AccountingJournalMutationProposalSchemaV1,
+  accountingSkills,
+} from '@plus-one/accounting';
 import {
   createAccountingRoleAgents,
   createJournalCheckerAgent,
@@ -286,6 +290,16 @@ describe('Accounting Mastra role agents', () => {
 
     const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
 
+    const makerArtifact = MakerArtifactSchemaV1.parse(result.object);
+    expect(AccountingJournalMutationProposalSchemaV1.parse(makerArtifact.output)).toMatchObject({
+      schemaName: 'accounting-journal-mutation-proposal',
+      schemaVersion: 1,
+      operation: 'post',
+      draft: {
+        draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        version: 1,
+      },
+    });
     expect(modelGenerate).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       object: {
@@ -446,6 +460,131 @@ describe('Accounting Mastra role agents', () => {
         coveredArtifactHash: makerArtifact.artifactHash,
         findings: [],
       },
+    });
+  });
+
+  it('falls back to the checker model when deterministic proposal output fails the shared accounting schema', async () => {
+    const modelGenerate = vi.fn(async () => ({
+      object: CheckerVerdictSchemaV1.parse({
+        verdict: 'revision_requested',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        coveredArtifactHash: 'b'.repeat(64),
+        findings: [{
+          code: 'proposal_schema_invalid',
+          message: 'The proposal does not satisfy AccountingJournalMutationProposalSchemaV1.',
+        }],
+      }),
+    }));
+    const agent = createTransactionCaptureCheckerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'b'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-journal-mutation-proposal',
+          schemaVersion: 2,
+          operation: 'post',
+          draft: {
+            draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            version: 1,
+            journal: {
+              schemaName: 'post-journal-proposal',
+              schemaVersion: 1,
+              householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+              journalType: 'ordinary',
+              transactionCurrency: 'USD',
+              occurredOn: '2026-06-27',
+              effectiveOn: '2026-06-27',
+              description: 'Record a USD 10.00 grocery purchase.',
+              tagIds: [],
+              postings: [
+                {
+                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+                  direction: 'debit',
+                  transactionAmount: '10.00',
+                  accountNativeAmount: '10.00',
+                  accountNativeCurrency: 'USD',
+                  tagIds: [],
+                },
+                {
+                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+                  direction: 'credit',
+                  transactionAmount: '10.00',
+                  accountNativeAmount: '10.00',
+                  accountNativeCurrency: 'USD',
+                  tagIds: [],
+                },
+              ],
+            },
+          },
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const task = VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'transaction-capture-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'Record a USD 10.00 grocery purchase.',
+        paymentAccountCurrency: 'USD',
+        categoryAccountCurrency: 'USD',
+        known: {
+          amount: '10.00',
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          occurredOn: '2026-06-27',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        },
+      },
+      permittedEvidence: [],
+      selectedSkill: accountingSkills.find((candidate) =>
+        candidate.identity.skillName === 'transaction-capture')!.identity,
+      rubric: {
+        rubricName: 'transaction-capture',
+        rubricVersion: 1,
+        instructions: ['Verify exact deterministic transaction capture proposal.'],
+      },
+      policyLabels: ['personalized_finance'],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+
+    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+
+    expect(modelGenerate).toHaveBeenCalledTimes(1);
+    expect(result.object).toMatchObject({
+      verdict: 'revision_requested',
+      findings: [{ code: 'proposal_schema_invalid' }],
     });
   });
 

@@ -5,7 +5,9 @@ import {
 } from '@plus-one/contracts';
 import {
   AccountingClarificationSchemaV1,
+  AccountingJournalMutationProposalSchemaV1,
   TransactionCaptureRequestSchemaV1,
+  type AccountingJournalMutationProposalV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
 import {
@@ -14,6 +16,8 @@ import {
   type AccountingRoleAgentFactory,
   type AccountingRoleAgentInput,
 } from './types.js';
+
+type PostAccountingJournalMutationProposalV1 = Extract<AccountingJournalMutationProposalV1, { operation: 'post' }>;
 
 export function createTransactionCaptureCheckerAgent(input: AccountingRoleAgentInput): AccountingRoleAgent {
   const factory: AccountingRoleAgentFactory = input.agentFactory ?? defaultAccountingRoleAgentFactory;
@@ -122,7 +126,7 @@ function isDeterministicProposalReady(request: ReturnType<typeof TransactionCapt
 function matchesDeterministicProposal(
   taskId: string,
   request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>,
-  proposal: NonNullable<ReturnType<typeof parseDeterministicProposal>>,
+  proposal: PostAccountingJournalMutationProposalV1,
 ): boolean {
   const suffix = idSuffix(taskId);
   const journal = proposal.draft.journal;
@@ -164,63 +168,8 @@ function idSuffix(taskId: string): string {
   return separator === -1 ? taskId : taskId.slice(separator + 1);
 }
 
-function parseDeterministicProposal(output: unknown) {
-  if (!isRecord(output)
-    || output.schemaName !== 'accounting-journal-mutation-proposal'
-    || output.operation !== 'post'
-    || !isRecord(output.draft)
-    || output.draft.version !== 1
-    || !isRecord(output.draft.journal)) {
-    return undefined;
-  }
-  const journal = output.draft.journal;
-  if (typeof output.draft.draftSeriesId !== 'string'
-    || typeof journal.householdId !== 'string'
-    || typeof journal.bookId !== 'string'
-    || typeof journal.journalId !== 'string'
-    || typeof journal.draftId !== 'string'
-    || typeof journal.periodId !== 'string'
-    || typeof journal.taskId !== 'string'
-    || journal.journalType !== 'ordinary'
-    || typeof journal.transactionCurrency !== 'string'
-    || typeof journal.occurredOn !== 'string'
-    || typeof journal.effectiveOn !== 'string'
-    || typeof journal.description !== 'string'
-    || !Array.isArray(journal.tagIds)
-    || !Array.isArray(journal.postings)
-    || journal.postings.length !== 2) {
-    return undefined;
-  }
-  return output as {
-    draft: {
-      draftSeriesId: string;
-      version: 1;
-      journal: {
-        householdId: string;
-        bookId: string;
-        journalId: string;
-        draftId: string;
-        periodId: string;
-        taskId: string;
-        journalType: 'ordinary';
-        transactionCurrency: string;
-        occurredOn: string;
-        effectiveOn: string;
-        description: string;
-        tagIds: unknown[];
-        postings: Array<{
-          accountId: string;
-          direction: string;
-          transactionAmount: string;
-          accountNativeAmount: string;
-          accountNativeCurrency: string;
-          tagIds: unknown[];
-        }>;
-      };
-    };
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function parseDeterministicProposal(output: unknown): PostAccountingJournalMutationProposalV1 | undefined {
+  const parsed = AccountingJournalMutationProposalSchemaV1.safeParse(output);
+  if (!parsed.success || parsed.data.operation !== 'post') return undefined;
+  return parsed.data;
 }
