@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
+import { InboundChannelMessageSchemaV1, PlusOneError } from '@plus-one/contracts';
 import { ChannelCommandHandler } from './channel-commands.js';
 
 const message = InboundChannelMessageSchemaV1.parse({
@@ -50,5 +50,23 @@ describe('ChannelCommandHandler', () => {
     });
 
     await expect(handler.handle({ ...message, body: 'hello' })).resolves.toBeUndefined();
+  });
+
+  it('rejects /new without a Telegram chat id as a typed validation error', async () => {
+    const handler = new ChannelCommandHandler({
+      repository: { startNewConversation: vi.fn() },
+      ids: { nextConversationId: () => 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J2K' },
+    });
+
+    await expect(handler.handle({
+      ...message,
+      metadata: { destination: {} },
+    })).rejects.toMatchObject({
+      name: 'PlusOneError',
+      category: 'validation_rejected',
+      code: 'telegram_chat_id_missing',
+      retry: 'never',
+      receiptLookupRequired: false,
+    } satisfies Partial<PlusOneError>);
   });
 });

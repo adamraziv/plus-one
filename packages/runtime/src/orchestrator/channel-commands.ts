@@ -1,6 +1,7 @@
 import {
   ChannelCommandResultSchemaV1,
   ConversationIdSchema,
+  PlusOneError,
   type ChannelCommandResultV1,
   type InboundChannelMessageV1,
 } from '@plus-one/contracts';
@@ -79,7 +80,14 @@ function destinationFromMessage(message: InboundChannelMessageV1): Record<string
 function externalConversationIdFromDestination(destination: Record<string, unknown>): string {
   const chatId = destination.chatId;
   if (typeof chatId === 'string' && chatId.length > 0) return chatId;
-  throw new Error('telegram_chat_id_missing');
+  throw new PlusOneError({
+    category: 'validation_rejected',
+    code: 'telegram_chat_id_missing',
+    message: 'Telegram /new command requires destination.chatId.',
+    retry: 'never',
+    receiptLookupRequired: false,
+    details: {},
+  });
 }
 
 function externalThreadIdFromMessage(message: InboundChannelMessageV1): string | undefined {
