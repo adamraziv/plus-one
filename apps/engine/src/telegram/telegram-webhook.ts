@@ -109,7 +109,7 @@ export function createTelegramWebhookRoute(input: {
         conversationId: conversation.conversationId,
         householdId: principal.householdId,
         channel: 'telegram',
-        externalMessageId: `telegram:${message.message_id}`,
+        externalMessageId: `telegram:${externalChatId}:${message.message_id}`,
         receivedAt: new Date(message.date * 1000).toISOString(),
         speaker: {
           principalRef: `telegram:user:${externalUserId}`,

@@ -210,7 +210,7 @@ describe('Telegram webhook route', () => {
       conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       channel: 'telegram',
-      externalMessageId: 'telegram:42',
+      externalMessageId: 'telegram:9876543210987:42',
       speaker: {
         principalRef: 'telegram:user:1234567890123',
         displayName: 'Ada Lovelace',
