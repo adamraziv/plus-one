@@ -193,6 +193,46 @@ describe('TelegramPairingService', () => {
     });
   });
 
+  it('still approves a valid code when an unrelated pending request is locked', async () => {
+    let generatedCode = 'AAAAAAAA';
+    const repository = fakeRepository();
+    const pairing = new TelegramPairingService({
+      repository,
+      codeGenerator: () => generatedCode,
+      saltGenerator: () => 'b'.repeat(32),
+      now: () => now,
+    });
+
+    await pairing.createPairingRequest({
+      externalUserId: 'user-1',
+      externalChatId: 'chat-1',
+      metadata: {},
+    });
+    repository.pending[0] = {
+      ...repository.pending[0]!,
+      approvalLockedUntil: '2026-07-01T01:00:00.000Z',
+    };
+
+    generatedCode = 'BBBBBBBB';
+    await pairing.createPairingRequest({
+      externalUserId: 'user-2',
+      externalChatId: 'chat-2',
+      metadata: {},
+    });
+
+    await expect(pairing.approveCode({
+      code: 'BBBBBBBB',
+      householdId,
+      approvedBy: 'cli:test',
+    })).resolves.toMatchObject({
+      status: 'approved',
+      principal: {
+        externalUserId: 'user-2',
+        householdId,
+      },
+    });
+  });
+
   it('delegates principal lookup and revocation to the repository', async () => {
     const repository = fakeRepository();
     const findActivePrincipal = vi.spyOn(repository, 'findActivePrincipal');

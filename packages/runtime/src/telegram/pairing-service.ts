@@ -152,10 +152,10 @@ export class TelegramPairingService {
     });
 
     for (const request of pending) {
-      if (request.approvalLockedUntil !== undefined && new Date(request.approvalLockedUntil) > now) {
-        return { status: 'locked', lockedUntil: request.approvalLockedUntil };
-      }
       if (constantTimeEqual(hashCode(input.code, request.codeSalt), request.codeHash)) {
+        if (request.approvalLockedUntil !== undefined && new Date(request.approvalLockedUntil) > now) {
+          return { status: 'locked', lockedUntil: request.approvalLockedUntil };
+        }
         const principal = await this.dependencies.repository.consumePendingAndApprove({
           pendingRequestId: request.id,
           householdId: input.householdId,
@@ -166,7 +166,7 @@ export class TelegramPairingService {
       }
     }
 
-    const [first] = pending;
+    const first = pending.find((request) => !isApprovalLocked(request, now));
     if (first !== undefined) {
       const failedCount = first.failedApprovalAttemptCount + 1;
       const lockUntil = failedCount >= MAX_FAILED_ATTEMPTS
@@ -177,6 +177,11 @@ export class TelegramPairingService {
         ...(lockUntil === undefined ? {} : { lockUntil }),
       });
       if (lockUntil !== undefined) return { status: 'locked', lockedUntil: lockUntil };
+    }
+
+    const locked = pending.find((request) => isApprovalLocked(request, now));
+    if (locked?.approvalLockedUntil !== undefined) {
+      return { status: 'locked', lockedUntil: locked.approvalLockedUntil };
     }
 
     return { status: 'invalid-code' };
@@ -220,4 +225,8 @@ function constantTimeEqual(left: string, right: string): boolean {
   const rightBuffer = Buffer.from(right, 'hex');
   if (leftBuffer.length !== rightBuffer.length) return false;
   return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function isApprovalLocked(request: PendingChannelPairingRecord, now: Date): boolean {
+  return request.approvalLockedUntil !== undefined && new Date(request.approvalLockedUntil) > now;
 }
