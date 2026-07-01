@@ -1,6 +1,7 @@
 import { MakerArtifactSchemaV1, MakerInvocationSchemaV1 } from '@plus-one/contracts';
 import {
   AccountingClarificationSchemaV1,
+  AccountingJournalMutationProposalSchemaV1,
   TransactionCaptureRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
@@ -93,7 +94,7 @@ function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof
   const amount = request.data.known.amount!;
   const currency = request.data.known.currency!;
   const occurredOn = request.data.known.occurredOn!;
-  const output = {
+  const output = AccountingJournalMutationProposalSchemaV1.parse({
     schemaName: 'accounting-journal-mutation-proposal',
     schemaVersion: 1,
     operation: 'post',
@@ -135,7 +136,7 @@ function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof
         ],
       },
     },
-  };
+  });
   return MakerArtifactSchemaV1.parse({
     schemaName: 'maker-artifact',
     schemaVersion: 1,
