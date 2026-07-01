@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TokenLimiter } from '@mastra/core/processors';
 import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
@@ -163,6 +164,31 @@ function memoryMessage(role: 'user' | 'assistant', body: string) {
 }
 
 describe('OrchestratorAgent', () => {
+  it('limits only the top-level orchestrator input context', () => {
+    const configs: Array<{ id?: string; inputProcessors?: unknown[] }> = [];
+
+    new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        configs.push(config);
+        return { ...config, generate: vi.fn() } as never;
+      },
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    const byId = Object.fromEntries(configs.map((config) => [config.id, config]));
+    const inputProcessors = byId.orchestrator?.inputProcessors;
+
+    expect(inputProcessors).toHaveLength(1);
+    expect(inputProcessors?.[0]).toBeInstanceOf(TokenLimiter);
+    expect(inputProcessors?.[0]).toMatchObject({ id: 'token-limiter' });
+    expect((inputProcessors?.[0] as TokenLimiter | undefined)?.getMaxTokens()).toBe(24_000);
+    expect(byId['orchestrator-accounting-intent']?.inputProcessors).toBeUndefined();
+    expect(byId['orchestrator-query-intent']?.inputProcessors).toBeUndefined();
+    expect(byId['orchestrator-finalizer']?.inputProcessors).toBeUndefined();
+  });
+
   it('uses prepared thread context and persists the final user-facing reply', async () => {
     const sessionMemory: OrchestratorSessionMemoryPort = {
       prepareInput: vi.fn(async () => [

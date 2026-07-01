@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
+import { TokenLimiter } from '@mastra/core/processors';
 import { z } from 'zod';
 import {
   CurrencyCodeSchema,
@@ -41,6 +42,8 @@ const orchestratorInstructions = [
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
   'Return the requested OrchestratorFinalResponseV1 object.',
 ].join('\n');
+
+const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 
 const finalizerInstructions = [
   'You serialize the Orchestrator final answer for Plus One.',
@@ -214,6 +217,7 @@ export class OrchestratorAgent {
       instructions: orchestratorInstructions,
       model: toMastraModel(dependencies.model),
       tools: this.agentTools,
+      inputProcessors: [new TokenLimiter({ limit: ORCHESTRATOR_INPUT_TOKEN_LIMIT, trimMode: 'best-fit' })],
     });
     this.accountingIntentAgent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
       id: 'orchestrator-accounting-intent',
