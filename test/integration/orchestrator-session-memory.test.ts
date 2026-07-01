@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { Pool } from 'pg';
 import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
 import { createMastraMemoryStorage } from '@plus-one/database';
 import { createOrchestratorSessionMemory } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
@@ -17,7 +16,7 @@ afterEach(async () => {
 });
 
 describe('orchestrator session memory', () => {
-  it('deduplicates repeated inbound persistence and keeps observational memory empty', async () => {
+  it('deduplicates repeated inbound persistence and stores clean transcript text', async () => {
     context = await createPostgresTestContext('orchestrator_session_memory');
     const sessionMemory = createOrchestratorSessionMemory({
       connectionString: context.roleUrls.memory,
@@ -61,17 +60,6 @@ describe('orchestrator session memory', () => {
       { role: 'user', text: 'Remember tea as Groceries.' },
       { role: 'assistant', text: 'Noted. Tea is Groceries.' },
     ]);
-
-    const pool = new Pool({ connectionString: context.roleUrls.memory });
-    try {
-      const rows = await pool.query<{ count: number }>(
-        'SELECT count(*)::int AS count FROM mastra_memory.mastra_observational_memory WHERE "threadId" = $1',
-        [message.conversationId],
-      );
-      expect(rows.rows[0]?.count).toBe(0);
-    } finally {
-      await pool.end();
-    }
   });
 });
 

@@ -3,6 +3,7 @@ import type { MastraDBMessage } from '@mastra/core/agent';
 import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
 import {
   createOrchestratorSessionMemory,
+  orchestratorSessionMemoryOptions,
   type OrchestratorSessionMemoryStore,
 } from '../src/memory/orchestrator-session-memory.js';
 
@@ -40,7 +41,28 @@ function inboundMessage(overrides: Partial<ReturnType<typeof InboundChannelMessa
 }
 
 describe('createOrchestratorSessionMemory', () => {
-  it('builds the current user turn from full inbound message context', async () => {
+  it('enables thread-scoped observational memory for the orchestrator session store', () => {
+    expect(orchestratorSessionMemoryOptions({
+      id: 'openai/gpt-4.1-mini',
+      endpoint: 'https://llm.example.test/v1',
+      apiKey: 'test-api-key',
+    })).toMatchObject({
+      lastMessages: 20,
+      semanticRecall: false,
+      workingMemory: { enabled: false },
+      observationalMemory: {
+        model: {
+          id: 'openai/gpt-4.1-mini',
+          url: 'https://llm.example.test/v1',
+          apiKey: 'test-api-key',
+        },
+        scope: 'thread',
+        retrieval: { scope: 'thread' },
+      },
+    });
+  });
+
+  it('builds the current user turn from the inbound message body', async () => {
     const store: OrchestratorSessionMemoryStore = {
       getContext: vi.fn(async () => ({
         systemMessage: undefined,
@@ -60,7 +82,7 @@ describe('createOrchestratorSessionMemory', () => {
     });
     expect(messages.map((entry) => [entry.role, text(entry)])).toEqual([
       ['assistant', 'Earlier clean reply'],
-      ['user', ['InboundChannelMessageV1 context:', JSON.stringify(message)].join('\n')],
+      ['user', 'Use checking for that transfer.'],
     ]);
   });
 

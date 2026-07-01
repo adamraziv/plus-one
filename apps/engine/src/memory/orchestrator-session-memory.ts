@@ -3,9 +3,10 @@ import type { MastraDBMessage } from '@mastra/core/agent';
 import type { InboundChannelMessageV1 } from '@plus-one/contracts';
 import { Memory } from '@mastra/memory';
 import { createMastraMemoryStorage } from '@plus-one/database';
-import type { EngineLlmModelConfig } from '../mastra/role-agent.js';
+import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 
 const ORCHESTRATOR_LAST_MESSAGES = 20;
+type OrchestratorMemoryOptions = NonNullable<ConstructorParameters<typeof Memory>[0]>['options'];
 
 export interface OrchestratorSessionMemoryStore {
   getContext(input: { threadId: string; resourceId?: string }): Promise<{
@@ -45,11 +46,7 @@ export function createOrchestratorSessionMemory(input:
   const storage = createMastraMemoryStorage(input.connectionString);
   const memory = new Memory({
     storage,
-    options: {
-      lastMessages: ORCHESTRATOR_LAST_MESSAGES,
-      semanticRecall: false,
-      workingMemory: { enabled: false },
-    },
+    options: orchestratorSessionMemoryOptions(input.model),
   });
 
   return new OrchestratorSessionMemory({
@@ -76,7 +73,7 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
       ...(context.systemMessage === undefined ? [] : [chatMessage('system', context.systemMessage)]),
       ...context.messages,
       ...(context.continuationMessage === undefined ? [] : [context.continuationMessage]),
-      chatMessage('user', orchestratorPrompt(message), message.conversationId, message.householdId),
+      chatMessage('user', message.body, message.conversationId, message.householdId),
     ];
   }
 
@@ -129,11 +126,17 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
   }
 }
 
-function orchestratorPrompt(message: InboundChannelMessageV1): string {
-  return [
-    'InboundChannelMessageV1 context:',
-    JSON.stringify(message),
-  ].join('\n');
+export function orchestratorSessionMemoryOptions(model: EngineLlmModelConfig): OrchestratorMemoryOptions {
+  return {
+    lastMessages: ORCHESTRATOR_LAST_MESSAGES,
+    semanticRecall: false,
+    workingMemory: { enabled: false },
+    observationalMemory: {
+      model: toMastraModel(model),
+      scope: 'thread',
+      retrieval: { scope: 'thread' },
+    },
+  };
 }
 
 function stableMessageId(message: InboundChannelMessageV1, role: 'user' | 'assistant'): ReturnType<typeof randomUUID> {
