@@ -24,6 +24,27 @@ describe('transport adapters', () => {
     );
   });
 
+  it('can post Telegram messages to a configured Bot API base URL', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      result: { message_id: 'local-1' },
+    }), { status: 200 }));
+    const adapter = new TelegramTransportAdapter('token-123', fetch, {
+      apiBaseUrl: 'http://127.0.0.1:9999',
+    });
+
+    await expect(adapter.send({
+      body: 'hello',
+      destination: { chatId: 'telegram-chat-42' },
+      format: 'plain_text',
+    })).resolves.toEqual({ platformMessageId: 'local-1' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:9999/bottoken-123/sendMessage',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('posts Slack messages with native fetch and returns the platform id', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       ok: true,

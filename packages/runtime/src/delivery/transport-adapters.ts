@@ -7,12 +7,14 @@ export class TelegramTransportAdapter implements TransportAdapter {
   constructor(
     private readonly token: string,
     private readonly fetchFn: Fetch = fetch,
+    private readonly options: { apiBaseUrl?: string } = {},
   ) {}
 
   async send(input: TransportSendInput): Promise<{ platformMessageId: string }> {
     const chatId = input.destination.chatId;
     if (typeof chatId !== 'string') throw this.error('telegram_chat_id_missing');
-    const response = await this.fetchFn(`https://api.telegram.org/bot${this.token}/sendMessage`, {
+    const apiBaseUrl = this.options.apiBaseUrl ?? 'https://api.telegram.org';
+    const response = await this.fetchFn(`${apiBaseUrl}/bot${this.token}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: input.body }),

@@ -18,6 +18,7 @@ const EngineEnvironmentSchema = z.object({
   RESEARCH_MODEL: ModelIdSchema.default('openai/gpt-5'),
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
+  TELEGRAM_API_BASE_URL: z.string().url().optional(),
 }).superRefine((environment, context) => {
   if (environment.NODE_ENV !== 'test' && environment.LLM_API_KEY === undefined) {
     context.addIssue({
@@ -59,6 +60,7 @@ export interface EngineConfig {
   telegram?: {
     botToken: string;
     webhookSecret: string;
+    apiBaseUrl?: string;
   };
 }
 
@@ -85,6 +87,7 @@ export function loadConfig(
           telegram: {
             botToken: engine.TELEGRAM_BOT_TOKEN,
             webhookSecret: engine.TELEGRAM_WEBHOOK_SECRET,
+            ...(engine.TELEGRAM_API_BASE_URL === undefined ? {} : { apiBaseUrl: engine.TELEGRAM_API_BASE_URL }),
           },
         }),
   };

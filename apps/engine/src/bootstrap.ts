@@ -98,7 +98,9 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const apiRoutes = config.telegram === undefined
     ? runtimeRoutes
     : (() => {
-        const telegramTransport = new TelegramTransportAdapter(config.telegram.botToken);
+        const telegramTransport = new TelegramTransportAdapter(config.telegram.botToken, fetch, {
+          ...(config.telegram.apiBaseUrl === undefined ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
+        });
         const telegramDelivery = new FinalDeliveryHandler({
           repository: deliveryRepository,
           transports: {
