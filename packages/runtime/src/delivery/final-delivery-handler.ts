@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
+  DeliveryIdSchema,
   type ChannelKindV1,
   type DeliveryRecordV1,
   type OrchestratorFinalResponseV1,
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
+import { ulid } from 'ulid';
 import {
   mandatoryPolicyProcessor,
   channelFormatProcessor,
@@ -45,6 +47,10 @@ export type DeliveryResult =
   | { status: 'blocked'; processorResult: OutputProcessorResultV1 }
   | { status: 'delivered'; delivery: DeliveryRecordV1; sent: boolean }
   | { status: 'failed' | 'ambiguous'; delivery: DeliveryRecordV1; sent: boolean };
+
+export const defaultDeliveryIdGenerator = {
+  nextDeliveryId: () => DeliveryIdSchema.parse(`delivery_${ulid()}`),
+};
 
 export function createDeliveryKey(response: OrchestratorFinalResponseV1): string {
   return createHash('sha256')

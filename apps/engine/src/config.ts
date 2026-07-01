@@ -16,12 +16,24 @@ const EngineEnvironmentSchema = z.object({
   MAKER_MODEL: ModelIdSchema.default('openai/gpt-5-mini'),
   CHECKER_MODEL: ModelIdSchema.default('openai/gpt-5'),
   RESEARCH_MODEL: ModelIdSchema.default('openai/gpt-5'),
+  TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
 }).superRefine((environment, context) => {
   if (environment.NODE_ENV !== 'test' && environment.LLM_API_KEY === undefined) {
     context.addIssue({
       code: 'custom',
       path: ['LLM_API_KEY'],
       message: 'LLM_API_KEY is required outside test',
+    });
+  }
+  if (
+    (environment.TELEGRAM_BOT_TOKEN === undefined)
+    !== (environment.TELEGRAM_WEBHOOK_SECRET === undefined)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['TELEGRAM_BOT_TOKEN'],
+      message: 'TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET must be configured together',
     });
   }
 });
@@ -44,6 +56,10 @@ export interface EngineConfig {
     checker: EngineLlmModelConfig;
     research: EngineLlmModelConfig;
   };
+  telegram?: {
+    botToken: string;
+    webhookSecret: string;
+  };
 }
 
 export function loadConfig(
@@ -63,6 +79,14 @@ export function loadConfig(
       checker: model(engine.CHECKER_MODEL, engine),
       research: model(engine.RESEARCH_MODEL, engine),
     },
+    ...(engine.TELEGRAM_BOT_TOKEN === undefined || engine.TELEGRAM_WEBHOOK_SECRET === undefined
+      ? {}
+      : {
+          telegram: {
+            botToken: engine.TELEGRAM_BOT_TOKEN,
+            webhookSecret: engine.TELEGRAM_WEBHOOK_SECRET,
+          },
+        }),
   };
 }
 

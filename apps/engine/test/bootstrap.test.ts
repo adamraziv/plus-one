@@ -32,8 +32,14 @@ describe('engine scaffold', () => {
       MAKER_MODEL: 'openai/gpt-5-mini',
       CHECKER_MODEL: 'openai/gpt-5',
       RESEARCH_MODEL: 'openai/gpt-5',
+      TELEGRAM_BOT_TOKEN: 'telegram-token',
+      TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
     });
     expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
+    expect(config.telegram).toEqual({
+      botToken: 'telegram-token',
+      webhookSecret: 'telegram-secret',
+    });
     expect(config.database.poolUrls.operations).toContain('operations');
     expect(config.models).toEqual({
       orchestrator: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -167,6 +173,31 @@ describe('engine scaffold', () => {
       },
     });
     expect(operationsPool.connect).toHaveBeenCalledOnce();
+  });
+
+  it('wires the Telegram webhook route when Telegram config is present', async () => {
+    let apiRoutes: Array<{ path: string }> = [];
+    const mastra = createMastra(environment.DATABASE_MEMORY_URL);
+    const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown, routes?: unknown[]) => {
+      apiRoutes = routes as typeof apiRoutes;
+      return mastra;
+    });
+
+    await bootstrap({
+      environment: {
+        ...environment,
+        TELEGRAM_BOT_TOKEN: 'telegram-token',
+        TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
+      },
+      createPools: () => ({ operations: {} }) as never,
+      verifyPools: vi.fn(async () => undefined),
+      closePools: vi.fn(async () => undefined),
+      validateModels: vi.fn(async () => undefined),
+      createMastraInstance,
+      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+    });
+
+    expect(apiRoutes.some((route) => route.path === '/telegram/webhook')).toBe(true);
   });
 
   it('passes configured Query tools into the agent system', async () => {
