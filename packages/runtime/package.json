@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./telegram/pairing-service": "./src/telegram/pairing-service.ts"
   },
   "dependencies": {
     "@mastra/core": "1.47.0",
