@@ -41,6 +41,7 @@ describe('platform migrations', () => {
       '0015_category_spend_monthly.sql',
       '0016_mastra_observational_memory_storage.sql',
       '0017_channel_conversation_active_lanes.sql',
+      '0018_channel_pairing.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();
