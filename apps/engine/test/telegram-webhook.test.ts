@@ -224,4 +224,43 @@ describe('Telegram webhook route', () => {
       },
     }));
   });
+
+  it('sends command-handled responses back to the paired Telegram chat', async () => {
+    const sendMessage = vi.fn(async () => ({ platformMessageId: 'telegram-platform-2' }));
+    const inboundHandler = vi.fn(async () => ({
+      status: 'command-handled',
+      command: 'new',
+      body: 'Started a new thread.',
+      conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+    }));
+    const route = createTelegramWebhookRoute({
+      webhookSecret: 'secret',
+      pairing: {
+        findPrincipal: vi.fn(async () => pairedPrincipal),
+        createPairingRequest: vi.fn(),
+      },
+      deliveryRepository: {
+        resolveActiveConversation: vi.fn(async () => ({
+          conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        })),
+        startNewConversation: vi.fn(),
+      },
+      inboundHandler,
+      telegram: { sendMessage },
+      ids: {
+        nextConversationId: vi.fn(() => 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
+      },
+    });
+
+    await expect(handlerOf(route)(context({
+      secret: 'secret',
+      body: privateTextUpdate('/new'),
+    }))).resolves.toMatchObject({
+      body: { status: 'command-handled', body: 'Started a new thread.' },
+    });
+    expect(sendMessage).toHaveBeenCalledWith({
+      chatId: '9876543210987',
+      text: 'Started a new thread.',
+    });
+  });
 });

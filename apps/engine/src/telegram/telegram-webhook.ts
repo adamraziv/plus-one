@@ -123,9 +123,23 @@ export function createTelegramWebhookRoute(input: {
           telegramUserId: externalUserId,
         },
       });
-      return context.json(await input.inboundHandler(inbound));
+      const result = await input.inboundHandler(inbound);
+      if (isCommandHandled(result)) {
+        await input.telegram.sendMessage({
+          chatId: externalChatId,
+          text: result.body,
+        });
+      }
+      return context.json(result);
     },
   });
+}
+
+function isCommandHandled(result: unknown): result is { status: 'command-handled'; body: string } {
+  return typeof result === 'object'
+    && result !== null
+    && (result as { status?: unknown }).status === 'command-handled'
+    && typeof (result as { body?: unknown }).body === 'string';
 }
 
 async function resolveConversation(
