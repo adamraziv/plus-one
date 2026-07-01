@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ChannelCommandResultSchemaV1,
   ChannelConversationSchemaV1,
   DeliveryRecordSchemaV1,
   InboundChannelMessageSchemaV1,
@@ -17,6 +18,35 @@ const occurrenceId = 'occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const timestamp = '2026-06-22T10:00:00.000Z';
 
 describe('channel and scheduling contracts', () => {
+  it('captures channel commands that are handled before orchestration', () => {
+    expect(ChannelCommandResultSchemaV1.parse({
+      schemaName: 'channel-command-result',
+      schemaVersion: 1,
+      command: 'new',
+      status: 'handled',
+      householdId,
+      conversationId,
+      channel: 'telegram',
+      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+      body: 'Started a new thread.',
+      createdAt: timestamp,
+    }).command).toBe('new');
+
+    expect(() => ChannelCommandResultSchemaV1.parse({
+      schemaName: 'channel-command-result',
+      schemaVersion: 1,
+      command: 'new',
+      status: 'handled',
+      householdId,
+      conversationId,
+      channel: 'telegram',
+      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+      body: 'Started a new thread.',
+      createdAt: timestamp,
+      unexpected: true,
+    })).toThrow();
+  });
+
   it('keeps channel conversation metadata as routing data only', () => {
     expect(ChannelConversationSchemaV1.parse({
       schemaName: 'channel-conversation',

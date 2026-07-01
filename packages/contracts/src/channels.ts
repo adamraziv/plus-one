@@ -46,6 +46,24 @@ export const InboundChannelMessageSchemaV1 = strict({
 });
 export type InboundChannelMessageV1 = z.infer<typeof InboundChannelMessageSchemaV1>;
 
+export const ChannelCommandResultSchemaV1 = strict({
+  schemaName: z.literal('channel-command-result'),
+  schemaVersion: z.literal(1),
+  command: z.enum(['new']),
+  status: z.enum(['handled']),
+  householdId: HouseholdIdSchema,
+  conversationId: ConversationIdSchema,
+  channel: ChannelKindSchemaV1,
+  delivery: strict({
+    channel: ChannelKindSchemaV1,
+    destination: ChannelDestinationSchemaV1,
+    format: z.enum(['plain_text', 'mrkdwn']),
+  }),
+  body: z.string().min(1).max(32_000),
+  createdAt: UtcInstantSchema,
+});
+export type ChannelCommandResultV1 = z.infer<typeof ChannelCommandResultSchemaV1>;
+
 export const OutputProcessorResultSchemaV1 = strict({
   schemaName: z.literal('output-processor-result'),
   schemaVersion: z.literal(1),

@@ -2,15 +2,18 @@ import type { Agent } from '@mastra/core/agent';
 import {
   closeDatabasePools,
   createDatabasePools,
+  PostgresDeliveryRepository,
   verifyDatabasePools,
   type DatabasePools,
 } from '@plus-one/database';
+import { ChannelCommandHandler, defaultConversationIdGenerator } from '@plus-one/runtime';
 import { createAgentSystem } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
 import type { RoleAgentTools } from './mastra/role-agent.js';
 import { validateConfiguredModels } from './model-catalog.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
+import { createOrchestratorSessionMemory } from './memory/orchestrator-session-memory.js';
 import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
@@ -55,10 +58,19 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     ...(dependencies.orchestratorAgent === undefined ? {} : { orchestratorAgent: dependencies.orchestratorAgent }),
   });
   const teamRuntime = createTeamRuntime({ pools, agentSystem });
+  const sessionMemory = createOrchestratorSessionMemory({
+    connectionString: config.database.poolUrls.memory,
+    model: config.models.orchestrator,
+  });
   const orchestrator = new OrchestratorAgent({
     model: config.models.orchestrator,
     teams: agentSystem.teams,
     teamRuntime,
+    sessionMemory,
+  });
+  const channelCommands = new ChannelCommandHandler({
+    repository: new PostgresDeliveryRepository(pools.operations),
+    ids: defaultConversationIdGenerator,
   });
   const workflows = {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
@@ -68,6 +80,8 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     agentSystem,
     teamRuntime,
     orchestrator,
+    sessionMemory,
+    commands: channelCommands,
     getMastra: () => mastra,
   });
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
@@ -76,6 +90,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     apiRoutes,
     workflows,
   );
+  orchestrator.registerMastra(mastra);
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);
 
@@ -84,7 +99,11 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     mastra,
     pools,
     agentSystem,
-    close: async (): Promise<void> => (dependencies.closePools ?? closeDatabasePools)(pools),
+    close: async (): Promise<void> => {
+      await mastra.shutdown();
+      await sessionMemory.close();
+      await (dependencies.closePools ?? closeDatabasePools)(pools);
+    },
   } satisfies {
     config: ReturnType<typeof loadConfig>;
     mastra: ReturnType<typeof createMastra>;

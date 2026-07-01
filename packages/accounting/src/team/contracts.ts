@@ -3,6 +3,7 @@ import {
   AccountIdSchema, AccountSourceMappingIdSchema, AccountingClassSchemaV1,
   BookIdSchema, CurrencyCodeSchema, DraftSeriesIdSchema,
   HouseholdIdSchema, JournalDraftIdSchema, JournalIdSchema, NormalBalanceSchemaV1,
+  PeriodIdSchema,
   PostJournalProposalSchemaV1,
 } from '@plus-one/contracts';
 
@@ -21,8 +22,11 @@ export const TransactionCaptureRequestSchemaV1 = z.object({
   schemaVersion: z.literal(1),
   householdId: HouseholdIdSchema,
   bookId: BookIdSchema,
+  periodId: PeriodIdSchema.optional(),
   explicitInstruction: z.literal(true),
   instruction: nonEmpty,
+  paymentAccountCurrency: CurrencyCodeSchema.optional(),
+  categoryAccountCurrency: CurrencyCodeSchema.optional(),
   known: z.object({
     amount: z.string().optional(),
     currency: CurrencyCodeSchema.optional(),

@@ -1,6 +1,7 @@
 import { InboundChannelMessageSchemaV1, type InboundChannelMessageV1 } from '@plus-one/contracts';
 import { bootstrap } from './bootstrap.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
+import { createOrchestratorSessionMemory } from './memory/orchestrator-session-memory.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -13,10 +14,15 @@ if (questions.length === 0) {
 }
 
 const runtime = await bootstrap();
+const sessionMemory = createOrchestratorSessionMemory({
+  connectionString: runtime.config.database.poolUrls.memory,
+  model: runtime.config.models.orchestrator,
+});
 try {
   const orchestrator = new OrchestratorAgent({
     model: runtime.config.models.orchestrator,
     teams: runtime.agentSystem.teams,
+    sessionMemory,
     teamRuntime: {
       runTeamLead: async () => {
         throw new Error('Smoke questions should not require team delegation.');
@@ -34,6 +40,7 @@ try {
     }, null, 2));
   }
 } finally {
+  await sessionMemory.close();
   await runtime.close();
 }
 

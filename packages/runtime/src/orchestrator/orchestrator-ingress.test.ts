@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ChannelCommandResultSchemaV1,
   DeliveryRecordSchemaV1,
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -73,6 +74,41 @@ const blocked: OutputProcessorResultV1 = {
 };
 
 describe('OrchestratorIngress', () => {
+  it('handles Telegram /new before recording inbound or running the orchestrator', async () => {
+    const run = vi.fn();
+    const deliver = vi.fn();
+    const recordInboundMessage = vi.fn();
+    const handle = vi.fn(async () => ChannelCommandResultSchemaV1.parse({
+      schemaName: 'channel-command-result',
+      schemaVersion: 1,
+      command: 'new',
+      status: 'handled',
+      householdId: message.householdId,
+      conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      channel: 'telegram',
+      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+      body: 'Started a new thread.',
+      createdAt: '2026-06-30T00:00:00.000Z',
+    }));
+    const ingress = new OrchestratorIngress({
+      inbound: { recordInboundMessage },
+      orchestrator: { run },
+      delivery: { deliver },
+      commands: { handle },
+    });
+
+    await expect(ingress.handleInbound({ ...message, body: '/new' })).resolves.toEqual({
+      status: 'command-handled',
+      command: 'new',
+      body: 'Started a new thread.',
+      conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+    });
+    expect(handle).toHaveBeenCalledOnce();
+    expect(recordInboundMessage).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
   it('records a new inbound message, invokes one orchestrator, then delivers final output', async () => {
     const recordInboundMessage = vi.fn(async () => ({ inserted: true }));
     const run = vi.fn(async () => response);

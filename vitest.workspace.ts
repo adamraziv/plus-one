@@ -53,6 +53,7 @@ export default defineWorkspace([
       name: 'acceptance',
       include: ['test/acceptance/**/*.test.ts'],
       environment: 'node',
+      fileParallelism: false,
       hookTimeout: 60_000,
       testTimeout: 60_000,
     },

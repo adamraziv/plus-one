@@ -39,6 +39,8 @@ describe('platform migrations', () => {
       '0013_query_public_current_balances.sql',
       '0014_mastra_workflow_storage.sql',
       '0015_category_spend_monthly.sql',
+      '0016_mastra_observational_memory_storage.sql',
+      '0017_channel_conversation_active_lanes.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();
@@ -62,13 +64,14 @@ describe('platform migrations', () => {
     ]);
 
     const relations = await pool.query<{ relation: string | null }>(
-      "SELECT to_regclass('operations.households')::text AS relation UNION ALL SELECT to_regclass('operations.currency_metadata')::text UNION ALL SELECT to_regclass('operations.schema_migrations')::text",
+      "SELECT to_regclass('operations.households')::text AS relation UNION ALL SELECT to_regclass('operations.currency_metadata')::text UNION ALL SELECT to_regclass('operations.schema_migrations')::text UNION ALL SELECT to_regclass('mastra_memory.mastra_observational_memory')::text",
     );
 
     expect(relations.rows.map((row) => row.relation)).toEqual([
       'operations.households',
       'operations.currency_metadata',
       'operations.schema_migrations',
+      'mastra_memory.mastra_observational_memory',
     ]);
 
     await pool.end();

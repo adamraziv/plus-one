@@ -4,7 +4,7 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
-    "@mastra/core": "1.45.0",
+    "@mastra/core": "1.47.0",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
     "@plus-one/ingestion": "workspace:*",

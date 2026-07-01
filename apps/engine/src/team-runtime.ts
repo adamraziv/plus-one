@@ -12,13 +12,17 @@ import {
   accountingSkills,
   validateAccountingLeadPlan,
   type AccountingLeadRequestV1,
+  type TransactionCaptureRequestV1,
 } from '@plus-one/accounting';
 import {
   PlusOneError,
   EvidenceRequestSchemaV1,
   TeamLeadPlanSchemaV1,
+  type AccountId,
+  type CurrencyCode,
   type InboundChannelMessageV1,
   type JsonValue,
+  type PeriodId,
 } from '@plus-one/contracts';
 import { ingestionSkills } from '@plus-one/ingestion';
 import { planningSkills } from '@plus-one/planning';
@@ -171,10 +175,30 @@ export async function normalizeAccountingLeadRequest(
     }))) as JsonValue;
   }
   if (parsed.data.intent !== 'transaction_capture') return request;
-  if (TransactionCaptureRequestSchemaV1.safeParse(parsed.data.request).success) return request;
+  const transactionCapture = TransactionCaptureRequestSchemaV1.safeParse(parsed.data.request);
+  if (transactionCapture.success) {
+    const enriched = await enrichTransactionCaptureRequest(pools, transactionCapture.data);
+    return JSON.parse(JSON.stringify(AccountingLeadRequestSchemaV1.parse({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'transaction_capture',
+      request: enriched,
+    }))) as JsonValue;
+  }
 
   const draft = TransactionCaptureRequestDraftSchemaV1.safeParse(parsed.data.request);
   const bookId = await resolveHouseholdBookId(pools, message.householdId);
+  const resolvedKnown = draft.success
+    ? await canonicalTransactionKnown(pools, message.householdId, bookId, draft.data.known)
+    : { known: {} };
+  const periodId = resolvedKnown.known.occurredOn === undefined
+    ? undefined
+    : await resolvePeriodIdForOccurredOn(
+      pools,
+      message.householdId,
+      bookId,
+      resolvedKnown.known.occurredOn,
+    );
   const normalized = AccountingLeadRequestSchemaV1.parse({
     schemaName: 'accounting-lead-request',
     schemaVersion: 1,
@@ -184,9 +208,16 @@ export async function normalizeAccountingLeadRequest(
       schemaVersion: 1,
       householdId: message.householdId,
       bookId,
+      ...(periodId === undefined ? {} : { periodId }),
       explicitInstruction: true,
       instruction: draft.success ? draft.data.instruction : instructionText(message, parsed.data),
-      known: draft.success ? canonicalTransactionKnown(draft.data.known) : {},
+      ...(resolvedKnown.paymentAccountCurrency === undefined
+        ? {}
+        : { paymentAccountCurrency: resolvedKnown.paymentAccountCurrency }),
+      ...(resolvedKnown.categoryAccountCurrency === undefined
+        ? {}
+        : { categoryAccountCurrency: resolvedKnown.categoryAccountCurrency }),
+      known: resolvedKnown.known,
     }),
   });
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
@@ -330,6 +361,13 @@ const JournalWorkRequestDraftSchema = z.object({
   instruction: z.string().min(1).max(4_000),
 }).strict();
 
+const PaymentAccountIdSchemaV1 =
+  TransactionCaptureRequestSchemaV1.shape.known.shape.paymentAccountId.unwrap();
+const TransactionCaptureCurrencySchemaV1 =
+  TransactionCaptureRequestSchemaV1.shape.paymentAccountCurrency.unwrap();
+const TransactionCapturePeriodIdSchemaV1 =
+  TransactionCaptureRequestSchemaV1.shape.periodId.unwrap();
+
 async function resolveHouseholdBookId(pools: DatabasePools, householdId: string): Promise<string> {
   const result = await pools.accounting.query<{ book_id: string }>(
     `SELECT book.book_id
@@ -360,12 +398,163 @@ function instructionText(message: InboundChannelMessageV1, request: AccountingLe
   return message.body;
 }
 
-function canonicalTransactionKnown(known: TransactionCaptureRequestDraftV1['known']) {
+async function enrichTransactionCaptureRequest(
+  pools: DatabasePools,
+  request: TransactionCaptureRequestV1,
+) {
+  const paymentAccountCurrency = request.paymentAccountCurrency === undefined
+    && request.known.paymentAccountId !== undefined
+    ? await resolveAccountCurrencyById(
+      pools,
+      request.householdId,
+      request.bookId,
+      request.known.paymentAccountId,
+    )
+    : request.paymentAccountCurrency;
+  const categoryAccountCurrency = request.categoryAccountCurrency === undefined
+    && request.known.categoryAccountId !== undefined
+    ? await resolveAccountCurrencyById(
+      pools,
+      request.householdId,
+      request.bookId,
+      request.known.categoryAccountId,
+    )
+    : request.categoryAccountCurrency;
+  const periodId = request.periodId === undefined && request.known.occurredOn !== undefined
+    ? await resolvePeriodIdForOccurredOn(
+      pools,
+      request.householdId,
+      request.bookId,
+      request.known.occurredOn,
+    )
+    : request.periodId;
+  return TransactionCaptureRequestSchemaV1.parse({
+    ...request,
+    ...(periodId === undefined ? {} : { periodId }),
+    ...(paymentAccountCurrency === undefined ? {} : { paymentAccountCurrency }),
+    ...(categoryAccountCurrency === undefined ? {} : { categoryAccountCurrency }),
+  });
+}
+
+async function canonicalTransactionKnown(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: string,
+  known: TransactionCaptureRequestDraftV1['known'],
+): Promise<{
+  known: TransactionCaptureRequestV1['known'];
+  paymentAccountCurrency?: CurrencyCode;
+  categoryAccountCurrency?: CurrencyCode;
+}> {
+  const paymentAccount = known.paymentAccountName === undefined
+    ? undefined
+    : await resolveAccountByName(
+      pools,
+      householdId,
+      bookId,
+      known.paymentAccountName,
+      paymentAccountingClasses,
+    );
+  const categoryAccount = known.categoryName === undefined
+    ? undefined
+    : await resolveAccountByName(
+      pools,
+      householdId,
+      bookId,
+      known.categoryName,
+      categoryAccountingClasses,
+    );
   return {
-    ...(known.amount === undefined ? {} : { amount: known.amount }),
-    ...(known.currency === undefined ? {} : { currency: known.currency }),
-    ...(known.occurredOn === undefined ? {} : { occurredOn: known.occurredOn }),
+    known: {
+      ...(known.amount === undefined ? {} : { amount: known.amount }),
+      ...(known.currency === undefined ? {} : { currency: known.currency }),
+      ...(paymentAccount === undefined ? {} : { paymentAccountId: paymentAccount.accountId }),
+      ...(known.occurredOn === undefined ? {} : { occurredOn: known.occurredOn }),
+      ...(categoryAccount === undefined ? {} : { categoryAccountId: categoryAccount.accountId }),
+    },
+    ...(paymentAccount === undefined ? {} : { paymentAccountCurrency: paymentAccount.nativeCurrency }),
+    ...(categoryAccount === undefined ? {} : { categoryAccountCurrency: categoryAccount.nativeCurrency }),
   };
+}
+
+const paymentAccountingClasses = ['asset', 'liability', 'equity'];
+const categoryAccountingClasses = ['expense', 'income'];
+
+async function resolveAccountByName(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: string,
+  accountName: string,
+  allowedClasses: readonly string[],
+): Promise<{ accountId: AccountId; nativeCurrency: CurrencyCode } | undefined> {
+  const normalizedName = accountName.trim();
+  if (normalizedName.length === 0) return undefined;
+  const result = await pools.accounting.query<{ account_id: string; native_currency: string }>(
+    `SELECT account.account_id, account.native_currency
+     FROM accounting.accounts account
+     JOIN operations.households household ON household.id = account.household_id
+     JOIN accounting.books book ON book.id = account.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND lower(account.name) = lower($3)
+       AND account.accounting_class = ANY($4::text[])
+       AND account.archived_at IS NULL
+     ORDER BY account.account_id
+     LIMIT 2`,
+    [householdId, bookId, normalizedName, allowedClasses],
+  );
+  return result.rows.length === 1
+    ? {
+      accountId: PaymentAccountIdSchemaV1.parse(result.rows[0]!.account_id),
+      nativeCurrency: TransactionCaptureCurrencySchemaV1.parse(result.rows[0]!.native_currency),
+    }
+    : undefined;
+}
+
+async function resolveAccountCurrencyById(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: string,
+  accountId: AccountId,
+): Promise<CurrencyCode | undefined> {
+  const result = await pools.accounting.query<{ native_currency: string }>(
+    `SELECT account.native_currency
+     FROM accounting.accounts account
+     JOIN operations.households household ON household.id = account.household_id
+     JOIN accounting.books book ON book.id = account.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND account.account_id = $3
+       AND account.archived_at IS NULL
+     LIMIT 2`,
+    [householdId, bookId, accountId],
+  );
+  return result.rows.length === 1
+    ? TransactionCaptureCurrencySchemaV1.parse(result.rows[0]!.native_currency)
+    : undefined;
+}
+
+async function resolvePeriodIdForOccurredOn(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: string,
+  occurredOn: string,
+): Promise<PeriodId | undefined> {
+  const result = await pools.accounting.query<{ period_id: string }>(
+    `SELECT period.period_id
+     FROM accounting.periods period
+     JOIN operations.households household ON household.id = period.household_id
+     JOIN accounting.books book ON book.id = period.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND $3::date BETWEEN period.period_start AND period.period_end
+     ORDER BY period.period_start DESC, period.period_id
+     LIMIT 2`,
+    [householdId, bookId, occurredOn],
+  );
+  return result.rows.length === 1
+    ? TransactionCapturePeriodIdSchemaV1.parse(result.rows[0]!.period_id)
+    : undefined;
 }
 
 function queryBusinessQuestion(message: InboundChannelMessageV1, request: JsonValue): string {
