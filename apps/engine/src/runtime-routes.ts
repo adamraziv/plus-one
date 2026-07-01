@@ -1,5 +1,10 @@
 import { registerApiRoute } from '@mastra/core/server';
-import { InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
+import {
+  ChannelCommandResultSchemaV1,
+  InboundChannelMessageSchemaV1,
+  type ChannelCommandResultV1,
+  type InboundChannelMessageV1,
+} from '@plus-one/contracts';
 import { ZodError } from 'zod';
 import type { AgentSystem } from './agent-catalog.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
@@ -16,6 +21,7 @@ export function createRuntimeRoutes(input: {
   orchestrator?: OrchestratorAgent;
   sessionMemory?: OrchestratorSessionMemoryPort;
   getMastra?: () => Mastra;
+  commands?: { handle(message: InboundChannelMessageV1): Promise<ChannelCommandResultV1 | undefined> };
 }) {
   const orchestrator = input.orchestrator ?? new OrchestratorAgent({
     model: input.config.models.orchestrator,
@@ -31,6 +37,18 @@ export function createRuntimeRoutes(input: {
       handler: async (context) => {
         try {
           const message = InboundChannelMessageSchemaV1.parse(await context.req.json());
+          const commandResult = ChannelCommandResultSchemaV1.optional().parse(
+            await input.commands?.handle(message),
+          );
+          if (commandResult !== undefined) {
+            return context.json({
+              status: 'command-handled',
+              command: commandResult.command,
+              body: commandResult.body,
+              conversationId: commandResult.conversationId,
+            });
+          }
+
           if (input.getMastra === undefined) {
             return context.json(await orchestrator.run({ message }));
           }

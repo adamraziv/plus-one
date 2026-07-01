@@ -1,4 +1,5 @@
 import {
+  ChannelConversationSchemaV1,
   DeliveryRecordSchemaV1,
   DeliveryIdSchema,
   HouseholdIdSchema,
@@ -7,6 +8,7 @@ import {
   PlusOneError,
   ScheduledRunSchemaV1,
   type DeliveryRecordV1,
+  type ChannelConversationV1,
   type ScheduledRunV1,
 } from '@plus-one/contracts';
 import type { Pool } from 'pg';
@@ -23,6 +25,18 @@ interface DeliveryRow {
   platform_message_id: string | null;
   attempt_count: number;
   failure_category: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface ChannelConversationRow {
+  conversation_id: string;
+  household_id: string;
+  channel: 'telegram' | 'slack';
+  channel_type: 'direct' | 'group' | 'channel' | 'thread';
+  external_conversation_id: string;
+  external_thread_id: string;
+  destination: Record<string, unknown>;
   created_at: Date;
   updated_at: Date;
 }
@@ -65,6 +79,19 @@ export interface ReservedDeliveryInput {
   response: unknown;
 }
 
+export interface ChannelConversationLaneInput {
+  householdId: string;
+  channel: 'telegram' | 'slack';
+  externalConversationId: string;
+  externalThreadId?: string;
+}
+
+export interface StartNewConversationInput extends ChannelConversationLaneInput {
+  conversationId: string;
+  channelType: 'direct' | 'group' | 'channel' | 'thread';
+  destination: Record<string, unknown>;
+}
+
 export interface ScheduledRunClaim extends ScheduledRunV1 {
   target: { kind: 'orchestrator' } | { kind: 'team_lead'; team: string };
   timeoutMs: number;
@@ -95,6 +122,22 @@ function deliveryRecord(row: DeliveryRow): DeliveryRecordV1 {
   });
 }
 
+function channelConversation(row: ChannelConversationRow): ChannelConversationV1 {
+  return ChannelConversationSchemaV1.parse({
+    schemaName: 'channel-conversation',
+    schemaVersion: 1,
+    conversationId: row.conversation_id,
+    householdId: row.household_id,
+    channel: row.channel,
+    channelType: row.channel_type,
+    externalConversationId: row.external_conversation_id,
+    ...(row.external_thread_id === '' ? {} : { externalThreadId: row.external_thread_id }),
+    destination: row.destination,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  });
+}
+
 function scheduledRun(row: ScheduledRunRow): ScheduledRunV1 {
   return ScheduledRunSchemaV1.parse({
     schemaName: 'scheduled-run',
@@ -117,6 +160,87 @@ function scheduledRun(row: ScheduledRunRow): ScheduledRunV1 {
 
 export class PostgresDeliveryRepository {
   constructor(private readonly pool: Pool) {}
+
+  async startNewConversation(input: StartNewConversationInput): Promise<ChannelConversationV1> {
+    const externalThreadId = input.externalThreadId ?? '';
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const inserted = await client.query<ChannelConversationRow>(
+        `INSERT INTO operations.channel_conversations
+         (conversation_id, household_id, channel, channel_type, external_conversation_id,
+          external_thread_id, destination)
+         SELECT $1, household.id, $2, $3, $4, $5, $6
+         FROM operations.households household
+         WHERE household.household_id = $7
+         RETURNING conversation_id, $7 AS household_id, channel, channel_type,
+           external_conversation_id, external_thread_id, destination, created_at, updated_at`,
+        [
+          input.conversationId,
+          input.channel,
+          input.channelType,
+          input.externalConversationId,
+          externalThreadId,
+          JSON.stringify(input.destination),
+          HouseholdIdSchema.parse(input.householdId),
+        ],
+      );
+      const row = inserted.rows[0];
+      if (row === undefined) throw this.notFound('household_not_found', input.householdId);
+
+      await client.query(
+        `INSERT INTO operations.channel_conversation_active_lanes
+         (household_id, channel, external_conversation_id, external_thread_id, active_conversation_id)
+         SELECT household.id, $1, $2, $3, conversation.id
+         FROM operations.households household
+         JOIN operations.channel_conversations conversation
+           ON conversation.household_id = household.id
+          AND conversation.conversation_id = $4
+         WHERE household.household_id = $5
+         ON CONFLICT (household_id, channel, external_conversation_id, external_thread_id)
+         DO UPDATE SET active_conversation_id = EXCLUDED.active_conversation_id,
+                       updated_at = clock_timestamp()`,
+        [
+          input.channel,
+          input.externalConversationId,
+          externalThreadId,
+          input.conversationId,
+          HouseholdIdSchema.parse(input.householdId),
+        ],
+      );
+      await client.query('COMMIT');
+      return channelConversation(row);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async resolveActiveConversation(input: ChannelConversationLaneInput): Promise<ChannelConversationV1 | undefined> {
+    const result = await this.pool.query<ChannelConversationRow>(
+      `SELECT conversation.conversation_id, household.household_id, conversation.channel,
+              conversation.channel_type, conversation.external_conversation_id,
+              conversation.external_thread_id, conversation.destination,
+              conversation.created_at, conversation.updated_at
+       FROM operations.channel_conversation_active_lanes lane
+       JOIN operations.households household ON household.id = lane.household_id
+       JOIN operations.channel_conversations conversation ON conversation.id = lane.active_conversation_id
+       WHERE household.household_id = $1
+         AND lane.channel = $2
+         AND lane.external_conversation_id = $3
+         AND lane.external_thread_id = $4`,
+      [
+        HouseholdIdSchema.parse(input.householdId),
+        input.channel,
+        input.externalConversationId,
+        input.externalThreadId ?? '',
+      ],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : channelConversation(row);
+  }
 
   async recordInboundMessage(candidate: unknown): Promise<{ inserted: boolean }> {
     const input = InboundChannelMessageSchemaV1.parse(candidate);
