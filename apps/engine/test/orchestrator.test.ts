@@ -165,7 +165,7 @@ function memoryMessage(role: 'user' | 'assistant', body: string) {
 
 describe('OrchestratorAgent', () => {
   it('limits only the top-level orchestrator input context', () => {
-    const configs: Array<{ id?: string; inputProcessors?: unknown[] }> = [];
+    const configs: Array<{ id?: string; inputProcessors?: unknown }> = [];
 
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -180,10 +180,12 @@ describe('OrchestratorAgent', () => {
     const byId = Object.fromEntries(configs.map((config) => [config.id, config]));
     const inputProcessors = byId.orchestrator?.inputProcessors;
 
+    expect(Array.isArray(inputProcessors)).toBe(true);
+    if (!Array.isArray(inputProcessors)) throw new Error('Expected orchestrator input processors.');
     expect(inputProcessors).toHaveLength(1);
-    expect(inputProcessors?.[0]).toBeInstanceOf(TokenLimiter);
-    expect(inputProcessors?.[0]).toMatchObject({ id: 'token-limiter' });
-    expect((inputProcessors?.[0] as TokenLimiter | undefined)?.getMaxTokens()).toBe(24_000);
+    expect(inputProcessors[0]).toBeInstanceOf(TokenLimiter);
+    expect(inputProcessors[0]).toMatchObject({ id: 'token-limiter' });
+    expect((inputProcessors[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
     expect(byId['orchestrator-accounting-intent']?.inputProcessors).toBeUndefined();
     expect(byId['orchestrator-query-intent']?.inputProcessors).toBeUndefined();
     expect(byId['orchestrator-finalizer']?.inputProcessors).toBeUndefined();

@@ -6,7 +6,7 @@ import { createMastraMemoryStorage } from '@plus-one/database';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 
 const ORCHESTRATOR_LAST_MESSAGES = 20;
-type OrchestratorMemoryOptions = NonNullable<ConstructorParameters<typeof Memory>[0]>['options'];
+type OrchestratorMemoryOptions = NonNullable<NonNullable<ConstructorParameters<typeof Memory>[0]>['options']>;
 
 export interface OrchestratorSessionMemoryStore {
   getContext(input: { threadId: string; resourceId?: string }): Promise<{

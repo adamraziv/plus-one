@@ -17,6 +17,8 @@ import {
   type AccountingRoleAgentInput,
 } from './types.js';
 
+type PostAccountingJournalMutationProposalV1 = Extract<AccountingJournalMutationProposalV1, { operation: 'post' }>;
+
 export function createTransactionCaptureCheckerAgent(input: AccountingRoleAgentInput): AccountingRoleAgent {
   const factory: AccountingRoleAgentFactory = input.agentFactory ?? defaultAccountingRoleAgentFactory;
   const fallback = factory({
@@ -124,7 +126,7 @@ function isDeterministicProposalReady(request: ReturnType<typeof TransactionCapt
 function matchesDeterministicProposal(
   taskId: string,
   request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>,
-  proposal: NonNullable<ReturnType<typeof parseDeterministicProposal>>,
+  proposal: PostAccountingJournalMutationProposalV1,
 ): boolean {
   const suffix = idSuffix(taskId);
   const journal = proposal.draft.journal;
@@ -166,7 +168,7 @@ function idSuffix(taskId: string): string {
   return separator === -1 ? taskId : taskId.slice(separator + 1);
 }
 
-function parseDeterministicProposal(output: unknown): AccountingJournalMutationProposalV1 | undefined {
+function parseDeterministicProposal(output: unknown): PostAccountingJournalMutationProposalV1 | undefined {
   const parsed = AccountingJournalMutationProposalSchemaV1.safeParse(output);
   if (!parsed.success || parsed.data.operation !== 'post') return undefined;
   return parsed.data;
