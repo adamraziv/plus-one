@@ -26,6 +26,9 @@ import { createOrchestratorSessionMemory } from './memory/orchestrator-session-m
 import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
+import { TelegramBotApiClient } from './telegram/telegram-bot-api.js';
+import { TelegramPollingReceiver } from './telegram/telegram-polling-receiver.js';
+import { TelegramUpdateProcessor } from './telegram/telegram-update-processor.js';
 import { createTelegramWebhookRoute } from './telegram/telegram-webhook.js';
 import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from './workflows/orchestrator-loop.js';
 
@@ -39,6 +42,8 @@ interface BootstrapDependencies {
   createAgentSystemInstance?: typeof createAgentSystem;
   queryTools?: RoleAgentTools;
   orchestratorAgent?: Agent;
+  createTelegramBotApiClient?: typeof createTelegramBotApiClient;
+  createTelegramPollingReceiver?: typeof createTelegramPollingReceiver;
 }
 
 export async function bootstrap(dependencies: BootstrapDependencies = {}) {
@@ -86,6 +91,8 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const workflows = {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
+  let telegramApi: TelegramBotApiClient | undefined;
+  let telegramProcessor: TelegramUpdateProcessor | undefined;
   const runtimeRoutes = createRuntimeRoutes({
     config,
     agentSystem,
@@ -98,6 +105,10 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const apiRoutes = config.telegram === undefined
     ? runtimeRoutes
     : (() => {
+        telegramApi = (dependencies.createTelegramBotApiClient ?? createTelegramBotApiClient)(
+          config.telegram.botToken,
+          { ...(config.telegram.apiBaseUrl === undefined ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }) },
+        );
         const telegramTransport = new TelegramTransportAdapter(config.telegram.botToken, fetch, {
           ...(config.telegram.apiBaseUrl === undefined ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
         });
@@ -114,10 +125,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
           ids: defaultDeliveryIdGenerator,
         });
 
-        return [
-        ...runtimeRoutes,
-        createTelegramWebhookRoute({
-          webhookSecret: config.telegram.webhookSecret,
+        const processor = new TelegramUpdateProcessor({
           pairing: new TelegramPairingService({
             repository: new PostgresChannelPairingRepository(pools.operations),
           }),
@@ -141,8 +149,19 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
               .send({ destination: { chatId }, body: text, format: 'plain_text' }),
           },
           ids: defaultConversationIdGenerator,
-        }),
-        ];
+        });
+        telegramProcessor = processor;
+
+        const telegramRoutes = config.telegram.receiver.mode === 'webhook'
+          ? [
+              createTelegramWebhookRoute({
+                webhookSecret: config.telegram.receiver.webhookSecret,
+                processor,
+              }),
+            ]
+          : [];
+
+        return [...runtimeRoutes, ...telegramRoutes];
       })();
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
     config.database.poolUrls.memory,
@@ -154,12 +173,40 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);
 
+  let stopTelegramPolling: (() => void) | undefined;
+  let telegramPollingTask: Promise<void> | undefined;
+
+  if (config.telegram !== undefined && config.telegram.receiver.mode === 'webhook') {
+    if (telegramApi === undefined) throw new Error('Telegram API client was not initialized.');
+    await telegramApi.setWebhook({
+      url: config.telegram.receiver.webhookUrl,
+      secretToken: config.telegram.receiver.webhookSecret,
+      allowedUpdates: ['message'],
+      dropPendingUpdates: false,
+    });
+  }
+
+  if (config.telegram !== undefined && config.telegram.receiver.mode === 'polling') {
+    if (telegramApi === undefined) throw new Error('Telegram API client was not initialized.');
+    if (telegramProcessor === undefined) throw new Error('Telegram update processor was not initialized.');
+    const polling = (dependencies.createTelegramPollingReceiver ?? createTelegramPollingReceiver)({
+      api: telegramApi,
+      processor: telegramProcessor,
+    });
+    stopTelegramPolling = polling.abort;
+    telegramPollingTask = polling.start().catch((error: unknown) => {
+      console.error(error);
+    });
+  }
+
   return {
     config,
     mastra,
     pools,
     agentSystem,
     close: async (): Promise<void> => {
+      stopTelegramPolling?.();
+      await telegramPollingTask?.catch(() => undefined);
       await mastra.shutdown();
       await sessionMemory.close();
       await (dependencies.closePools ?? closeDatabasePools)(pools);
@@ -170,5 +217,27 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     pools: DatabasePools;
     agentSystem: ReturnType<typeof createAgentSystem>;
     close: () => Promise<void>;
+  };
+}
+
+function createTelegramBotApiClient(
+  botToken: string,
+  options: { apiBaseUrl?: string },
+): TelegramBotApiClient {
+  return new TelegramBotApiClient(botToken, fetch, options);
+}
+
+function createTelegramPollingReceiver(input: {
+  api: TelegramBotApiClient;
+  processor: Pick<TelegramUpdateProcessor, 'handle'>;
+}): { start(): Promise<void>; abort(): void } {
+  const controller = new AbortController();
+  const receiver = new TelegramPollingReceiver({
+    api: input.api,
+    processor: input.processor,
+  });
+  return {
+    start: async () => receiver.start(controller.signal),
+    abort: () => controller.abort(),
   };
 }

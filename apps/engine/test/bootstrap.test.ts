@@ -33,12 +33,17 @@ describe('engine scaffold', () => {
       CHECKER_MODEL: 'openai/gpt-5',
       RESEARCH_MODEL: 'openai/gpt-5',
       TELEGRAM_BOT_TOKEN: 'telegram-token',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
     });
     expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
     expect(config.telegram).toEqual({
       botToken: 'telegram-token',
-      webhookSecret: 'telegram-secret',
+      receiver: {
+        mode: 'webhook',
+        webhookUrl: 'https://plus-one.example.test/telegram/webhook',
+        webhookSecret: 'telegram-secret',
+      },
     });
     expect(config.database.poolUrls.operations).toContain('operations');
     expect(config.models).toEqual({
@@ -175,8 +180,41 @@ describe('engine scaffold', () => {
     expect(operationsPool.connect).toHaveBeenCalledOnce();
   });
 
-  it('wires the Telegram webhook route when Telegram config is present', async () => {
+  it('starts Telegram polling when only a bot token is configured', async () => {
+    const startPolling = vi.fn(async () => undefined);
+    const abortPolling = vi.fn();
+    const createTelegramPollingReceiver = vi.fn(() => ({
+      start: startPolling,
+      abort: abortPolling,
+    }));
+
+    await bootstrap({
+      environment: {
+        ...environment,
+        TELEGRAM_BOT_TOKEN: 'telegram-token',
+      },
+      createPools: () => ({ operations: {} }) as never,
+      verifyPools: vi.fn(async () => undefined),
+      closePools: vi.fn(async () => undefined),
+      validateModels: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+      createTelegramPollingReceiver,
+    });
+
+    expect(createTelegramPollingReceiver).toHaveBeenCalledOnce();
+    expect(startPolling).toHaveBeenCalledOnce();
+  });
+
+  it('registers Telegram webhook mode and does not start polling when webhook URL is configured', async () => {
     let apiRoutes: Array<{ path: string }> = [];
+    const setWebhook = vi.fn(async () => undefined);
+    const createTelegramBotApiClient = vi.fn(() => ({
+      setWebhook,
+      deleteWebhook: vi.fn(),
+      getUpdates: vi.fn(),
+    }));
+    const createTelegramPollingReceiver = vi.fn();
     const mastra = createMastra(environment.DATABASE_MEMORY_URL);
     const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown, routes?: unknown[]) => {
       apiRoutes = routes as typeof apiRoutes;
@@ -187,6 +225,7 @@ describe('engine scaffold', () => {
       environment: {
         ...environment,
         TELEGRAM_BOT_TOKEN: 'telegram-token',
+        TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
         TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
       },
       createPools: () => ({ operations: {} }) as never,
@@ -195,9 +234,18 @@ describe('engine scaffold', () => {
       validateModels: vi.fn(async () => undefined),
       createMastraInstance,
       createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+      createTelegramBotApiClient,
+      createTelegramPollingReceiver,
     });
 
     expect(apiRoutes.some((route) => route.path === '/telegram/webhook')).toBe(true);
+    expect(setWebhook).toHaveBeenCalledWith({
+      url: 'https://plus-one.example.test/telegram/webhook',
+      secretToken: 'telegram-secret',
+      allowedUpdates: ['message'],
+      dropPendingUpdates: false,
+    });
+    expect(createTelegramPollingReceiver).not.toHaveBeenCalled();
   });
 
   it('passes configured Query tools into the agent system', async () => {
