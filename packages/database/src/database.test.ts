@@ -76,6 +76,7 @@ describe('migration discovery', () => {
       '0015_category_spend_monthly.sql',
       '0016_mastra_observational_memory_storage.sql',
       '0017_channel_conversation_active_lanes.sql',
+      '0018_channel_pairing.sql',
     ]);
 
     for (const migration of migrations) {

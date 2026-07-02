@@ -22,6 +22,7 @@ export * from './skills/skill-registry.js';
 export * from './state-machine.js';
 export * from './strategies/execution-strategy-registry.js';
 export * from './teams/definitions.js';
+export * from './telegram/pairing-service.js';
 export * from './tools/analyst-sandbox-tool.js';
 export * from './tools/tool-permission-registry.js';
 export * from './verification-runtime.js';

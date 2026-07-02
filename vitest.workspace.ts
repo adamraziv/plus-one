@@ -11,6 +11,7 @@ const resolveConfig = {
     '@plus-one/planning': resolve('packages/planning/src/index.ts'),
     '@plus-one/query': resolve('packages/query/src/index.ts'),
     '@plus-one/reporting': resolve('packages/reporting/src/index.ts'),
+    '@plus-one/runtime/telegram/pairing-service': resolve('packages/runtime/src/telegram/pairing-service.ts'),
     '@plus-one/runtime': resolve('packages/runtime/src/index.ts'),
   },
 };

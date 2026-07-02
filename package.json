@@ -20,6 +20,7 @@
     "test:integration": "vitest run --project integration --passWithNoTests",
     "test:acceptance": "vitest run --project acceptance --passWithNoTests",
     "dev:mastra": "mastra dev --dir apps/engine/src/mastra",
+    "plus-one": "tsx apps/engine/src/cli.ts",
     "smoke:orchestrator": "tsx apps/engine/src/smoke-orchestrator.ts",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",

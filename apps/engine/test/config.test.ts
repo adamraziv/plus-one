@@ -32,4 +32,17 @@ describe('engine config', () => {
       ORCHESTRATOR_MODEL: 'deepseek-v4-flash',
     })).toThrow(/provider\/model/);
   });
+
+  it('loads Telegram Bot API override only with Telegram webhook settings', () => {
+    expect(loadConfig({
+      ...baseEnvironment,
+      TELEGRAM_BOT_TOKEN: 'telegram-token',
+      TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
+      TELEGRAM_API_BASE_URL: 'http://127.0.0.1:9999',
+    }).telegram).toEqual({
+      botToken: 'telegram-token',
+      webhookSecret: 'telegram-secret',
+      apiBaseUrl: 'http://127.0.0.1:9999',
+    });
+  });
 });

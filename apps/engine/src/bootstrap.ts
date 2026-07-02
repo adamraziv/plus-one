@@ -2,11 +2,20 @@ import type { Agent } from '@mastra/core/agent';
 import {
   closeDatabasePools,
   createDatabasePools,
+  PostgresChannelPairingRepository,
   PostgresDeliveryRepository,
   verifyDatabasePools,
   type DatabasePools,
 } from '@plus-one/database';
-import { ChannelCommandHandler, defaultConversationIdGenerator } from '@plus-one/runtime';
+import {
+  ChannelCommandHandler,
+  defaultConversationIdGenerator,
+  defaultDeliveryIdGenerator,
+  FinalDeliveryHandler,
+  OrchestratorIngress,
+  TelegramPairingService,
+  TelegramTransportAdapter,
+} from '@plus-one/runtime';
 import { createAgentSystem } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
@@ -17,7 +26,8 @@ import { createOrchestratorSessionMemory } from './memory/orchestrator-session-m
 import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
-import { createOrchestratorLoopWorkflow } from './workflows/orchestrator-loop.js';
+import { createTelegramWebhookRoute } from './telegram/telegram-webhook.js';
+import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from './workflows/orchestrator-loop.js';
 
 interface BootstrapDependencies {
   environment?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -68,14 +78,15 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     teamRuntime,
     sessionMemory,
   });
+  const deliveryRepository = new PostgresDeliveryRepository(pools.operations);
   const channelCommands = new ChannelCommandHandler({
-    repository: new PostgresDeliveryRepository(pools.operations),
+    repository: deliveryRepository,
     ids: defaultConversationIdGenerator,
   });
   const workflows = {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
-  const apiRoutes = createRuntimeRoutes({
+  const runtimeRoutes = createRuntimeRoutes({
     config,
     agentSystem,
     teamRuntime,
@@ -84,6 +95,55 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     commands: channelCommands,
     getMastra: () => mastra,
   });
+  const apiRoutes = config.telegram === undefined
+    ? runtimeRoutes
+    : (() => {
+        const telegramTransport = new TelegramTransportAdapter(config.telegram.botToken, fetch, {
+          ...(config.telegram.apiBaseUrl === undefined ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
+        });
+        const telegramDelivery = new FinalDeliveryHandler({
+          repository: deliveryRepository,
+          transports: {
+            telegram: telegramTransport,
+            slack: {
+              send: async () => {
+                throw new Error('Slack transport is not configured for Telegram webhook delivery.');
+              },
+            },
+          },
+          ids: defaultDeliveryIdGenerator,
+        });
+
+        return [
+        ...runtimeRoutes,
+        createTelegramWebhookRoute({
+          webhookSecret: config.telegram.webhookSecret,
+          pairing: new TelegramPairingService({
+            repository: new PostgresChannelPairingRepository(pools.operations),
+          }),
+          deliveryRepository,
+          inboundHandler: async (message) => {
+            const ingress = new OrchestratorIngress({
+              inbound: deliveryRepository,
+              commands: channelCommands,
+              orchestrator: {
+                run: async (candidate) => {
+                  const workflow = mastra.getWorkflow('orchestrator-loop');
+                  return runOrchestratorLoop({ workflow, message: candidate.message });
+                },
+              },
+              delivery: telegramDelivery,
+            });
+            return ingress.handleInbound(message);
+          },
+          telegram: {
+            sendMessage: async ({ chatId, text }) => telegramTransport
+              .send({ destination: { chatId }, body: text, format: 'plain_text' }),
+          },
+          ids: defaultConversationIdGenerator,
+        }),
+        ];
+      })();
   const mastra = (dependencies.createMastraInstance ?? createMastra)(
     config.database.poolUrls.memory,
     agentSystem.mastraAgents,
