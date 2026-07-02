@@ -7,11 +7,17 @@ import {
 } from '@plus-one/database';
 import { TelegramPairingService } from '@plus-one/runtime/telegram/pairing-service';
 import { loadConfig } from './config.js';
+import { runLiveCli, type RunLiveCliDependencies } from './live-cli/index.js';
 import { handleTelegramPairingCommand } from './telegram/pairing-cli.js';
 
 type PairingService = Parameters<typeof handleTelegramPairingCommand>[0]['service'];
 
+interface Input {
+  isTTY?: boolean;
+}
+
 interface Output {
+  isTTY?: boolean;
   write(text: string): void;
 }
 
@@ -21,8 +27,11 @@ interface PlusOneCliDependencies {
   closePools?: typeof closeDatabasePools;
   pairingService?: PairingService;
   approvedBy?: string;
+  stdin?: Input;
   stdout?: Output;
   stderr?: Output;
+  isInteractive?: boolean;
+  runLiveCli?: (dependencies: RunLiveCliDependencies) => Promise<number>;
 }
 
 export async function runPlusOneCli(
@@ -32,6 +41,21 @@ export async function runPlusOneCli(
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
   try {
+    if (argv.length === 0) {
+      const interactive = dependencies.isInteractive
+        ?? Boolean((dependencies.stdin ?? process.stdin).isTTY && stdout.isTTY);
+      if (interactive) {
+        return (dependencies.runLiveCli ?? runLiveCli)({
+          environment: dependencies.environment ?? process.env,
+          stdin: dependencies.stdin ?? process.stdin,
+          stdout,
+          stderr,
+        });
+      }
+      stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
+      return 1;
+    }
+
     if (argv[0] === 'telegram' && argv[1] === 'pairing') {
       const result = await runTelegramPairingCommand(argv.slice(2), dependencies);
       stdout.write(`${result}\n`);

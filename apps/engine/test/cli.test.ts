@@ -80,4 +80,40 @@ describe('Plus One CLI', () => {
     expect(closePools).toHaveBeenCalledWith(pools);
     expect(write).toHaveBeenCalledWith('No pending Telegram pairing requests.\n');
   });
+
+  it('opens the live CLI when no arguments are supplied in an interactive terminal', async () => {
+    const runLiveCli = vi.fn(async () => 0);
+    const stdout = { write: vi.fn() };
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli([], {
+      isInteractive: true,
+      runLiveCli,
+      stdout,
+      stderr,
+    })).resolves.toBe(0);
+
+    expect(runLiveCli).toHaveBeenCalledWith(expect.objectContaining({
+      stdout,
+      stderr,
+    }));
+    expect(stderr.write).not.toHaveBeenCalled();
+  });
+
+  it('prints usage when no arguments are supplied outside an interactive terminal', async () => {
+    const write = vi.fn();
+    const runLiveCli = vi.fn(async () => 0);
+
+    await expect(runPlusOneCli([], {
+      isInteractive: false,
+      runLiveCli,
+      stdout: { write: vi.fn() },
+      stderr: { write },
+    })).resolves.toBe(1);
+
+    expect(runLiveCli).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(
+      'Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n',
+    );
+  });
 });
