@@ -1,0 +1,129 @@
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
+import { runLiveCliSession } from '../src/live-cli/session.js';
+
+class FakeInput extends EventEmitter {
+  isTTY = true;
+  rawMode?: boolean;
+
+  setRawMode(value: boolean): void {
+    this.rawMode = value;
+  }
+
+  resume(): void {}
+  pause(): void {}
+}
+
+describe('live CLI session', () => {
+  it('renders the main menu and restores raw mode on exit', async () => {
+    const input = new FakeInput();
+    const write = vi.fn();
+    const runtime = {
+      detect: vi.fn(async () => 'stopped' as const),
+      currentStatus: vi.fn(() => 'stopped' as const),
+      start: vi.fn(),
+      stop: vi.fn(async () => ({ status: 'stopped' as const })),
+      hideToBackground: vi.fn(),
+    };
+
+    const result = runLiveCliSession({
+      stdin: input as never,
+      stdout: { isTTY: true, columns: 80, rows: 24, write },
+      stderr: { write: vi.fn() },
+      environment: { NO_COLOR: '1' },
+      runtime,
+      telegram: {
+        status: () => 'TELEGRAM_BOT_TOKEN: missing',
+        listPending: vi.fn(),
+        approve: vi.fn(),
+        revoke: vi.fn(),
+      },
+    });
+
+    input.emit('keypress', '', { name: 'q' });
+
+    await expect(result).resolves.toBe(0);
+    expect(write.mock.calls.map((call) => call[0]).join('')).toContain('Plus One');
+    expect(runtime.stop).toHaveBeenCalled();
+    expect(input.rawMode).toBe(false);
+  });
+
+  it('starts, hides, and exits without stopping a hidden runtime', async () => {
+    const input = new FakeInput();
+    const runtimeStatus = { value: 'stopped' as 'stopped' | 'running-attached' | 'running-background' };
+    const runtime = {
+      detect: vi.fn(async () => runtimeStatus.value),
+      currentStatus: vi.fn(() => runtimeStatus.value),
+      start: vi.fn(async () => {
+        runtimeStatus.value = 'running-attached';
+        return { status: runtimeStatus.value };
+      }),
+      stop: vi.fn(async () => {
+        runtimeStatus.value = 'stopped';
+        return { status: runtimeStatus.value };
+      }),
+      hideToBackground: vi.fn(async () => {
+        runtimeStatus.value = 'running-background';
+        return { status: runtimeStatus.value };
+      }),
+    };
+
+    const result = runLiveCliSession({
+      stdin: input as never,
+      stdout: { isTTY: true, columns: 80, rows: 24, write: vi.fn() },
+      stderr: { write: vi.fn() },
+      environment: { NO_COLOR: '1' },
+      runtime,
+      telegram: {
+        status: () => 'TELEGRAM_BOT_TOKEN: missing',
+        listPending: vi.fn(),
+        approve: vi.fn(),
+        revoke: vi.fn(),
+      },
+    });
+
+    input.emit('keypress', '', { name: 'enter' });
+    await new Promise((resolve) => setImmediate(resolve));
+    input.emit('keypress', '', { name: 'down' });
+    input.emit('keypress', '', { name: 'enter' });
+
+    await expect(result).resolves.toBe(0);
+    expect(runtime.start).toHaveBeenCalled();
+    expect(runtime.hideToBackground).toHaveBeenCalled();
+    expect(runtime.stop).not.toHaveBeenCalled();
+  });
+
+  it('shows Telegram status from the Telegram screen', async () => {
+    const input = new FakeInput();
+    const write = vi.fn();
+    const result = runLiveCliSession({
+      stdin: input as never,
+      stdout: { isTTY: true, columns: 80, rows: 24, write },
+      stderr: { write: vi.fn() },
+      environment: { NO_COLOR: '1' },
+      runtime: {
+        detect: vi.fn(async () => 'stopped' as const),
+        currentStatus: vi.fn(() => 'stopped' as const),
+        start: vi.fn(),
+        stop: vi.fn(async () => ({ status: 'stopped' as const })),
+        hideToBackground: vi.fn(),
+      },
+      telegram: {
+        status: () => 'TELEGRAM_BOT_TOKEN: missing',
+        listPending: vi.fn(),
+        approve: vi.fn(),
+        revoke: vi.fn(),
+      },
+    });
+
+    input.emit('keypress', '', { name: '3' });
+    input.emit('keypress', '', { name: 'enter' });
+    input.emit('keypress', '', { name: 'enter' });
+    input.emit('keypress', '', { name: 'q' });
+    input.emit('keypress', '', { name: 'q' });
+    input.emit('keypress', '', { name: 'q' });
+
+    await expect(result).resolves.toBe(0);
+    expect(write.mock.calls.map((call) => call[0]).join('')).toContain('TELEGRAM_BOT_TOKEN: missing');
+  });
+});
