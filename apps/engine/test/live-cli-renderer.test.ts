@@ -53,4 +53,21 @@ describe('live CLI renderer', () => {
     expect(output).toContain('Plus One help');
     expect(output).toContain('Enter selects the highlighted action.');
   });
+
+  it('renders multiline status messages as separate rows', () => {
+    const output = renderLiveCliSnapshot({
+      snapshot: {
+        ...snapshotLiveCliState(createInitialLiveCliState({ runtimeStatus: 'stopped' })),
+        statusMessage: [
+          'TELEGRAM_BOT_TOKEN: missing',
+          'TELEGRAM_WEBHOOK_SECRET: missing',
+          'TELEGRAM_API_BASE_URL: default',
+        ].join('\n'),
+      },
+      size: { columns: 80, rows: 24 },
+      color: 'none',
+    });
+
+    expect(output).toContain('TELEGRAM_BOT_TOKEN: missing\nTELEGRAM_WEBHOOK_SECRET: missing\nTELEGRAM_API_BASE_URL: default');
+  });
 });

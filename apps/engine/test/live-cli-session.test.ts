@@ -164,4 +164,35 @@ describe('live CLI session', () => {
     await expect(result).resolves.toBe(0);
     expect(approve).toHaveBeenCalledWith('ABCDEFGH', 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
   });
+
+  it('opens help when readline reports question mark as a sequence', async () => {
+    const input = new FakeInput();
+    const write = vi.fn();
+    const result = runLiveCliSession({
+      stdin: input as never,
+      stdout: { isTTY: true, columns: 80, rows: 24, write },
+      stderr: { write: vi.fn() },
+      environment: { NO_COLOR: '1' },
+      runtime: {
+        detect: vi.fn(async () => 'stopped' as const),
+        currentStatus: vi.fn(() => 'stopped' as const),
+        start: vi.fn(),
+        stop: vi.fn(async () => ({ status: 'stopped' as const })),
+        hideToBackground: vi.fn(),
+      },
+      telegram: {
+        status: () => 'ok',
+        listPending: vi.fn(),
+        approve: vi.fn(),
+        revoke: vi.fn(),
+      },
+    });
+
+    input.emit('keypress', '?', { sequence: '?' });
+    input.emit('keypress', '', { name: 'q' });
+    input.emit('keypress', '', { name: 'q' });
+
+    await expect(result).resolves.toBe(0);
+    expect(write.mock.calls.map((call) => call[0]).join('')).toContain('Plus One help');
+  });
 });

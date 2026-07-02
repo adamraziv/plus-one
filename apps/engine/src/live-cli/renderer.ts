@@ -38,7 +38,7 @@ export function renderLiveCliSnapshot(input: {
 
   if (input.snapshot.statusMessage !== undefined) {
     lines.push('');
-    lines.push(input.snapshot.statusMessage);
+    for (const line of input.snapshot.statusMessage.split('\n')) lines.push(line);
   }
 
   if (input.snapshot.overlay !== undefined) {

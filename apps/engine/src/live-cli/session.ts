@@ -128,7 +128,11 @@ export async function runLiveCliSession(input: {
   let actionQueue = Promise.resolve();
   const keyHandler = (_chunk: string, key: LiveCliKey) => {
     actionQueue = actionQueue.then(async () => {
-      const result = handleLiveCliKey(state, { ...key, sequence: key.sequence ?? _chunk });
+      const rawKey = key as Partial<LiveCliKey>;
+      const result = handleLiveCliKey(state, {
+        name: rawKey.name ?? rawKey.sequence ?? _chunk,
+        sequence: rawKey.sequence ?? _chunk,
+      });
       state = result.state;
       await applyAction(result.action);
       if (!finished) render();
