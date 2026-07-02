@@ -5,6 +5,8 @@ import {
   type ColorSupport,
 } from './theme.js';
 
+const ANSI_STYLE_PATTERN = new RegExp(String.raw`\u001B\[[0-9;]*m`, 'g');
+
 export { type ColorSupport };
 
 export function detectColorSupport(environment: Record<string, string | undefined>): ColorSupport {
@@ -70,12 +72,12 @@ function spaces(count: number): string {
 }
 
 function visibleLength(text: string): number {
-  return text.replace(/\u001b\[[0-9;]*m/g, '').length;
+  return text.replace(ANSI_STYLE_PATTERN, '').length;
 }
 
 function truncateVisible(text: string, columns: number): string {
   if (visibleLength(text) <= columns) return text;
-  const plain = text.replace(/\u001b\[[0-9;]*m/g, '');
+  const plain = text.replace(ANSI_STYLE_PATTERN, '');
   if (columns <= 1) return plain.slice(0, columns);
   return `${plain.slice(0, columns - 3)}...`;
 }

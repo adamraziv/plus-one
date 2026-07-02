@@ -5,7 +5,7 @@ import { LiveRuntimeController } from '../src/live-cli/runtime-controller.js';
 class FakeChild extends EventEmitter {
   pid = 1234;
   killed = false;
-  killSignal?: NodeJS.Signals;
+  killSignal: NodeJS.Signals | undefined;
 
   kill(signal?: NodeJS.Signals): boolean {
     this.killed = true;

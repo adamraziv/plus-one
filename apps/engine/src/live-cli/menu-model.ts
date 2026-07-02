@@ -48,7 +48,7 @@ export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
 } {
   if (state.prompt !== undefined) {
     if (key.name === 'escape') {
-      return { state: { ...state, prompt: undefined }, action: { type: 'none' } };
+      return { state: withoutPrompt(state), action: { type: 'none' } };
     }
     if (key.name === 'backspace') {
       return {
@@ -73,7 +73,7 @@ export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
       }
       if (state.prompt.kind === 'telegram-approve-household') {
         return {
-          state: { ...state, prompt: undefined },
+          state: withoutPrompt(state),
           action: {
             type: 'telegram-approve',
             code: state.prompt.context?.code ?? '',
@@ -82,7 +82,7 @@ export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
         };
       }
       return {
-        state: { ...state, prompt: undefined },
+        state: withoutPrompt(state),
         action: { type: 'telegram-revoke', telegramUserId: state.prompt.value },
       };
     }
@@ -98,7 +98,7 @@ export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
 
   if (state.overlay !== undefined) {
     if (key.name === 'escape' || key.name === 'q' || key.name === '?') {
-      return { state: { ...state, overlay: undefined }, action: { type: 'none' } };
+      return { state: withoutOverlay(state), action: { type: 'none' } };
     }
     return { state, action: { type: 'none' } };
   }
@@ -142,12 +142,15 @@ export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
 
   if (/^[1-9]$/.test(key.name)) {
     const index = Number.parseInt(key.name, 10) - 1;
-    if (index >= 0 && index < items.length) return selectItem(state, items[index]);
+    const item = items[index];
+    if (item !== undefined) return selectItem(state, item);
     return { state, action: { type: 'none' } };
   }
 
   if (key.name === 'enter' || key.name === 'return') {
-    return selectItem(state, items[selectedIndex] ?? items[0]);
+    const item = items[selectedIndex] ?? items[0];
+    if (item !== undefined) return selectItem(state, item);
+    return { state, action: { type: 'none' } };
   }
 
   if (key.name === 'escape' || key.name === 'q') {
@@ -248,4 +251,24 @@ function footerFor(screen: LiveCliState['screen']): string {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function withoutPrompt(state: LiveCliState): LiveCliState {
+  return {
+    screen: state.screen,
+    runtimeStatus: state.runtimeStatus,
+    selectedIndex: state.selectedIndex,
+    ...(state.statusMessage === undefined ? {} : { statusMessage: state.statusMessage }),
+    ...(state.overlay === undefined ? {} : { overlay: state.overlay }),
+  };
+}
+
+function withoutOverlay(state: LiveCliState): LiveCliState {
+  return {
+    screen: state.screen,
+    runtimeStatus: state.runtimeStatus,
+    selectedIndex: state.selectedIndex,
+    ...(state.statusMessage === undefined ? {} : { statusMessage: state.statusMessage }),
+    ...(state.prompt === undefined ? {} : { prompt: state.prompt }),
+  };
 }

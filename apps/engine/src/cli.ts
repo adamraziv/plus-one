@@ -47,7 +47,7 @@ export async function runPlusOneCli(
       if (interactive) {
         return (dependencies.runLiveCli ?? runLiveCli)({
           environment: dependencies.environment ?? process.env,
-          stdin: dependencies.stdin ?? process.stdin,
+          stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
           stdout,
           stderr,
         });

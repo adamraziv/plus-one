@@ -32,7 +32,7 @@ export interface RuntimeControllerDependencies {
 
 export class LiveRuntimeController {
   private readonly dependencies: RuntimeControllerDependencies;
-  private engine?: SpawnedProcess;
+  private engine: SpawnedProcess | undefined;
   private status: RuntimeStatus = 'stopped';
 
   constructor(dependencies: RuntimeControllerDependencies) {
