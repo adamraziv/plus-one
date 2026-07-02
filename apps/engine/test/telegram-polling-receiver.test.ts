@@ -28,7 +28,7 @@ describe('TelegramPollingReceiver', () => {
 
     await receiver.start(abort.signal);
 
-    expect(api.deleteWebhook).toHaveBeenCalledWith({ dropPendingUpdates: false });
+    expect(api.deleteWebhook).toHaveBeenCalledWith({ dropPendingUpdates: false, signal: abort.signal });
     expect(processor.handle).toHaveBeenNthCalledWith(1, update(7));
     expect(processor.handle).toHaveBeenNthCalledWith(2, update(8));
     expect(api.getUpdates).toHaveBeenNthCalledWith(2, {
@@ -37,6 +37,31 @@ describe('TelegramPollingReceiver', () => {
       allowedUpdates: ['message'],
       signal: abort.signal,
     });
+  });
+
+  it('retries transient startup failures before polling', async () => {
+    const abort = new AbortController();
+    const api = {
+      deleteWebhook: vi.fn()
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce(undefined),
+      getUpdates: vi.fn(async () => {
+        abort.abort();
+        return [];
+      }),
+    };
+    const receiver = new TelegramPollingReceiver({
+      api,
+      processor: { handle: vi.fn() },
+      timeoutSeconds: 1,
+      retryDelayMs: 1,
+      maxNetworkRetries: 2,
+    });
+
+    await expect(receiver.start(abort.signal)).resolves.toBeUndefined();
+
+    expect(api.deleteWebhook).toHaveBeenCalledTimes(2);
+    expect(api.getUpdates).toHaveBeenCalledOnce();
   });
 
   it('does not advance offset when processing throws', async () => {
@@ -129,5 +154,54 @@ describe('TelegramPollingReceiver', () => {
 
     await expect(receiver.start(abort.signal)).resolves.toBeUndefined();
     expect(api.getUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries transient network failures until aborted', async () => {
+    const abort = new AbortController();
+    const api = {
+      deleteWebhook: vi.fn(async () => undefined),
+      getUpdates: vi.fn()
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockImplementationOnce(async () => {
+          abort.abort();
+          return [];
+        }),
+    };
+    const receiver = new TelegramPollingReceiver({
+      api,
+      processor: { handle: vi.fn() },
+      timeoutSeconds: 1,
+      retryDelayMs: 1,
+      maxNetworkRetries: 2,
+    });
+
+    await expect(receiver.start(abort.signal)).resolves.toBeUndefined();
+    expect(api.getUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces invalid bot token errors without retrying forever', async () => {
+    const api = {
+      deleteWebhook: vi.fn(async () => {
+        throw new TelegramBotApiError({
+          code: 'telegram_api_error',
+          status: 401,
+          description: 'Unauthorized',
+        });
+      }),
+      getUpdates: vi.fn(),
+    };
+    const receiver = new TelegramPollingReceiver({
+      api,
+      processor: { handle: vi.fn() },
+      timeoutSeconds: 1,
+      retryDelayMs: 1,
+      maxNetworkRetries: 2,
+    });
+
+    await expect(receiver.start(new AbortController().signal)).rejects.toThrow(
+      'Telegram polling startup failed: invalid bot token.',
+    );
+    expect(api.deleteWebhook).toHaveBeenCalledOnce();
+    expect(api.getUpdates).not.toHaveBeenCalled();
   });
 });

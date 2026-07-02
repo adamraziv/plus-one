@@ -33,6 +33,11 @@ import { createTelegramWebhookRoute } from './telegram/telegram-webhook.js';
 import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from './workflows/orchestrator-loop.js';
 
 type TelegramBotApi = Pick<TelegramBotApiClient, 'deleteWebhook' | 'getUpdates' | 'setWebhook'>;
+type TelegramPollingRuntime = {
+  start(): Promise<void>;
+  ready?: () => Promise<void>;
+  abort(): void;
+};
 
 interface BootstrapDependencies {
   environment?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -177,6 +182,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
 
   let stopTelegramPolling: (() => void) | undefined;
   let telegramPollingTask: Promise<void> | undefined;
+  let telegramPollingStopped = false;
 
   if (config.telegram !== undefined && config.telegram.receiver.mode === 'webhook') {
     if (telegramApi === undefined) throw new Error('Telegram API client was not initialized.');
@@ -196,8 +202,24 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
       processor: telegramProcessor,
     });
     stopTelegramPolling = polling.abort;
-    telegramPollingTask = polling.start().catch((error: unknown) => {
-      console.error(error);
+    telegramPollingTask = polling.start();
+    try {
+      await Promise.race([polling.ready?.() ?? Promise.resolve(), telegramPollingTask]);
+    } catch (error) {
+      telegramPollingStopped = true;
+      stopTelegramPolling();
+      await telegramPollingTask.catch(() => undefined);
+      await mastra.shutdown();
+      await sessionMemory.close();
+      await (dependencies.closePools ?? closeDatabasePools)(pools);
+      throw error;
+    }
+    telegramPollingTask.catch((error: unknown) => {
+      if (telegramPollingStopped) return;
+      setImmediate(() => {
+        if (telegramPollingStopped) return;
+        throw error;
+      });
     });
   }
 
@@ -207,6 +229,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     pools,
     agentSystem,
     close: async (): Promise<void> => {
+      telegramPollingStopped = true;
       stopTelegramPolling?.();
       await telegramPollingTask?.catch(() => undefined);
       await mastra.shutdown();
@@ -232,14 +255,40 @@ function createTelegramBotApiClient(
 function createTelegramPollingReceiver(input: {
   api: TelegramBotApi;
   processor: Pick<TelegramUpdateProcessor, 'handle'>;
-}): { start(): Promise<void>; abort(): void } {
+}): TelegramPollingRuntime {
   const controller = new AbortController();
+  let readySettled = false;
+  let resolveReady: (() => void) | undefined;
+  let rejectReady: ((error: unknown) => void) | undefined;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const settleReady = (error?: unknown) => {
+    if (readySettled) return;
+    readySettled = true;
+    if (error === undefined) {
+      resolveReady?.();
+      return;
+    }
+    rejectReady?.(error);
+  };
   const receiver = new TelegramPollingReceiver({
     api: input.api,
     processor: input.processor,
+    onReady: () => settleReady(),
   });
   return {
-    start: async () => receiver.start(controller.signal),
+    start: async () => {
+      try {
+        await receiver.start(controller.signal);
+        settleReady();
+      } catch (error) {
+        settleReady(error);
+        throw error;
+      }
+    },
+    ready: () => ready,
     abort: () => controller.abort(),
   };
 }

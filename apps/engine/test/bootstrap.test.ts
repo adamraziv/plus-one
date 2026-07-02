@@ -206,6 +206,33 @@ describe('engine scaffold', () => {
     expect(startPolling).toHaveBeenCalledOnce();
   });
 
+  it('surfaces Telegram polling startup failures before returning', async () => {
+    const startupFailure = new Error('Telegram polling conflict: another process is polling this bot token.');
+    const createTelegramPollingReceiver = vi.fn(() => ({
+      start: vi.fn(async () => {
+        throw startupFailure;
+      }),
+      ready: vi.fn(async () => {
+        throw startupFailure;
+      }),
+      abort: vi.fn(),
+    }));
+
+    await expect(bootstrap({
+      environment: {
+        ...environment,
+        TELEGRAM_BOT_TOKEN: 'telegram-token',
+      },
+      createPools: () => ({ operations: {} }) as never,
+      verifyPools: vi.fn(async () => undefined),
+      closePools: vi.fn(async () => undefined),
+      validateModels: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+      createTelegramPollingReceiver,
+    })).rejects.toThrow('Telegram polling conflict: another process is polling this bot token.');
+  });
+
   it('registers Telegram webhook mode and does not start polling when webhook URL is configured', async () => {
     let apiRoutes: Array<{ path: string }> = [];
     const setWebhook = vi.fn(async () => undefined);

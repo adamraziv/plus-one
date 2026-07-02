@@ -32,10 +32,10 @@ export class TelegramBotApiClient {
     private readonly options: { apiBaseUrl?: string } = {},
   ) {}
 
-  async deleteWebhook(input: { dropPendingUpdates: boolean }): Promise<void> {
+  async deleteWebhook(input: { dropPendingUpdates: boolean; signal?: AbortSignal }): Promise<void> {
     await this.request('deleteWebhook', {
       drop_pending_updates: input.dropPendingUpdates,
-    });
+    }, input.signal);
   }
 
   async setWebhook(input: {
