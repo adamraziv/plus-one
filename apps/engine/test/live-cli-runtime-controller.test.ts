@@ -6,6 +6,7 @@ class FakeChild extends EventEmitter {
   pid = 1234;
   killed = false;
   killSignal: NodeJS.Signals | undefined;
+  unref = vi.fn();
 
   kill(signal?: NodeJS.Signals): boolean {
     this.killed = true;
@@ -19,16 +20,20 @@ describe('live runtime controller', () => {
   it('starts db, verifies db, and starts engine without migrations', async () => {
     const calls: string[] = [];
     const child = new FakeChild();
+    const spawnProcess = vi.fn((command, args, options) => {
+      calls.push([command, ...args].join(' '));
+      if (args[0] === 'dev:mastra') {
+        calls.push(`engine detached ${String(options.detached)}`);
+        return child as never;
+      }
+      const commandChild = new FakeChild();
+      queueMicrotask(() => commandChild.emit('exit', 0, null));
+      return commandChild as never;
+    });
     const controller = new LiveRuntimeController({
       cwd: '/repo',
       now: () => new Date('2026-07-02T00:00:00.000Z'),
-      spawnProcess: vi.fn((command, args) => {
-        calls.push([command, ...args].join(' '));
-        if (args[0] === 'dev:mastra') return child as never;
-        const commandChild = new FakeChild();
-        queueMicrotask(() => commandChild.emit('exit', 0, null));
-        return commandChild as never;
-      }),
+      spawnProcess,
       verifyDatabase: vi.fn(async () => {
         calls.push('verifyDatabase');
       }),
@@ -42,7 +47,7 @@ describe('live runtime controller', () => {
 
     await expect(controller.start()).resolves.toEqual({ status: 'running-attached' });
 
-    expect(calls).toEqual(['pnpm db:up', 'verifyDatabase', 'pnpm dev:mastra']);
+    expect(calls).toEqual(['pnpm db:up', 'verifyDatabase', 'pnpm dev:mastra', 'engine detached true']);
     expect(calls).not.toContain('pnpm db:migrate');
   });
 
@@ -68,13 +73,17 @@ describe('live runtime controller', () => {
         }),
       },
       isProcessAlive: () => false,
+      killProcess: vi.fn((pid, signal) => {
+        calls.push(`kill ${pid} ${signal}`);
+        child.emit('exit', 0, signal);
+      }),
     });
 
     await controller.start();
     await expect(controller.stop()).resolves.toEqual({ status: 'stopped' });
 
-    expect(child.killed).toBe(true);
-    expect(calls).toEqual(['pnpm db:up', 'pnpm dev:mastra', 'clearState', 'pnpm db:down']);
+    expect(child.killed).toBe(false);
+    expect(calls).toEqual(['pnpm db:up', 'pnpm dev:mastra', 'kill -1234 SIGTERM', 'clearState', 'pnpm db:down']);
   });
 
   it('stops a hidden background engine recorded in the state file', async () => {
@@ -114,8 +123,8 @@ describe('live runtime controller', () => {
     await expect(controller.stop()).resolves.toEqual({ status: 'stopped' });
 
     expect(calls).toEqual([
-      'kill 4321 SIGTERM',
-      'kill 4321 SIGKILL',
+      'kill -4321 SIGTERM',
+      'kill -4321 SIGKILL',
       'clearState',
       'pnpm db:down',
     ]);
@@ -145,6 +154,7 @@ describe('live runtime controller', () => {
     await controller.start();
     await expect(controller.hideToBackground()).resolves.toEqual({ status: 'running-background' });
 
+    expect(child.unref).toHaveBeenCalled();
     expect(save).toHaveBeenCalledWith({
       schemaVersion: 1,
       enginePid: 1234,

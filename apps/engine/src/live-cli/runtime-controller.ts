@@ -9,7 +9,9 @@ import { loadConfig } from '../config.js';
 import type { BackgroundRuntimeState } from './background-state.js';
 import type { RuntimeStatus } from './types.js';
 
-type SpawnedProcess = Pick<ChildProcess, 'pid' | 'kill' | 'once' | 'on'>;
+type SpawnedProcess = Pick<ChildProcess, 'pid' | 'kill' | 'once' | 'on'> & {
+  unref?: () => void;
+};
 
 export interface RuntimeStateStore {
   load(): Promise<BackgroundRuntimeState | undefined>;
@@ -56,7 +58,7 @@ export class LiveRuntimeController {
     try {
       await this.runCommand('pnpm', ['db:up']);
       await (this.dependencies.verifyDatabase ?? (() => verifyDatabase(this.dependencies.environment)))();
-      this.engine = this.spawn('pnpm', ['dev:mastra'], { detached: false });
+      this.engine = this.spawn('pnpm', ['dev:mastra'], { detached: true });
       this.status = 'running-attached';
       return { status: this.status };
     } catch (error) {
@@ -72,7 +74,7 @@ export class LiveRuntimeController {
   async stop(): Promise<{ status: RuntimeStatus; message?: string }> {
     this.status = 'stopping';
     if (this.engine !== undefined) {
-      await stopProcess(this.engine);
+      await stopProcess(this.engine, this.dependencies.killProcess);
       this.engine = undefined;
     } else {
       const hidden = await this.dependencies.state.load();
@@ -89,6 +91,7 @@ export class LiveRuntimeController {
       return { status: 'stopped', message: 'Nothing is running.' };
     }
 
+    this.engine.unref?.();
     await this.dependencies.state.save({
       schemaVersion: 1,
       enginePid: this.engine.pid,
@@ -116,7 +119,7 @@ export class LiveRuntimeController {
     const killProcess = this.dependencies.killProcess ?? ((targetPid, signal) => {
       process.kill(targetPid, signal);
     });
-    killProcess(pid, 'SIGTERM');
+    killProcess(-pid, 'SIGTERM');
 
     const timeout = this.dependencies.stopTimeoutMs ?? 5_000;
     const sleep = this.dependencies.sleep ?? ((milliseconds) => new Promise<void>((resolve) => {
@@ -126,7 +129,7 @@ export class LiveRuntimeController {
     while (this.dependencies.isProcessAlive(pid) && Date.now() < deadline) {
       await sleep(100);
     }
-    if (this.dependencies.isProcessAlive(pid)) killProcess(pid, 'SIGKILL');
+    if (this.dependencies.isProcessAlive(pid)) killProcess(-pid, 'SIGKILL');
   }
 }
 
@@ -150,10 +153,30 @@ function defaultSpawn(command: string, args: string[], options: { cwd: string; d
   });
 }
 
-async function stopProcess(child: SpawnedProcess): Promise<void> {
+async function stopProcess(
+  child: SpawnedProcess,
+  killProcess: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
+): Promise<void> {
   const stopped = waitForExit(child);
-  child.kill('SIGTERM');
+  stopProcessGroup(child, killProcess, 'SIGTERM');
   await stopped;
+}
+
+function stopProcessGroup(
+  child: SpawnedProcess,
+  killProcess: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
+  signal: NodeJS.Signals,
+): void {
+  if (child.pid !== undefined) {
+    try {
+      (killProcess ?? process.kill)(-child.pid, signal);
+      return;
+    } catch {
+      child.kill(signal);
+      return;
+    }
+  }
+  child.kill(signal);
 }
 
 async function waitForExit(child: SpawnedProcess): Promise<void> {
