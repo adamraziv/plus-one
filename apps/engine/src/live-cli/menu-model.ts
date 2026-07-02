@@ -1,0 +1,182 @@
+import type {
+  LiveCliAction,
+  LiveCliKey,
+  LiveCliMenuItem,
+  LiveCliSnapshot,
+  LiveCliState,
+  RuntimeStatus,
+} from './types.js';
+
+export function createInitialLiveCliState(input: {
+  runtimeStatus: RuntimeStatus;
+  selectedIndex?: number;
+  statusMessage?: string;
+}): LiveCliState {
+  return {
+    screen: 'main',
+    runtimeStatus: input.runtimeStatus,
+    selectedIndex: input.selectedIndex ?? 0,
+    ...(input.statusMessage === undefined ? {} : { statusMessage: input.statusMessage }),
+  };
+}
+
+export function snapshotLiveCliState(state: LiveCliState): LiveCliSnapshot {
+  const items = menuItemsFor(state);
+  return {
+    title: titleFor(state.screen),
+    runtimeStatus: state.runtimeStatus,
+    selectedIndex: clamp(state.selectedIndex, 0, Math.max(items.length - 1, 0)),
+    items,
+    footer: footerFor(state.screen),
+    ...(state.statusMessage === undefined ? {} : { statusMessage: state.statusMessage }),
+    ...(state.overlay === undefined ? {} : { overlay: state.overlay }),
+  };
+}
+
+export function setRuntimeStatus(state: LiveCliState, runtimeStatus: RuntimeStatus): LiveCliState {
+  return { ...state, runtimeStatus };
+}
+
+export function setStatusMessage(state: LiveCliState, statusMessage: string): LiveCliState {
+  return { ...state, statusMessage };
+}
+
+export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
+  state: LiveCliState;
+  action: LiveCliAction;
+} {
+  if (state.overlay !== undefined) {
+    if (key.name === 'escape' || key.name === 'q' || key.name === '?') {
+      return { state: { ...state, overlay: undefined }, action: { type: 'none' } };
+    }
+    return { state, action: { type: 'none' } };
+  }
+
+  if (key.name === '?') {
+    return {
+      state: {
+        ...state,
+        overlay: {
+          kind: 'help',
+          title: `${titleFor(state.screen)} help`,
+          lines: [
+            'Up/Down or j/k moves the selected action.',
+            'Enter selects the highlighted action.',
+            'Number keys select the matching visible action.',
+            'Esc or q goes back, or exits from the main screen.',
+            'Ctrl+C stops a running local runtime before exit.',
+          ],
+        },
+      },
+      action: { type: 'none' },
+    };
+  }
+
+  const items = menuItemsFor(state);
+  const selectedIndex = clamp(state.selectedIndex, 0, Math.max(items.length - 1, 0));
+
+  if (key.name === 'down' || key.name === 'j') {
+    return {
+      state: { ...state, selectedIndex: Math.min(selectedIndex + 1, items.length - 1) },
+      action: { type: 'none' },
+    };
+  }
+
+  if (key.name === 'up' || key.name === 'k') {
+    return {
+      state: { ...state, selectedIndex: Math.max(selectedIndex - 1, 0) },
+      action: { type: 'none' },
+    };
+  }
+
+  if (/^[1-9]$/.test(key.name)) {
+    const index = Number.parseInt(key.name, 10) - 1;
+    if (index >= 0 && index < items.length) return selectItem(state, items[index]);
+    return { state, action: { type: 'none' } };
+  }
+
+  if (key.name === 'enter' || key.name === 'return') {
+    return selectItem(state, items[selectedIndex] ?? items[0]);
+  }
+
+  if (key.name === 'escape' || key.name === 'q') {
+    if (state.screen === 'main') return { state, action: { type: 'exit' } };
+    return {
+      state: {
+        ...state,
+        screen: state.screen === 'telegram' ? 'socials' : 'main',
+        selectedIndex: 0,
+      },
+      action: { type: 'none' },
+    };
+  }
+
+  return { state, action: { type: 'none' } };
+}
+
+function selectItem(state: LiveCliState, item: LiveCliMenuItem): {
+  state: LiveCliState;
+  action: LiveCliAction;
+} {
+  if (item.action.type === 'none' && item.label === 'Configure socials') {
+    return { state: { ...state, screen: 'socials', selectedIndex: 0 }, action: { type: 'none' } };
+  }
+  if (item.action.type === 'none' && item.label === 'Telegram') {
+    return { state: { ...state, screen: 'telegram', selectedIndex: 0 }, action: { type: 'none' } };
+  }
+  if (item.action.type === 'none' && item.label === 'Back') {
+    return {
+      state: {
+        ...state,
+        screen: state.screen === 'telegram' ? 'socials' : 'main',
+        selectedIndex: 0,
+      },
+      action: { type: 'none' },
+    };
+  }
+  return { state, action: item.action };
+}
+
+function menuItemsFor(state: LiveCliState): LiveCliMenuItem[] {
+  if (state.screen === 'socials') {
+    return [
+      { label: 'Telegram', action: { type: 'none' } },
+      { label: 'Back', action: { type: 'none' } },
+    ];
+  }
+
+  if (state.screen === 'telegram') {
+    return [
+      { label: 'Status', action: { type: 'telegram-status' } },
+      { label: 'List pending pairings', action: { type: 'telegram-list-pending' } },
+      { label: 'Approve pairing code', action: { type: 'telegram-approve' } },
+      { label: 'Revoke user', action: { type: 'telegram-revoke' } },
+      { label: 'Back', action: { type: 'none' } },
+    ];
+  }
+
+  return [
+    {
+      label: state.runtimeStatus === 'stopped' ? 'Start' : 'Stop',
+      action: state.runtimeStatus === 'stopped' ? { type: 'start-runtime' } : { type: 'stop-runtime' },
+    },
+    { label: 'Hide to background', action: { type: 'hide-runtime' } },
+    { label: 'Configure socials', action: { type: 'none' } },
+    { label: 'Exit', action: { type: 'exit' } },
+  ];
+}
+
+function titleFor(screen: LiveCliState['screen']): string {
+  if (screen === 'socials') return 'Plus One / Configure socials';
+  if (screen === 'telegram') return 'Plus One / Configure socials / Telegram';
+  return 'Plus One';
+}
+
+function footerFor(screen: LiveCliState['screen']): string {
+  if (screen === 'main') return '[Enter] select  [j/k] move  [Esc/q] exit  [?] help';
+  return '[Enter] select  [j/k] move  [Esc/q] back  [?] help';
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}

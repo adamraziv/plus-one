@@ -1,0 +1,53 @@
+export type RuntimeStatus = 'stopped' | 'starting' | 'running-attached' | 'running-background' | 'stopping';
+
+export type LiveCliScreen = 'main' | 'socials' | 'telegram';
+
+export interface TerminalSize {
+  columns: number;
+  rows: number;
+}
+
+export interface LiveCliKey {
+  name: string;
+  sequence?: string;
+}
+
+export type LiveCliAction =
+  | { type: 'none' }
+  | { type: 'start-runtime' }
+  | { type: 'stop-runtime' }
+  | { type: 'hide-runtime' }
+  | { type: 'exit' }
+  | { type: 'telegram-status' }
+  | { type: 'telegram-list-pending' }
+  | { type: 'telegram-approve' }
+  | { type: 'telegram-revoke' };
+
+export interface LiveCliMenuItem {
+  label: string;
+  action: LiveCliAction;
+}
+
+export interface LiveCliOverlay {
+  kind: 'help';
+  title: string;
+  lines: string[];
+}
+
+export interface LiveCliSnapshot {
+  title: string;
+  runtimeStatus: RuntimeStatus;
+  selectedIndex: number;
+  items: LiveCliMenuItem[];
+  footer: string;
+  statusMessage?: string;
+  overlay?: LiveCliOverlay;
+}
+
+export interface LiveCliState {
+  screen: LiveCliScreen;
+  runtimeStatus: RuntimeStatus;
+  selectedIndex: number;
+  statusMessage?: string;
+  overlay?: LiveCliOverlay;
+}
