@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPlusOneCli } from '../src/cli.js';
+import { runLiveCli } from '../src/live-cli/index.js';
 
 describe('Plus One CLI', () => {
   const environment = {
@@ -79,5 +80,90 @@ describe('Plus One CLI', () => {
     ]);
     expect(closePools).toHaveBeenCalledWith(pools);
     expect(write).toHaveBeenCalledWith('No pending Telegram pairing requests.\n');
+  });
+
+  it('opens the live CLI when no arguments are supplied in an interactive terminal', async () => {
+    const runLiveCli = vi.fn(async () => 0);
+    const stdout = { write: vi.fn() };
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli([], {
+      isInteractive: true,
+      runLiveCli,
+      stdout,
+      stderr,
+    })).resolves.toBe(0);
+
+    expect(runLiveCli).toHaveBeenCalledWith(expect.objectContaining({
+      stdout,
+      stderr,
+    }));
+    expect(stderr.write).not.toHaveBeenCalled();
+  });
+
+  it('prints usage when no arguments are supplied outside an interactive terminal', async () => {
+    const write = vi.fn();
+    const runLiveCli = vi.fn(async () => 0);
+
+    await expect(runPlusOneCli([], {
+      isInteractive: false,
+      runLiveCli,
+      stdout: { write: vi.fn() },
+      stderr: { write },
+    })).resolves.toBe(1);
+
+    expect(runLiveCli).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(
+      'Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n',
+    );
+  });
+
+  it('does not emit ANSI output for non-interactive no-argument usage', async () => {
+    const stderrWrite = vi.fn();
+
+    await expect(runPlusOneCli([], {
+      isInteractive: false,
+      stdout: { isTTY: false, write: vi.fn() },
+      stderr: { isTTY: false, write: stderrWrite },
+    })).resolves.toBe(1);
+
+    const output = stderrWrite.mock.calls.map((call) => call[0]).join('');
+    expect(output).not.toContain('\u001b[');
+  });
+
+  it('keeps direct Telegram pairing commands on the non-TUI path', async () => {
+    const service = {
+      approveCode: vi.fn(),
+      revoke: vi.fn(async () => undefined),
+      listPending: vi.fn(),
+    };
+    const runLiveCli = vi.fn(async () => 0);
+    const write = vi.fn();
+
+    await expect(runPlusOneCli(['telegram', 'pairing', 'revoke', '1234567890123'], {
+      isInteractive: true,
+      runLiveCli,
+      pairingService: service,
+      stdout: { isTTY: true, write },
+      stderr: { write: vi.fn() },
+    })).resolves.toBe(0);
+
+    expect(runLiveCli).not.toHaveBeenCalled();
+    expect(service.revoke).toHaveBeenCalledWith({ externalUserId: '1234567890123' });
+    expect(write).toHaveBeenCalledWith('Revoked Telegram user 1234567890123.\n');
+  });
+
+  it('prints usage from the live CLI runner before opening resources when stdout is non-interactive', async () => {
+    const write = vi.fn();
+
+    await expect(runLiveCli({
+      environment: {},
+      stdout: { isTTY: false, write: vi.fn() },
+      stderr: { write },
+    })).resolves.toBe(1);
+
+    expect(write).toHaveBeenCalledWith(
+      'Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n',
+    );
   });
 });
