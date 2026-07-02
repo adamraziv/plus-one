@@ -33,16 +33,56 @@ describe('engine config', () => {
     })).toThrow(/provider\/model/);
   });
 
-  it('loads Telegram Bot API override only with Telegram webhook settings', () => {
+  it('resolves Telegram polling mode when only the bot token is configured', () => {
     expect(loadConfig({
       ...baseEnvironment,
       TELEGRAM_BOT_TOKEN: 'telegram-token',
+    }).telegram).toEqual({
+      botToken: 'telegram-token',
+      receiver: { mode: 'polling' },
+    });
+  });
+
+  it('resolves Telegram webhook mode when webhook URL and secret are configured', () => {
+    expect(loadConfig({
+      ...baseEnvironment,
+      TELEGRAM_BOT_TOKEN: 'telegram-token',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
       TELEGRAM_API_BASE_URL: 'http://127.0.0.1:9999',
     }).telegram).toEqual({
       botToken: 'telegram-token',
-      webhookSecret: 'telegram-secret',
       apiBaseUrl: 'http://127.0.0.1:9999',
+      receiver: {
+        mode: 'webhook',
+        webhookUrl: 'https://plus-one.example.test/telegram/webhook',
+        webhookSecret: 'telegram-secret',
+      },
     });
+  });
+
+  it('rejects webhook URL without a Telegram bot token', () => {
+    expect(() => loadConfig({
+      ...baseEnvironment,
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
+      TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
+    })).toThrow(/TELEGRAM_BOT_TOKEN is required when TELEGRAM_WEBHOOK_URL is configured/);
+  });
+
+  it('rejects webhook URL without a Telegram webhook secret', () => {
+    expect(() => loadConfig({
+      ...baseEnvironment,
+      TELEGRAM_BOT_TOKEN: 'telegram-token',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
+    })).toThrow(/TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is configured/);
+  });
+
+  it('rejects Telegram webhook secrets that Telegram will not accept', () => {
+    expect(() => loadConfig({
+      ...baseEnvironment,
+      TELEGRAM_BOT_TOKEN: 'telegram-token',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
+      TELEGRAM_WEBHOOK_SECRET: 'bad secret!',
+    })).toThrow(/TELEGRAM_WEBHOOK_SECRET must be 1-256 characters using only A-Z, a-z, 0-9, underscore, or hyphen/);
   });
 });

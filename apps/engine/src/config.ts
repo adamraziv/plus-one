@@ -17,7 +17,12 @@ const EngineEnvironmentSchema = z.object({
   CHECKER_MODEL: ModelIdSchema.default('openai/gpt-5'),
   RESEARCH_MODEL: ModelIdSchema.default('openai/gpt-5'),
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
-  TELEGRAM_WEBHOOK_SECRET: z.string().min(1).optional(),
+  TELEGRAM_WEBHOOK_URL: z.string().url().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string()
+    .min(1)
+    .max(256, 'TELEGRAM_WEBHOOK_SECRET must be 1-256 characters using only A-Z, a-z, 0-9, underscore, or hyphen')
+    .regex(/^[A-Za-z0-9_-]+$/, 'TELEGRAM_WEBHOOK_SECRET must be 1-256 characters using only A-Z, a-z, 0-9, underscore, or hyphen')
+    .optional(),
   TELEGRAM_API_BASE_URL: z.string().url().optional(),
 }).superRefine((environment, context) => {
   if (environment.NODE_ENV !== 'test' && environment.LLM_API_KEY === undefined) {
@@ -27,14 +32,18 @@ const EngineEnvironmentSchema = z.object({
       message: 'LLM_API_KEY is required outside test',
     });
   }
-  if (
-    (environment.TELEGRAM_BOT_TOKEN === undefined)
-    !== (environment.TELEGRAM_WEBHOOK_SECRET === undefined)
-  ) {
+  if (environment.TELEGRAM_WEBHOOK_URL !== undefined && environment.TELEGRAM_BOT_TOKEN === undefined) {
     context.addIssue({
       code: 'custom',
       path: ['TELEGRAM_BOT_TOKEN'],
-      message: 'TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET must be configured together',
+      message: 'TELEGRAM_BOT_TOKEN is required when TELEGRAM_WEBHOOK_URL is configured',
+    });
+  }
+  if (environment.TELEGRAM_WEBHOOK_URL !== undefined && environment.TELEGRAM_WEBHOOK_SECRET === undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['TELEGRAM_WEBHOOK_SECRET'],
+      message: 'TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is configured',
     });
   }
 });
@@ -59,8 +68,10 @@ export interface EngineConfig {
   };
   telegram?: {
     botToken: string;
-    webhookSecret: string;
     apiBaseUrl?: string;
+    receiver:
+      | { mode: 'polling' }
+      | { mode: 'webhook'; webhookUrl: string; webhookSecret: string };
   };
 }
 
@@ -81,13 +92,19 @@ export function loadConfig(
       checker: model(engine.CHECKER_MODEL, engine),
       research: model(engine.RESEARCH_MODEL, engine),
     },
-    ...(engine.TELEGRAM_BOT_TOKEN === undefined || engine.TELEGRAM_WEBHOOK_SECRET === undefined
+    ...(engine.TELEGRAM_BOT_TOKEN === undefined
       ? {}
       : {
           telegram: {
             botToken: engine.TELEGRAM_BOT_TOKEN,
-            webhookSecret: engine.TELEGRAM_WEBHOOK_SECRET,
             ...(engine.TELEGRAM_API_BASE_URL === undefined ? {} : { apiBaseUrl: engine.TELEGRAM_API_BASE_URL }),
+            receiver: engine.TELEGRAM_WEBHOOK_URL === undefined
+              ? { mode: 'polling' as const }
+              : {
+                  mode: 'webhook' as const,
+                  webhookUrl: engine.TELEGRAM_WEBHOOK_URL,
+                  webhookSecret: engine.TELEGRAM_WEBHOOK_SECRET as string,
+                },
           },
         }),
   };
