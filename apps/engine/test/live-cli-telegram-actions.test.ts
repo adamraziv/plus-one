@@ -5,27 +5,62 @@ import {
 } from '../src/live-cli/telegram-actions.js';
 
 describe('live CLI Telegram actions', () => {
-  it('reports webhook-first readiness without revealing secret values', () => {
+  it('reports polling readiness when only the bot token is configured', () => {
     expect(formatTelegramReadiness({
       TELEGRAM_BOT_TOKEN: 'token-secret',
+    })).toEqual([
+      'TELEGRAM_BOT_TOKEN: configured',
+      'Telegram receiver: polling',
+      'TELEGRAM_WEBHOOK_SECRET: unused',
+      'TELEGRAM_WEBHOOK_URL: missing',
+      'TELEGRAM_API_BASE_URL: default',
+    ].join('\n'));
+
+    expect(formatTelegramReadiness({
+      TELEGRAM_BOT_TOKEN: 'token-secret',
+    })).not.toContain('token-secret');
+  });
+
+  it('reports webhook readiness without revealing secret values', () => {
+    expect(formatTelegramReadiness({
+      TELEGRAM_BOT_TOKEN: 'token-secret',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'webhook-secret',
       TELEGRAM_API_BASE_URL: 'https://telegram.example.test',
     })).toEqual([
       'TELEGRAM_BOT_TOKEN: configured',
+      'Telegram receiver: webhook',
       'TELEGRAM_WEBHOOK_SECRET: configured',
+      'TELEGRAM_WEBHOOK_URL: configured',
       'TELEGRAM_API_BASE_URL: custom',
     ].join('\n'));
 
     expect(formatTelegramReadiness({
       TELEGRAM_BOT_TOKEN: 'token-secret',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'webhook-secret',
-    })).not.toContain('token-secret');
+    })).not.toContain('webhook-secret');
   });
 
-  it('reports missing Telegram configuration as status text', () => {
+  it('reports missing Telegram configuration as disabled status text', () => {
     expect(formatTelegramReadiness({})).toEqual([
       'TELEGRAM_BOT_TOKEN: missing',
+      'Telegram receiver: disabled',
+      'TELEGRAM_WEBHOOK_SECRET: unused',
+      'TELEGRAM_WEBHOOK_URL: missing',
+      'TELEGRAM_API_BASE_URL: default',
+    ].join('\n'));
+  });
+
+  it('reports invalid webhook readiness when URL is configured without a secret', () => {
+    expect(formatTelegramReadiness({
+      TELEGRAM_BOT_TOKEN: 'token-secret',
+      TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
+    })).toEqual([
+      'TELEGRAM_BOT_TOKEN: configured',
+      'Telegram receiver: invalid',
       'TELEGRAM_WEBHOOK_SECRET: missing',
+      'TELEGRAM_WEBHOOK_URL: configured',
       'TELEGRAM_API_BASE_URL: default',
     ].join('\n'));
   });

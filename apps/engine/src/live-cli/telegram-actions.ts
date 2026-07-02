@@ -4,9 +4,22 @@ import { handleTelegramPairingCommand } from '../telegram/pairing-cli.js';
 type PairingService = Pick<TelegramPairingService, 'approveCode' | 'revoke' | 'listPending'>;
 
 export function formatTelegramReadiness(environment: Record<string, string | undefined>): string {
+  const hasToken = environment.TELEGRAM_BOT_TOKEN !== undefined;
+  const hasWebhookUrl = environment.TELEGRAM_WEBHOOK_URL !== undefined;
+  const hasWebhookSecret = environment.TELEGRAM_WEBHOOK_SECRET !== undefined;
+  const receiver = !hasToken
+    ? 'disabled'
+    : hasWebhookUrl && !hasWebhookSecret
+      ? 'invalid'
+      : hasWebhookUrl
+        ? 'webhook'
+        : 'polling';
+
   return [
-    `TELEGRAM_BOT_TOKEN: ${environment.TELEGRAM_BOT_TOKEN === undefined ? 'missing' : 'configured'}`,
-    `TELEGRAM_WEBHOOK_SECRET: ${environment.TELEGRAM_WEBHOOK_SECRET === undefined ? 'missing' : 'configured'}`,
+    `TELEGRAM_BOT_TOKEN: ${hasToken ? 'configured' : 'missing'}`,
+    `Telegram receiver: ${receiver}`,
+    `TELEGRAM_WEBHOOK_SECRET: ${hasWebhookUrl ? (hasWebhookSecret ? 'configured' : 'missing') : 'unused'}`,
+    `TELEGRAM_WEBHOOK_URL: ${hasWebhookUrl ? 'configured' : 'missing'}`,
     `TELEGRAM_API_BASE_URL: ${environment.TELEGRAM_API_BASE_URL === undefined ? 'default' : 'custom'}`,
   ].join('\n');
 }
