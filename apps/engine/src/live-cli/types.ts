@@ -12,6 +12,17 @@ export interface LiveCliKey {
   sequence?: string;
 }
 
+export type LiveCliPromptKind = 'telegram-approve-code' | 'telegram-approve-household' | 'telegram-revoke-user';
+
+export interface LiveCliPrompt {
+  kind: LiveCliPromptKind;
+  label: string;
+  value: string;
+  context?: {
+    code?: string;
+  };
+}
+
 export type LiveCliAction =
   | { type: 'none' }
   | { type: 'start-runtime' }
@@ -20,8 +31,8 @@ export type LiveCliAction =
   | { type: 'exit' }
   | { type: 'telegram-status' }
   | { type: 'telegram-list-pending' }
-  | { type: 'telegram-approve' }
-  | { type: 'telegram-revoke' };
+  | { type: 'telegram-approve'; code: string; householdId: string }
+  | { type: 'telegram-revoke'; telegramUserId: string };
 
 export interface LiveCliMenuItem {
   label: string;
@@ -42,6 +53,7 @@ export interface LiveCliSnapshot {
   footer: string;
   statusMessage?: string;
   overlay?: LiveCliOverlay;
+  prompt?: LiveCliPrompt;
 }
 
 export interface LiveCliState {
@@ -50,4 +62,5 @@ export interface LiveCliState {
   selectedIndex: number;
   statusMessage?: string;
   overlay?: LiveCliOverlay;
+  prompt?: LiveCliPrompt;
 }

@@ -61,4 +61,20 @@ describe('live CLI menu model', () => {
     expect(handleLiveCliKey(createInitialLiveCliState({ runtimeStatus: 'stopped', selectedIndex: 3 }), { name: 'enter' }).action)
       .toEqual({ type: 'exit' });
   });
+
+  it('opens and cancels focused prompt dialogs for approve and revoke', () => {
+    const telegram = handleLiveCliKey(
+      handleLiveCliKey(createInitialLiveCliState({ runtimeStatus: 'stopped' }), { name: '3' }).state,
+      { name: 'enter' },
+    ).state;
+
+    const approvePrompt = handleLiveCliKey({ ...telegram, selectedIndex: 2 }, { name: 'enter' }).state;
+    expect(snapshotLiveCliState(approvePrompt).prompt?.label).toBe('Pairing code');
+
+    const cancelled = handleLiveCliKey(approvePrompt, { name: 'escape' }).state;
+    expect(snapshotLiveCliState(cancelled).prompt).toBeUndefined();
+
+    const revokePrompt = handleLiveCliKey({ ...telegram, selectedIndex: 3 }, { name: 'enter' }).state;
+    expect(snapshotLiveCliState(revokePrompt).prompt?.label).toBe('Telegram user id');
+  });
 });

@@ -45,6 +45,12 @@ export function renderLiveCliSnapshot(input: {
     for (const line of input.snapshot.overlay.lines) lines.push(line);
   }
 
+  if (input.snapshot.prompt !== undefined) {
+    lines.push('');
+    lines.push(`${input.snapshot.prompt.label}: ${input.snapshot.prompt.value}`);
+    lines.push('Press Enter to submit or Esc to cancel.');
+  }
+
   const footer = styleText(input.snapshot.footer, 'fg.muted', input.color);
   while (lines.length < input.size.rows - 1) lines.push('');
   lines.push(footer);

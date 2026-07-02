@@ -117,18 +117,18 @@ export async function runLiveCliSession(input: {
       return;
     }
     if (action.type === 'telegram-approve') {
-      state = setStatusMessage(state, 'Use direct command: plus-one telegram pairing approve <code> --household <household_id>');
+      state = setStatusMessage(state, await input.telegram.approve(action.code, action.householdId));
       return;
     }
     if (action.type === 'telegram-revoke') {
-      state = setStatusMessage(state, 'Use direct command: plus-one telegram pairing revoke <telegram_user_id>');
+      state = setStatusMessage(state, await input.telegram.revoke(action.telegramUserId));
     }
   };
 
   let actionQueue = Promise.resolve();
   const keyHandler = (_chunk: string, key: LiveCliKey) => {
     actionQueue = actionQueue.then(async () => {
-      const result = handleLiveCliKey(state, key);
+      const result = handleLiveCliKey(state, { ...key, sequence: key.sequence ?? _chunk });
       state = result.state;
       await applyAction(result.action);
       if (!finished) render();

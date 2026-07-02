@@ -30,6 +30,7 @@ export function snapshotLiveCliState(state: LiveCliState): LiveCliSnapshot {
     footer: footerFor(state.screen),
     ...(state.statusMessage === undefined ? {} : { statusMessage: state.statusMessage }),
     ...(state.overlay === undefined ? {} : { overlay: state.overlay }),
+    ...(state.prompt === undefined ? {} : { prompt: state.prompt }),
   };
 }
 
@@ -45,6 +46,56 @@ export function handleLiveCliKey(state: LiveCliState, key: LiveCliKey): {
   state: LiveCliState;
   action: LiveCliAction;
 } {
+  if (state.prompt !== undefined) {
+    if (key.name === 'escape') {
+      return { state: { ...state, prompt: undefined }, action: { type: 'none' } };
+    }
+    if (key.name === 'backspace') {
+      return {
+        state: { ...state, prompt: { ...state.prompt, value: state.prompt.value.slice(0, -1) } },
+        action: { type: 'none' },
+      };
+    }
+    if (key.name === 'enter' || key.name === 'return') {
+      if (state.prompt.kind === 'telegram-approve-code') {
+        return {
+          state: {
+            ...state,
+            prompt: {
+              kind: 'telegram-approve-household',
+              label: 'Household id',
+              value: '',
+              context: { code: state.prompt.value },
+            },
+          },
+          action: { type: 'none' },
+        };
+      }
+      if (state.prompt.kind === 'telegram-approve-household') {
+        return {
+          state: { ...state, prompt: undefined },
+          action: {
+            type: 'telegram-approve',
+            code: state.prompt.context?.code ?? '',
+            householdId: state.prompt.value,
+          },
+        };
+      }
+      return {
+        state: { ...state, prompt: undefined },
+        action: { type: 'telegram-revoke', telegramUserId: state.prompt.value },
+      };
+    }
+    const character = key.sequence ?? key.name;
+    if (character.length === 1 && character >= ' ') {
+      return {
+        state: { ...state, prompt: { ...state.prompt, value: `${state.prompt.value}${character}` } },
+        action: { type: 'none' },
+      };
+    }
+    return { state, action: { type: 'none' } };
+  }
+
   if (state.overlay !== undefined) {
     if (key.name === 'escape' || key.name === 'q' || key.name === '?') {
       return { state: { ...state, overlay: undefined }, action: { type: 'none' } };
@@ -134,6 +185,24 @@ function selectItem(state: LiveCliState, item: LiveCliMenuItem): {
       action: { type: 'none' },
     };
   }
+  if (item.action.type === 'telegram-approve') {
+    return {
+      state: {
+        ...state,
+        prompt: { kind: 'telegram-approve-code', label: 'Pairing code', value: '' },
+      },
+      action: { type: 'none' },
+    };
+  }
+  if (item.action.type === 'telegram-revoke') {
+    return {
+      state: {
+        ...state,
+        prompt: { kind: 'telegram-revoke-user', label: 'Telegram user id', value: '' },
+      },
+      action: { type: 'none' },
+    };
+  }
   return { state, action: item.action };
 }
 
@@ -149,8 +218,8 @@ function menuItemsFor(state: LiveCliState): LiveCliMenuItem[] {
     return [
       { label: 'Status', action: { type: 'telegram-status' } },
       { label: 'List pending pairings', action: { type: 'telegram-list-pending' } },
-      { label: 'Approve pairing code', action: { type: 'telegram-approve' } },
-      { label: 'Revoke user', action: { type: 'telegram-revoke' } },
+      { label: 'Approve pairing code', action: { type: 'telegram-approve', code: '', householdId: '' } },
+      { label: 'Revoke user', action: { type: 'telegram-revoke', telegramUserId: '' } },
       { label: 'Back', action: { type: 'none' } },
     ];
   }

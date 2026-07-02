@@ -126,4 +126,42 @@ describe('live CLI session', () => {
     await expect(result).resolves.toBe(0);
     expect(write.mock.calls.map((call) => call[0]).join('')).toContain('TELEGRAM_BOT_TOKEN: missing');
   });
+
+  it('collects Telegram approve prompt values and delegates approval', async () => {
+    const input = new FakeInput();
+    const approve = vi.fn(async () => 'Approved Telegram user 123 for household hh_01JNZQ4A9B8C7D6E5F4G3H2J1K.');
+    const result = runLiveCliSession({
+      stdin: input as never,
+      stdout: { isTTY: true, columns: 80, rows: 24, write: vi.fn() },
+      stderr: { write: vi.fn() },
+      environment: { NO_COLOR: '1' },
+      runtime: {
+        detect: vi.fn(async () => 'stopped' as const),
+        currentStatus: vi.fn(() => 'stopped' as const),
+        start: vi.fn(),
+        stop: vi.fn(async () => ({ status: 'stopped' as const })),
+        hideToBackground: vi.fn(),
+      },
+      telegram: {
+        status: () => 'ok',
+        listPending: vi.fn(),
+        approve,
+        revoke: vi.fn(),
+      },
+    });
+
+    input.emit('keypress', '', { name: '3' });
+    input.emit('keypress', '', { name: 'enter' });
+    input.emit('keypress', '', { name: '3' });
+    for (const char of 'ABCDEFGH') input.emit('keypress', char, { name: char });
+    input.emit('keypress', '', { name: 'enter' });
+    for (const char of 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K') input.emit('keypress', char, { name: char });
+    input.emit('keypress', '', { name: 'enter' });
+    input.emit('keypress', '', { name: 'q' });
+    input.emit('keypress', '', { name: 'q' });
+    input.emit('keypress', '', { name: 'q' });
+
+    await expect(result).resolves.toBe(0);
+    expect(approve).toHaveBeenCalledWith('ABCDEFGH', 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+  });
 });
