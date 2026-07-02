@@ -83,7 +83,7 @@ export class TelegramBotApiClient {
       throw new TelegramBotApiError({
         code: response.status === 409 ? 'telegram_polling_conflict' : 'telegram_api_error',
         status: response.status,
-        description: payload.description,
+        ...(payload.description === undefined ? {} : { description: payload.description }),
       });
     }
     return payload;

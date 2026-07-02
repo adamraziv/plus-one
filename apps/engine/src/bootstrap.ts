@@ -32,6 +32,8 @@ import { TelegramUpdateProcessor } from './telegram/telegram-update-processor.js
 import { createTelegramWebhookRoute } from './telegram/telegram-webhook.js';
 import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from './workflows/orchestrator-loop.js';
 
+type TelegramBotApi = Pick<TelegramBotApiClient, 'deleteWebhook' | 'getUpdates' | 'setWebhook'>;
+
 interface BootstrapDependencies {
   environment?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   createPools?: typeof createDatabasePools;
@@ -91,7 +93,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const workflows = {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
-  let telegramApi: TelegramBotApiClient | undefined;
+  let telegramApi: TelegramBotApi | undefined;
   let telegramProcessor: TelegramUpdateProcessor | undefined;
   const runtimeRoutes = createRuntimeRoutes({
     config,
@@ -223,12 +225,12 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
 function createTelegramBotApiClient(
   botToken: string,
   options: { apiBaseUrl?: string },
-): TelegramBotApiClient {
+): TelegramBotApi {
   return new TelegramBotApiClient(botToken, fetch, options);
 }
 
 function createTelegramPollingReceiver(input: {
-  api: TelegramBotApiClient;
+  api: TelegramBotApi;
   processor: Pick<TelegramUpdateProcessor, 'handle'>;
 }): { start(): Promise<void>; abort(): void } {
   const controller = new AbortController();
