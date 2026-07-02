@@ -33,6 +33,11 @@ export async function runLiveCli(dependencies: RunLiveCliDependencies = {}): Pro
   const environment = dependencies.environment ?? process.env;
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
+  if (stdout.isTTY === false) {
+    stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
+    return 1;
+  }
+
   const statePath = defaultBackgroundStatePath(environment);
   const runtime = new LiveRuntimeController({
     cwd: process.cwd(),
