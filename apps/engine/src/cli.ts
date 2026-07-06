@@ -7,6 +7,7 @@ import {
 } from '@plus-one/database';
 import { TelegramPairingService } from '@plus-one/runtime/telegram/pairing-service';
 import { loadConfig } from './config.js';
+import { runGatewayRuntime, type RunGatewayRuntimeDependencies } from './gateway-runtime.js';
 import { runLiveCli, type RunLiveCliDependencies } from './live-cli/index.js';
 import { handleTelegramPairingCommand } from './telegram/pairing-cli.js';
 
@@ -31,8 +32,11 @@ interface PlusOneCliDependencies {
   stdout?: Output;
   stderr?: Output;
   isInteractive?: boolean;
+  runGateway?: (dependencies: RunGatewayRuntimeDependencies) => Promise<number>;
   runLiveCli?: (dependencies: RunLiveCliDependencies) => Promise<number>;
 }
+
+const usage = 'Usage: plus-one [live] | telegram pairing approve <code> --household <household_id> | telegram pairing revoke <telegram_user_id> | telegram pairing list-pending\n';
 
 export async function runPlusOneCli(
   argv: string[] = process.argv.slice(2),
@@ -42,18 +46,20 @@ export async function runPlusOneCli(
   const stderr = dependencies.stderr ?? process.stderr;
   try {
     if (argv.length === 0) {
-      const interactive = dependencies.isInteractive
-        ?? Boolean((dependencies.stdin ?? process.stdin).isTTY && stdout.isTTY);
-      if (interactive) {
-        return (dependencies.runLiveCli ?? runLiveCli)({
-          environment: dependencies.environment ?? process.env,
-          stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
-          stdout,
-          stderr,
-        });
-      }
-      stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
-      return 1;
+      return (dependencies.runGateway ?? runGatewayRuntime)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'live') {
+      return (dependencies.runLiveCli ?? runLiveCli)({
+        environment: dependencies.environment ?? process.env,
+        stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
+        stdout,
+        stderr,
+      });
     }
 
     if (argv[0] === 'telegram' && argv[1] === 'pairing') {
@@ -61,7 +67,7 @@ export async function runPlusOneCli(
       stdout.write(`${result}\n`);
       return 0;
     }
-    stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
+    stderr.write(usage);
     return 1;
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
