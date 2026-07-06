@@ -29,6 +29,48 @@ export class TelegramTransportAdapter implements TransportAdapter {
     return this.sendMessage({ chatId, text: input.body });
   }
 
+  async sendTyping(input: { destination: Record<string, unknown> }): Promise<void> {
+    await this.request('sendChatAction', {
+      chat_id: this.chatId(input.destination),
+      action: 'typing',
+    });
+  }
+
+  async sendInterim(input: TransportSendInput): Promise<{ platformMessageId: string }> {
+    return this.send({ ...input, format: 'plain_text' });
+  }
+
+  async sendOrUpdateStatus(input: {
+    body: string;
+    destination: Record<string, unknown>;
+    statusMessageId?: string;
+  }): Promise<{ platformMessageId: string }> {
+    if (input.statusMessageId === undefined) {
+      return this.sendMessage({ chatId: this.chatId(input.destination), text: input.body });
+    }
+    return this.editMessage({
+      destination: input.destination,
+      platformMessageId: input.statusMessageId,
+      body: input.body,
+      format: 'plain_text',
+    });
+  }
+
+  async editMessage(input: {
+    destination: Record<string, unknown>;
+    platformMessageId: string;
+    body: string;
+    format: 'plain_text' | 'mrkdwn';
+  }): Promise<{ platformMessageId: string }> {
+    const payload = await this.request('editMessageText', {
+      chat_id: this.chatId(input.destination),
+      message_id: input.platformMessageId,
+      text: input.format === 'mrkdwn' ? toTelegramMarkdownV2(input.body) : input.body,
+      ...(input.format === 'mrkdwn' ? { parse_mode: 'MarkdownV2' } : {}),
+    });
+    return { platformMessageId: String(payload.result?.message_id ?? input.platformMessageId) };
+  }
+
   private chatId(destination: Record<string, unknown>): string {
     const chatId = destination.chatId;
     if (typeof chatId !== 'string') {

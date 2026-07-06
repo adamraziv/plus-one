@@ -23,6 +23,19 @@ export interface TransportSendInput {
 
 export interface TransportAdapter {
   send(input: TransportSendInput): Promise<{ platformMessageId: string }>;
+  sendTyping?(input: { destination: Record<string, unknown> }): Promise<void>;
+  sendInterim?(input: TransportSendInput): Promise<{ platformMessageId: string }>;
+  sendOrUpdateStatus?(input: {
+    body: string;
+    destination: Record<string, unknown>;
+    statusMessageId?: string;
+  }): Promise<{ platformMessageId: string }>;
+  editMessage?(input: {
+    destination: Record<string, unknown>;
+    platformMessageId: string;
+    body: string;
+    format: 'plain_text' | 'mrkdwn';
+  }): Promise<{ platformMessageId: string }>;
 }
 
 export interface DeliveryRepositoryPort {

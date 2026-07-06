@@ -74,6 +74,43 @@ describe('transport adapters', () => {
     });
   });
 
+  it('sends Telegram typing as sendChatAction', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200 }));
+    const adapter = new TelegramTransportAdapter('token-123', fetch);
+
+    await expect(adapter.sendTyping?.({ destination: { chatId: 'telegram-chat-42' } })).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.telegram.org/bottoken-123/sendChatAction',
+      expect.objectContaining({
+        body: JSON.stringify({ chat_id: 'telegram-chat-42', action: 'typing' }),
+      }),
+    );
+  });
+
+  it('sends then edits a Telegram status message', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: { message_id: 501 } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: { message_id: 501 } }), { status: 200 }));
+    const adapter = new TelegramTransportAdapter('token-123', fetch);
+
+    await expect(adapter.sendOrUpdateStatus?.({
+      body: 'Checking accounts...',
+      destination: { chatId: 'telegram-chat-42' },
+    })).resolves.toEqual({ platformMessageId: '501' });
+    await expect(adapter.sendOrUpdateStatus?.({
+      body: 'Preparing final answer...',
+      destination: { chatId: 'telegram-chat-42' },
+      statusMessageId: '501',
+    })).resolves.toEqual({ platformMessageId: '501' });
+
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+      'https://api.telegram.org/bottoken-123/sendMessage',
+      'https://api.telegram.org/bottoken-123/editMessageText',
+    ]);
+  });
+
   it('posts Slack messages with native fetch and returns the platform id', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       ok: true,
