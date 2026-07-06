@@ -12,6 +12,7 @@ export * from './execution/team-result-assembler.js';
 export * from './delivery/final-delivery-handler.js';
 export * from './delivery/transport-adapters.js';
 export * from './gateway/active-turn-registry.js';
+export * from './gateway/channel-gateway.js';
 export * from './gateway/channel-events.js';
 export * from './gateway/send-result.js';
 export * from './gateway/status-loop.js';
