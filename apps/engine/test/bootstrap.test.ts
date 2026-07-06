@@ -188,7 +188,7 @@ describe('engine scaffold', () => {
       abort: abortPolling,
     }));
 
-    await bootstrap({
+    const runtime = await bootstrap({
       environment: {
         ...environment,
         TELEGRAM_BOT_TOKEN: 'telegram-token',
@@ -202,8 +202,12 @@ describe('engine scaffold', () => {
       createTelegramPollingReceiver,
     });
 
-    expect(createTelegramPollingReceiver).toHaveBeenCalledOnce();
+    expect(createTelegramPollingReceiver).toHaveBeenCalledWith(expect.objectContaining({
+      processor: expect.objectContaining({ handle: expect.any(Function) }),
+    }));
     expect(startPolling).toHaveBeenCalledOnce();
+    await runtime.close();
+    expect(abortPolling).toHaveBeenCalledOnce();
   });
 
   it('surfaces Telegram polling startup failures before returning', async () => {

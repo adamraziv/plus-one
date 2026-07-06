@@ -8,11 +8,12 @@ import {
   type DatabasePools,
 } from '@plus-one/database';
 import {
+  ChannelGateway,
   ChannelCommandHandler,
+  DelegatingChannelEventSink,
   defaultConversationIdGenerator,
   defaultDeliveryIdGenerator,
   FinalDeliveryHandler,
-  OrchestratorIngress,
   TelegramPairingService,
   TelegramTransportAdapter,
 } from '@plus-one/runtime';
@@ -27,6 +28,7 @@ import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
 import { TelegramBotApiClient } from './telegram/telegram-bot-api.js';
+import { TelegramChannelEventSink } from './telegram/telegram-channel-event-sink.js';
 import { TelegramPollingReceiver } from './telegram/telegram-polling-receiver.js';
 import { TelegramUpdateProcessor } from './telegram/telegram-update-processor.js';
 import { createTelegramWebhookRoute } from './telegram/telegram-webhook.js';
@@ -84,11 +86,13 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     connectionString: config.database.poolUrls.memory,
     model: config.models.orchestrator,
   });
+  const channelEvents = new DelegatingChannelEventSink();
   const orchestrator = new OrchestratorAgent({
     model: config.models.orchestrator,
     teams: agentSystem.teams,
     teamRuntime,
     sessionMemory,
+    channelEvents,
   });
   const deliveryRepository = new PostgresDeliveryRepository(pools.operations);
   const channelCommands = new ChannelCommandHandler({
@@ -99,6 +103,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
   let telegramApi: TelegramBotApi | undefined;
+  let telegramGateway: ChannelGateway | undefined;
   let telegramProcessor: TelegramUpdateProcessor | undefined;
   const runtimeRoutes = createRuntimeRoutes({
     config,
@@ -119,38 +124,40 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
         const telegramTransport = new TelegramTransportAdapter(config.telegram.botToken, fetch, {
           ...(config.telegram.apiBaseUrl === undefined ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
         });
+        const telegramEvents = new TelegramChannelEventSink({ transport: telegramTransport });
+        channelEvents.setSink(telegramEvents);
         const telegramDelivery = new FinalDeliveryHandler({
           repository: deliveryRepository,
           transports: {
             telegram: telegramTransport,
             slack: {
               send: async () => {
-                throw new Error('Slack transport is not configured for Telegram webhook delivery.');
+                throw new Error('Slack transport is not configured for Telegram gateway delivery.');
               },
             },
           },
           ids: defaultDeliveryIdGenerator,
         });
+        telegramGateway = new ChannelGateway({
+          inbound: deliveryRepository,
+          commands: channelCommands,
+          orchestrator: {
+            run: async (candidate) => {
+              const workflow = mastra.getWorkflow('orchestrator-loop');
+              return runOrchestratorLoop({ workflow, message: candidate.message });
+            },
+          },
+          delivery: telegramDelivery,
+          sink: channelEvents,
+        });
+        const telegramGatewayForProcessor = telegramGateway;
 
         const processor = new TelegramUpdateProcessor({
           pairing: new TelegramPairingService({
             repository: new PostgresChannelPairingRepository(pools.operations),
           }),
           deliveryRepository,
-          inboundHandler: async (message) => {
-            const ingress = new OrchestratorIngress({
-              inbound: deliveryRepository,
-              commands: channelCommands,
-              orchestrator: {
-                run: async (candidate) => {
-                  const workflow = mastra.getWorkflow('orchestrator-loop');
-                  return runOrchestratorLoop({ workflow, message: candidate.message });
-                },
-              },
-              delivery: telegramDelivery,
-            });
-            return ingress.handleInbound(message);
-          },
+          inboundHandler: async (message) => telegramGatewayForProcessor.handleInbound(message),
           telegram: {
             sendMessage: async ({ chatId, text }) => telegramTransport
               .send({ destination: { chatId }, body: text, format: 'plain_text' }),
@@ -209,6 +216,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
       telegramPollingStopped = true;
       stopTelegramPolling();
       await telegramPollingTask.catch(() => undefined);
+      await telegramGateway?.shutdown();
       await mastra.shutdown();
       await sessionMemory.close();
       await (dependencies.closePools ?? closeDatabasePools)(pools);
@@ -232,6 +240,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
       telegramPollingStopped = true;
       stopTelegramPolling?.();
       await telegramPollingTask?.catch(() => undefined);
+      await telegramGateway?.shutdown();
       await mastra.shutdown();
       await sessionMemory.close();
       await (dependencies.closePools ?? closeDatabasePools)(pools);
