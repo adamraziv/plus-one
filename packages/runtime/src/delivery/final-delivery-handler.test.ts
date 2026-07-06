@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FinalDeliveryHandler, createDeliveryKey } from './final-delivery-handler.js';
+import { TransportSendError } from '../gateway/send-result.js';
 import {
   DeliveryRecordSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -121,6 +122,64 @@ describe('FinalDeliveryHandler', () => {
       response.householdId,
       'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       'telegram-platform-123',
+    );
+  });
+
+  it('persists classified transport failures from the adapter', async () => {
+    const repository = {
+      reserveDelivery: vi.fn(async () => record('pending')),
+      markDelivered: vi.fn(),
+      markDeliveryFailed: vi.fn(async () => record('failed')),
+    };
+    const send = vi.fn(async () => {
+      throw new TransportSendError({
+        category: 'forbidden',
+        message: 'Forbidden: bot was blocked by the user',
+        retryable: false,
+        receiptLookupRequired: false,
+      });
+    });
+    const handler = new FinalDeliveryHandler({
+      repository,
+      transports: { telegram: { send }, slack: { send } },
+      ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+
+    await expect(handler.deliver(response)).resolves.toMatchObject({ status: 'failed', sent: true });
+    expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
+      response.householdId,
+      'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      'failed',
+      'forbidden',
+    );
+  });
+
+  it('marks receipt-ambiguous transport failures as ambiguous', async () => {
+    const repository = {
+      reserveDelivery: vi.fn(async () => record('pending')),
+      markDelivered: vi.fn(),
+      markDeliveryFailed: vi.fn(async () => record('ambiguous')),
+    };
+    const send = vi.fn(async () => {
+      throw new TransportSendError({
+        category: 'ambiguous',
+        message: 'fetch failed',
+        retryable: true,
+        receiptLookupRequired: true,
+      });
+    });
+    const handler = new FinalDeliveryHandler({
+      repository,
+      transports: { telegram: { send }, slack: { send } },
+      ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+
+    await expect(handler.deliver(response)).resolves.toMatchObject({ status: 'ambiguous', sent: true });
+    expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
+      response.householdId,
+      'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      'ambiguous',
+      'ambiguous',
     );
   });
 });

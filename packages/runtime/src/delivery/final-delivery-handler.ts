@@ -7,6 +7,7 @@ import {
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
 import { ulid } from 'ulid';
+import { TransportSendError, transportFailureFromUnknown } from '../gateway/send-result.js';
 import {
   mandatoryPolicyProcessor,
   channelFormatProcessor,
@@ -105,7 +106,12 @@ export class FinalDeliveryHandler {
         ),
       };
     } catch (error) {
-      const status = error instanceof TypeError ? 'ambiguous' : 'failed';
+      const failure = error instanceof TransportSendError
+        ? error.failure
+        : transportFailureFromUnknown(error);
+      const status = failure.receiptLookupRequired || failure.category === 'ambiguous'
+        ? 'ambiguous'
+        : 'failed';
       return {
         status,
         sent: true,
@@ -113,7 +119,7 @@ export class FinalDeliveryHandler {
           response.householdId,
           delivery.deliveryId,
           status,
-          status === 'ambiguous' ? 'transport_ambiguous' : 'transport_rejected',
+          failure.category,
         ),
       };
     }
