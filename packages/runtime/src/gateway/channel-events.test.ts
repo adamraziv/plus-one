@@ -17,7 +17,11 @@ const inbound = {
 describe('channel gateway events', () => {
   it('keeps transport events destination-aware and non-durable', async () => {
     const events: ChannelEvent[] = [];
-    const sink: ChannelEventSink = { emit: vi.fn(async (event) => events.push(event)) };
+    const sink: ChannelEventSink = {
+      emit: vi.fn(async (event) => {
+        events.push(event);
+      }),
+    };
     const target = targetFromInboundMessage(inbound);
 
     await sink.emit({ kind: 'typing.start', target });

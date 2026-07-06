@@ -1,4 +1,5 @@
 import {
+  ChannelCommandResultSchemaV1,
   DeliveryRecordSchemaV1,
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -56,23 +57,25 @@ const deliveredRecord = DeliveryRecordSchemaV1.parse({
   updatedAt: '2026-07-06T00:00:01.000Z',
 });
 
+const commandResult = ChannelCommandResultSchemaV1.parse({
+  schemaName: 'channel-command-result',
+  schemaVersion: 1,
+  command: 'new',
+  status: 'handled',
+  householdId: message.householdId,
+  conversationId: message.conversationId,
+  channel: 'telegram',
+  delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+  body: 'Started a new thread.',
+  createdAt: '2026-07-06T00:00:00.000Z',
+});
+
 describe('ChannelGateway', () => {
   it('handles commands before typing and before recording inbound', async () => {
     const sink = { emit: vi.fn(async () => undefined) };
     const gateway = new ChannelGateway({
       inbound: { recordInboundMessage: vi.fn() },
-      commands: { handle: vi.fn(async () => ({
-        schemaName: 'channel-command-result',
-        schemaVersion: 1,
-        command: 'new',
-        status: 'handled',
-        householdId: message.householdId,
-        conversationId: message.conversationId,
-        channel: 'telegram',
-        delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-        body: 'Started a new thread.',
-        createdAt: '2026-07-06T00:00:00.000Z',
-      })) },
+      commands: { handle: vi.fn(async () => commandResult) },
       orchestrator: { run: vi.fn() },
       delivery: { deliver: vi.fn() },
       sink,
@@ -100,7 +103,7 @@ describe('ChannelGateway', () => {
     const gateway = new ChannelGateway({
       inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
       orchestrator: { run: vi.fn(async () => response) },
-      delivery: { deliver: vi.fn(async () => ({ status: 'delivered', sent: true, delivery: deliveredRecord })) },
+      delivery: { deliver: vi.fn(async () => ({ status: 'delivered' as const, sent: true, delivery: deliveredRecord })) },
       sink,
       heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: ['Checking records...'] },
     });

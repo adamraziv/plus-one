@@ -93,7 +93,9 @@ export class ChannelGateway {
         await sink.emit({
           kind: 'final.delivered',
           target,
-          platformMessageId: delivery.delivery.platformMessageId,
+          ...(delivery.delivery.platformMessageId === undefined
+            ? {}
+            : { platformMessageId: delivery.delivery.platformMessageId }),
         });
       } else {
         await sink.emit({

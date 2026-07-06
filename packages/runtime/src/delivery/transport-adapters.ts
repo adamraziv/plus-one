@@ -127,8 +127,8 @@ export class TelegramTransportAdapter implements TransportAdapter {
     if (!response.ok || payload.ok !== true) {
       throw new TransportSendError(classifyTelegramApiFailure({
         status: response.status,
-        description: payload.description,
-        retryAfterSeconds: payload.parameters?.retry_after,
+        ...(payload.description === undefined ? {} : { description: payload.description }),
+        ...(payload.parameters?.retry_after === undefined ? {} : { retryAfterSeconds: payload.parameters.retry_after }),
       }));
     }
     return payload;
