@@ -1,0 +1,16 @@
+import { describe, expect, it } from 'vitest';
+import { toTelegramMarkdownV2 } from './telegram-markdown.js';
+
+describe('Telegram MarkdownV2 formatting', () => {
+  it('escapes Telegram MarkdownV2 metacharacters in plain text', () => {
+    expect(toTelegramMarkdownV2('Budget + cash-flow (July).')).toBe('Budget \\+ cash\\-flow \\(July\\)\\.');
+  });
+
+  it('converts common markdown emphasis and headings', () => {
+    expect(toTelegramMarkdownV2('## Summary\nYou are **under budget**.')).toBe('*Summary*\nYou are *under budget*\\.');
+  });
+
+  it('preserves inline code using Telegram code delimiters', () => {
+    expect(toTelegramMarkdownV2('Use `checking_account` for this.')).toBe('Use `checking_account` for this\\.');
+  });
+});

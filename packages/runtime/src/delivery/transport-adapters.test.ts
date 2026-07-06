@@ -45,6 +45,35 @@ describe('transport adapters', () => {
     );
   });
 
+  it('sends Telegram mrkdwn as MarkdownV2 and falls back to plain text on format errors', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        description: 'Bad Request: cannot parse entities',
+      }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: 222 },
+      }), { status: 200 }));
+    const adapter = new TelegramTransportAdapter('token-123', fetch);
+
+    await expect(adapter.send({
+      body: '**Summary**',
+      destination: { chatId: 'telegram-chat-42' },
+      format: 'mrkdwn',
+    })).resolves.toEqual({ platformMessageId: '222' });
+
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1].body))).toMatchObject({
+      chat_id: 'telegram-chat-42',
+      parse_mode: 'MarkdownV2',
+    });
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1].body))).toEqual({
+      chat_id: 'telegram-chat-42',
+      text: '**Summary**',
+    });
+  });
+
   it('posts Slack messages with native fetch and returns the platform id', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       ok: true,
