@@ -15,7 +15,7 @@ import {
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
-import type { TeamDefinition } from '@plus-one/runtime';
+import { targetFromInboundMessage, type ChannelEventSink, type TeamDefinition } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
 import { QueryLeadRequestDraftSchemaV1 } from '../tools/delegate-team-schemas.js';
@@ -176,6 +176,7 @@ export class OrchestratorAgent {
     message: InboundChannelMessageV1;
     signal: AbortSignal;
     teamResults: TeamResultEnvelopeV1[];
+    channelEvents?: ChannelEventSink;
   }>();
   readonly agent: Agent<string, ToolsInput, unknown>;
   readonly finalizerAgent: Agent<string, ToolsInput, unknown>;
@@ -188,6 +189,7 @@ export class OrchestratorAgent {
     teams: readonly TeamDefinition[];
     teamRuntime: OrchestratorTeamRuntime;
     sessionMemory?: OrchestratorSessionMemoryPort;
+    channelEvents?: ChannelEventSink;
     agentFactory?: (config: ConstructorParameters<typeof Agent<string, ToolsInput, unknown>>[0]) =>
       Agent<string, ToolsInput, unknown>;
   }) {
@@ -197,9 +199,35 @@ export class OrchestratorAgent {
         const request = input.team.team === 'query'
           ? await this.refineQueryRequest(input.message, input.request)
           : input.request;
-        const result = await dependencies.teamRuntime.runTeamLead({ ...input, request });
-        this.activeInvocation.getStore()?.teamResults.push(result);
-        return result;
+        const active = this.activeInvocation.getStore();
+        const startedAt = Date.now();
+        await active?.channelEvents?.emit({
+          kind: 'tool.started',
+          target: targetFromInboundMessage(input.message),
+          toolName: 'delegateTeam',
+          preview: `Delegating to ${input.team.team}`,
+        });
+        try {
+          const result = await dependencies.teamRuntime.runTeamLead({ ...input, request });
+          active?.teamResults.push(result);
+          await active?.channelEvents?.emit({
+            kind: 'tool.finished',
+            target: targetFromInboundMessage(input.message),
+            toolName: 'delegateTeam',
+            ok: true,
+            durationMs: Date.now() - startedAt,
+          });
+          return result;
+        } catch (error) {
+          await active?.channelEvents?.emit({
+            kind: 'tool.finished',
+            target: targetFromInboundMessage(input.message),
+            toolName: 'delegateTeam',
+            ok: false,
+            durationMs: Date.now() - startedAt,
+          });
+          throw error;
+        }
       },
     };
     this.teamRuntime = teamRuntime;
@@ -261,7 +289,12 @@ export class OrchestratorAgent {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
     const signal = input.signal ?? timeoutSignal!.signal;
-    const invocation = { message, signal, teamResults: [] as TeamResultEnvelopeV1[] };
+    const invocation = {
+      message,
+      signal,
+      teamResults: [] as TeamResultEnvelopeV1[],
+      ...(this.dependencies.channelEvents === undefined ? {} : { channelEvents: this.dependencies.channelEvents }),
+    };
     try {
       const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
         const prompt = await this.orchestratorInput(message);

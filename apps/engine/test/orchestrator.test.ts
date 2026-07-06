@@ -336,6 +336,8 @@ describe('OrchestratorAgent', () => {
   });
 
   it('lets the orchestrator agent delegate through the existing team lead runtime', async () => {
+    const channelEvents = { emit: vi.fn(async () => undefined) };
+    const inbound = message('List our accounts.');
     const runTeamLead = vi.fn(async (input) => {
       expect(input.request).toMatchObject({ businessQuestion: 'List our accounts.' });
       return teamResult();
@@ -375,15 +377,31 @@ describe('OrchestratorAgent', () => {
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
       teamRuntime: { runTeamLead },
+      channelEvents,
     });
 
-    const response = await orchestrator.run({ message: message('List our accounts.') });
+    const response = await orchestrator.run({ message: inbound });
 
     expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({ team: queryTeam }));
+    expect(channelEvents.emit).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'tool.started',
+      toolName: 'delegateTeam',
+      target: expect.objectContaining({
+        conversationId,
+        destination: { chatId: 'telegram-chat-42' },
+      }),
+    }));
+    expect(channelEvents.emit).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'tool.finished',
+      toolName: 'delegateTeam',
+      ok: true,
+    }));
     expect(generate).toHaveBeenCalledTimes(1);
     expect((orchestrator.agent as unknown as { description: string }).description).toContain('single entrypoint');
     expect(orchestrator.agentTools.delegateTeam.description).toContain('specialist team lead');
     expect(response.body).toContain('one account row');
+    expect(response.body).not.toContain('Delegating to query');
+    expect(inbound.metadata).toEqual({ destination: { chatId: 'telegram-chat-42' } });
   });
 
   it('keeps delegate context isolated across concurrent runs', async () => {
