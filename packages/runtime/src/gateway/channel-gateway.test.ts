@@ -114,4 +114,45 @@ describe('ChannelGateway', () => {
     expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivered', target: expect.any(Object), platformMessageId: '200' });
     expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
   });
+
+  it('returns a failed gateway result and stops typing when orchestration throws', async () => {
+    const sink = { emit: vi.fn(async () => undefined) };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn(async () => { throw new Error('model unavailable'); }) },
+      delivery: { deliver: vi.fn() },
+      sink,
+      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: [] },
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toEqual({
+      status: 'failed',
+      error: 'orchestrator_failed',
+      sent: false,
+    });
+    expect(sink.emit).toHaveBeenCalledWith({
+      kind: 'final.failed',
+      target: expect.any(Object),
+      status: 'failed',
+      reason: 'orchestrator_failed',
+    });
+    expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+  });
+
+  it('does not let final lifecycle event failures change delivered results', async () => {
+    const sink = {
+      emit: vi.fn(async (event: { kind: string }) => {
+        if (event.kind.startsWith('final.')) throw new Error('status transport unavailable');
+      }),
+    };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn(async () => response) },
+      delivery: { deliver: vi.fn(async () => ({ status: 'delivered' as const, sent: true, delivery: deliveredRecord })) },
+      sink,
+      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: [] },
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toMatchObject({ status: 'delivered' });
+  });
 });

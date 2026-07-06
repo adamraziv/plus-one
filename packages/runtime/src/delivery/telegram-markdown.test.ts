@@ -13,4 +13,13 @@ describe('Telegram MarkdownV2 formatting', () => {
   it('preserves inline code using Telegram code delimiters', () => {
     expect(toTelegramMarkdownV2('Use `checking_account` for this.')).toBe('Use `checking_account` for this\\.');
   });
+
+  it('converts italic markdown into Telegram italic delimiters', () => {
+    expect(toTelegramMarkdownV2('This is *important*.')).toBe('This is _important_\\.');
+  });
+
+  it('converts markdown links into Telegram MarkdownV2 links', () => {
+    expect(toTelegramMarkdownV2('See [budget](https://example.test/report).'))
+      .toBe('See [budget](https://example.test/report)\\.');
+  });
 });

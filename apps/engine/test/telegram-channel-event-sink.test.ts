@@ -52,4 +52,22 @@ describe('TelegramChannelEventSink', () => {
       format: 'plain_text',
     });
   });
+
+  it('renders final failure notices through interim capability when present', async () => {
+    const sendInterim = vi.fn(async () => ({ platformMessageId: '601' }));
+    const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendInterim } });
+
+    await sink.emit({
+      kind: 'final.failed',
+      target,
+      status: 'failed',
+      reason: 'orchestrator_failed',
+    });
+
+    expect(sendInterim).toHaveBeenCalledWith({
+      destination: target.destination,
+      body: 'I hit an internal error before I could send the final reply. Please try again.',
+      format: 'plain_text',
+    });
+  });
 });

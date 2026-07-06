@@ -201,7 +201,7 @@ export class OrchestratorAgent {
           : input.request;
         const active = this.activeInvocation.getStore();
         const startedAt = Date.now();
-        await active?.channelEvents?.emit({
+        await emitChannelEvent(active?.channelEvents, {
           kind: 'tool.started',
           target: targetFromInboundMessage(input.message),
           toolName: 'delegateTeam',
@@ -210,7 +210,7 @@ export class OrchestratorAgent {
         try {
           const result = await dependencies.teamRuntime.runTeamLead({ ...input, request });
           active?.teamResults.push(result);
-          await active?.channelEvents?.emit({
+          await emitChannelEvent(active?.channelEvents, {
             kind: 'tool.finished',
             target: targetFromInboundMessage(input.message),
             toolName: 'delegateTeam',
@@ -219,7 +219,7 @@ export class OrchestratorAgent {
           });
           return result;
         } catch (error) {
-          await active?.channelEvents?.emit({
+          await emitChannelEvent(active?.channelEvents, {
             kind: 'tool.finished',
             target: targetFromInboundMessage(input.message),
             toolName: 'delegateTeam',
@@ -472,6 +472,17 @@ export class OrchestratorAgent {
       if (teamResults.length === 0) throw error;
       return responseFromTeamResults(message, teamResults);
     }
+  }
+}
+
+async function emitChannelEvent(
+  sink: ChannelEventSink | undefined,
+  event: Parameters<ChannelEventSink['emit']>[0],
+): Promise<void> {
+  try {
+    await sink?.emit(event);
+  } catch {
+    return;
   }
 }
 

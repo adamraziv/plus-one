@@ -22,6 +22,7 @@ export type ChannelGatewayResult =
   | { status: 'closed' }
   | { status: 'command-handled'; command: 'new'; body: string; conversationId: string }
   | { status: 'blocked'; processorResult: OutputProcessorResultV1 }
+  | { status: 'failed'; error: string; sent: false }
   | { status: 'delivered' | 'failed' | 'ambiguous'; delivery: DeliveryResult; sent: boolean };
 
 export class ChannelGateway {
@@ -83,14 +84,19 @@ export class ChannelGateway {
       const response = OrchestratorFinalResponseSchemaV1.parse(
         await this.dependencies.orchestrator.run({ message }),
       );
-      await sink.emit({ kind: 'final.delivery-started', target });
+      await emitGatewayEvent(sink, { kind: 'final.delivery-started', target });
       const delivery = await this.dependencies.delivery.deliver(response);
       if (delivery.status === 'blocked') {
-        await sink.emit({ kind: 'final.failed', target, status: 'blocked', reason: delivery.processorResult.reason });
+        await emitGatewayEvent(sink, {
+          kind: 'final.failed',
+          target,
+          status: 'blocked',
+          reason: delivery.processorResult.reason,
+        });
         return { status: 'blocked', processorResult: delivery.processorResult };
       }
       if (delivery.status === 'delivered') {
-        await sink.emit({
+        await emitGatewayEvent(sink, {
           kind: 'final.delivered',
           target,
           ...(delivery.delivery.platformMessageId === undefined
@@ -98,7 +104,7 @@ export class ChannelGateway {
             : { platformMessageId: delivery.delivery.platformMessageId }),
         });
       } else {
-        await sink.emit({
+        await emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
           status: delivery.status,
@@ -106,8 +112,27 @@ export class ChannelGateway {
         });
       }
       return { status: delivery.status, delivery, sent: delivery.sent };
+    } catch {
+      await emitGatewayEvent(sink, {
+        kind: 'final.failed',
+        target,
+        status: 'failed',
+        reason: 'orchestrator_failed',
+      });
+      return { status: 'failed', error: 'orchestrator_failed', sent: false };
     } finally {
       await heartbeat.close();
     }
+  }
+}
+
+async function emitGatewayEvent(
+  sink: ChannelEventSink,
+  event: Parameters<ChannelEventSink['emit']>[0],
+): Promise<void> {
+  try {
+    await sink.emit(event);
+  } catch {
+    return;
   }
 }

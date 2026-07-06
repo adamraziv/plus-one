@@ -18,22 +18,39 @@ function formatLine(line: string): string {
   const segments: string[] = [];
   let remaining = line;
   while (remaining.length > 0) {
-    const code = /`([^`]+)`/.exec(remaining);
-    const bold = /\*\*([^*]+)\*\*/.exec(remaining);
-    const next = [code, bold]
-      .filter((match): match is RegExpExecArray => match !== null)
-      .sort((left, right) => left.index - right.index)[0];
+    const next = nextInlineToken(remaining);
     if (next === undefined) {
       segments.push(escapeTelegramMarkdownV2(remaining));
       break;
     }
     segments.push(escapeTelegramMarkdownV2(remaining.slice(0, next.index)));
-    if (next === code) {
-      segments.push(`\`${(next[1] ?? '').replace(/[`\\]/g, (match) => `\\${match}`)}\``);
-    } else {
-      segments.push(`*${escapeTelegramMarkdownV2(next[1] ?? '')}*`);
-    }
-    remaining = remaining.slice(next.index + next[0].length);
+    segments.push(next.formatted);
+    remaining = remaining.slice(next.index + next.raw.length);
   }
   return segments.join('');
+}
+
+function nextInlineToken(text: string): { index: number; raw: string; formatted: string } | undefined {
+  const tokens = [
+    token(text, /`([^`]+)`/, (match) => `\`${(match[1] ?? '').replace(/[`\\]/g, (value) => `\\${value}`)}\``),
+    token(text, /\[([^\]]+)\]\(([^)]+)\)/, (match) => `[${escapeTelegramMarkdownV2(match[1] ?? '')}](${escapeTelegramMarkdownV2LinkUrl(match[2] ?? '')})`),
+    token(text, /\*\*([^*]+)\*\*/, (match) => `*${escapeTelegramMarkdownV2(match[1] ?? '')}*`),
+    token(text, /(?<!\*)\*([^*\n]+)\*(?!\*)/, (match) => `_${escapeTelegramMarkdownV2(match[1] ?? '')}_`),
+  ].filter((match): match is { index: number; raw: string; formatted: string } => match !== undefined);
+
+  return tokens.sort((left, right) => left.index - right.index)[0];
+}
+
+function token(
+  text: string,
+  pattern: RegExp,
+  format: (match: RegExpExecArray) => string,
+): { index: number; raw: string; formatted: string } | undefined {
+  const match = pattern.exec(text);
+  if (match === null) return undefined;
+  return { index: match.index, raw: match[0], formatted: format(match) };
+}
+
+function escapeTelegramMarkdownV2LinkUrl(url: string): string {
+  return url.replace(/[)\\]/g, (match) => `\\${match}`);
 }

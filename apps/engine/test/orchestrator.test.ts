@@ -404,6 +404,56 @@ describe('OrchestratorAgent', () => {
     expect(inbound.metadata).toEqual({ destination: { chatId: 'telegram-chat-42' } });
   });
 
+  it('does not let progress event failures fail delegated turns', async () => {
+    const channelEvents = {
+      emit: vi.fn(async () => {
+        throw new Error('status transport unavailable');
+      }),
+    };
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
+      });
+      return {
+        object: OrchestratorFinalResponseSchemaV1.parse({
+          schemaName: 'orchestrator-final-response',
+          schemaVersion: 1,
+          responseId: 'response-1',
+          householdId,
+          conversationId,
+          body: result.claims[0]!.text + '\n\nPlus One is an AI assistant, not a licensed financial professional.',
+          policyBoundary: 'personalized_finance',
+          citations: [{ label: 'query:accounts-listed', artifactId }],
+          assumptions: [],
+          freshness: result.freshness,
+          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+          unsupportedCapabilities: [],
+          recommendationActions: [],
+          delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
+          responseHash: 'c'.repeat(64),
+          createdAt: now,
+        }),
+      };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+      channelEvents,
+    });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: expect.stringContaining('one account row') });
+    expect(channelEvents.emit).toHaveBeenCalled();
+    expect(runTeamLead).toHaveBeenCalledOnce();
+  });
+
   it('keeps delegate context isolated across concurrent runs', async () => {
     const runTeamLead = vi.fn(async (_input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
       void _input;

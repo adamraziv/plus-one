@@ -22,6 +22,14 @@ export class TelegramChannelEventSink implements ChannelEventSink {
         body: event.body,
         format: 'plain_text',
       });
+      return;
+    }
+    if (event.kind === 'final.failed') {
+      await this.input.transport.sendInterim?.({
+        destination: event.target.destination,
+        body: 'I hit an internal error before I could send the final reply. Please try again.',
+        format: 'plain_text',
+      });
     }
   }
 

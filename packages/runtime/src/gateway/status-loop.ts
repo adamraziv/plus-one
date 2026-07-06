@@ -15,6 +15,14 @@ export function startGatewayHeartbeat(input: {
   let statusIndex = 0;
   const timers = new Set<NodeJS.Timeout>();
 
+  const emit = async (event: Parameters<ChannelEventSink['emit']>[0]) => {
+    try {
+      await input.sink.emit(event);
+    } catch {
+      return;
+    }
+  };
+
   const schedule = (fn: () => Promise<void>, ms: number) => {
     const timer = setTimeout(async () => {
       timers.delete(timer);
@@ -25,16 +33,16 @@ export function startGatewayHeartbeat(input: {
     timers.add(timer);
   };
 
-  void input.sink.emit({ kind: 'typing.start', target: input.target });
+  void emit({ kind: 'typing.start', target: input.target });
   schedule(async () => {
-    await input.sink.emit({ kind: 'typing.start', target: input.target });
+    await emit({ kind: 'typing.start', target: input.target });
   }, input.typingEveryMs);
   if (input.statuses.length > 0) {
     schedule(async () => {
       const body = input.statuses[Math.min(statusIndex, input.statuses.length - 1)];
       statusIndex += 1;
       if (body !== undefined) {
-        await input.sink.emit({ kind: 'status.update', target: input.target, statusKey: 'turn', body });
+        await emit({ kind: 'status.update', target: input.target, statusKey: 'turn', body });
       }
     }, input.statusEveryMs);
   }
@@ -45,7 +53,7 @@ export function startGatewayHeartbeat(input: {
       closed = true;
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
-      await input.sink.emit({ kind: 'typing.stop', target: input.target });
+      await emit({ kind: 'typing.stop', target: input.target });
     },
   };
 }

@@ -59,4 +59,25 @@ describe('gateway heartbeat', () => {
     });
     vi.useRealTimers();
   });
+
+  it('treats heartbeat transport failures as best-effort', async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn(async (event: { kind: string }) => {
+      if (event.kind !== 'typing.stop') throw new Error('transport unavailable');
+    });
+    const heartbeat = startGatewayHeartbeat({
+      sink: { emit },
+      target,
+      typingEveryMs: 1000,
+      statusEveryMs: 2000,
+      statuses: ['Checking accounts...'],
+    });
+
+    await vi.advanceTimersByTimeAsync(2100);
+    await expect(heartbeat.close()).resolves.toBeUndefined();
+
+    expect(emit).toHaveBeenCalledWith({ kind: 'typing.start', target });
+    expect(emit).toHaveBeenCalledWith({ kind: 'typing.stop', target });
+    vi.useRealTimers();
+  });
 });
