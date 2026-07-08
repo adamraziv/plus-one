@@ -734,6 +734,7 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead).toHaveBeenCalledTimes(1);
     expect(finalizerGenerate).toHaveBeenCalledTimes(1);
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+    expect(response.delivery.format).toBe('mrkdwn');
   });
 
   it('does not let the finalizer rewrite failed team results as successful answers', async () => {
@@ -795,6 +796,7 @@ describe('OrchestratorAgent', () => {
     expect(response.body).toContain('grain mismatch');
     expect(response.body).not.toContain('verified transactions');
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
+    expect(response.delivery.format).toBe('mrkdwn');
   });
 
   it('uses a later verified team result over an earlier failed retry result', async () => {
@@ -891,6 +893,7 @@ describe('OrchestratorAgent', () => {
     expect(finalizerGenerate).not.toHaveBeenCalled();
     expect(runTeamLead).not.toHaveBeenCalled();
     expect(response.body).toBe('I can answer directly without a team.');
+    expect(response.delivery.format).toBe('mrkdwn');
   });
 
   it('delegates internal finance reads when the reasoning model answers without checked data', async () => {

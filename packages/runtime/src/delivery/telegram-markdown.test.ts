@@ -6,6 +6,11 @@ describe('Telegram MarkdownV2 formatting', () => {
     expect(toTelegramMarkdownV2('Budget + cash-flow (July).')).toBe('Budget \\+ cash\\-flow \\(July\\)\\.');
   });
 
+  it('escapes literal backslashes in non-code MarkdownV2 text', () => {
+    expect(toTelegramMarkdownV2('Path C:\\Users\\Ada and **regex \\d+**.'))
+      .toBe('Path C:\\\\Users\\\\Ada and *regex \\\\d\\+*\\.');
+  });
+
   it('converts common markdown emphasis and headings', () => {
     expect(toTelegramMarkdownV2('## Summary\nYou are **under budget**.')).toBe('*Summary*\nYou are *under budget*\\.');
   });

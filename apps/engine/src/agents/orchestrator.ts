@@ -44,6 +44,7 @@ const orchestratorInstructions = [
 ].join('\n');
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
+const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
 
 const finalizerInstructions = [
   'You serialize the Orchestrator final answer for Plus One.',
@@ -325,7 +326,7 @@ export class OrchestratorAgent {
             }
           }
           const direct = parseFinalResponse(result.object);
-          if (direct !== undefined) return { kind: 'final', response: direct };
+          if (direct !== undefined) return { kind: 'final', response: normalizeFinalResponseDelivery(message, direct) };
           return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
         } catch (error) {
           if (invocation.teamResults.length === 0) throw error;
@@ -606,7 +607,7 @@ function responseFromTeamResults(message: InboundChannelMessageV1,
     delivery: {
       channel: message.channel,
       destination: destinationFor(message.channel, message.metadata.destination),
-      format: message.channel === 'slack' ? 'mrkdwn' : 'plain_text',
+      format: FINAL_REPLY_FORMAT,
     },
     responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
     createdAt: new Date().toISOString(),
@@ -649,7 +650,7 @@ function responseFromDraft(
     delivery: {
       channel: message.channel,
       destination: destinationFor(message.channel, message.metadata.destination),
-      format: message.channel === 'slack' ? 'mrkdwn' : 'plain_text',
+      format: FINAL_REPLY_FORMAT,
     },
     responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
     createdAt: new Date().toISOString(),
@@ -725,4 +726,18 @@ function destinationFor(channel: ChannelKindV1, destination: unknown): Record<st
     return destination as Record<string, unknown>;
   }
   return channel === 'telegram' ? { chatId: '' } : { channelId: '' };
+}
+
+function normalizeFinalResponseDelivery(
+  message: InboundChannelMessageV1,
+  response: OrchestratorFinalResponseV1,
+): OrchestratorFinalResponseV1 {
+  return OrchestratorFinalResponseSchemaV1.parse({
+    ...response,
+    delivery: {
+      channel: message.channel,
+      destination: destinationFor(message.channel, message.metadata.destination),
+      format: FINAL_REPLY_FORMAT,
+    },
+  });
 }

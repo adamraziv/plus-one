@@ -1,4 +1,4 @@
-const TELEGRAM_MARKDOWN_V2_META = /[_*[\]()~`>#+\-=|{}.!]/g;
+const TELEGRAM_MARKDOWN_V2_META = /[\\_*[\]()~`>#+\-=|{}.!]/g;
 
 export function escapeTelegramMarkdownV2(text: string): string {
   return text.replace(TELEGRAM_MARKDOWN_V2_META, (match) => `\\${match}`);

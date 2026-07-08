@@ -38,6 +38,34 @@ describe('ActiveTurnRegistry', () => {
     expect(order).toEqual(['active-start', 'active-end', 'pending-b']);
   });
 
+  it('does not reject drainIdle when queued work fails during the background drain', async () => {
+    const registry = new ActiveTurnRegistry();
+    const pendingError = new Error('delivery persistence failed');
+    let releaseActive!: () => void;
+    let rejectPending!: (error: Error) => void;
+    let pendingStarted!: () => void;
+    const pendingStartedPromise = new Promise<void>((resolve) => { pendingStarted = resolve; });
+    const active = registry.submit('conversation-1', async () => {
+      await new Promise<void>((resolve) => { releaseActive = resolve; });
+      return 'first';
+    });
+
+    await Promise.resolve();
+    await expect(registry.submit('conversation-1', async () => {
+      pendingStarted();
+      await new Promise<never>((_resolve, reject) => { rejectPending = reject; });
+    })).resolves.toEqual({ status: 'queued' });
+
+    releaseActive();
+    await active;
+    await pendingStartedPromise;
+    const drain = registry.drainIdle();
+    rejectPending(pendingError);
+
+    await expect(drain).resolves.toBeUndefined();
+    expect(registry.activeCount()).toBe(0);
+  });
+
   it('cancels pending work on shutdown', async () => {
     const registry = new ActiveTurnRegistry();
     let release!: () => void;

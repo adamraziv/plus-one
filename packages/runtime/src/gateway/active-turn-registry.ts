@@ -64,7 +64,11 @@ export class ActiveTurnRegistry<T = unknown> {
       return;
     }
     slot.drain = (async () => {
-      await this.submit(key, pending);
+      try {
+        await this.submit(key, pending);
+      } catch {
+        return;
+      }
     })();
   }
 }
