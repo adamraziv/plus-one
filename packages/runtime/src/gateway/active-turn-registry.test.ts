@@ -41,16 +41,45 @@ describe('ActiveTurnRegistry', () => {
   it('cancels pending work on shutdown', async () => {
     const registry = new ActiveTurnRegistry();
     let release!: () => void;
+    let pendingRan = false;
     const active = registry.submit('conversation-1', async () => {
       await new Promise<void>((resolve) => { release = resolve; });
       return 'first';
     });
     await Promise.resolve();
-    await registry.submit('conversation-1', async () => 'pending');
-    await registry.shutdown();
+    await registry.submit('conversation-1', async () => {
+      pendingRan = true;
+      return 'pending';
+    });
+    const shutdown = registry.shutdown();
     release();
     await active;
+    await shutdown;
     await registry.drainIdle();
+    expect(pendingRan).toBe(false);
+    expect(registry.activeCount()).toBe(0);
+  });
+
+  it('waits for active work to finish during shutdown', async () => {
+    const registry = new ActiveTurnRegistry();
+    let release!: () => void;
+    let shutdownResolved = false;
+    const active = registry.submit('conversation-1', async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return 'first';
+    });
+    await Promise.resolve();
+
+    const shutdown = registry.shutdown().then(() => { shutdownResolved = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    try {
+      expect(shutdownResolved).toBe(false);
+    } finally {
+      release();
+      await active;
+      await shutdown;
+    }
     expect(registry.activeCount()).toBe(0);
   });
 });

@@ -81,9 +81,20 @@ export class ChannelGateway {
       ],
     });
     try {
-      const response = OrchestratorFinalResponseSchemaV1.parse(
-        await this.dependencies.orchestrator.run({ message }),
-      );
+      let response: OrchestratorFinalResponseV1;
+      try {
+        response = OrchestratorFinalResponseSchemaV1.parse(
+          await this.dependencies.orchestrator.run({ message }),
+        );
+      } catch {
+        await emitGatewayEvent(sink, {
+          kind: 'final.failed',
+          target,
+          status: 'failed',
+          reason: 'orchestrator_failed',
+        });
+        return { status: 'failed', error: 'orchestrator_failed', sent: false };
+      }
       await emitGatewayEvent(sink, { kind: 'final.delivery-started', target });
       const delivery = await this.dependencies.delivery.deliver(response);
       if (delivery.status === 'blocked') {
@@ -112,14 +123,6 @@ export class ChannelGateway {
         });
       }
       return { status: delivery.status, delivery, sent: delivery.sent };
-    } catch {
-      await emitGatewayEvent(sink, {
-        kind: 'final.failed',
-        target,
-        status: 'failed',
-        reason: 'orchestrator_failed',
-      });
-      return { status: 'failed', error: 'orchestrator_failed', sent: false };
     } finally {
       await heartbeat.close();
     }

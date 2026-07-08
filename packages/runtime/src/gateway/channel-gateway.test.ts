@@ -139,6 +139,22 @@ describe('ChannelGateway', () => {
     expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
   });
 
+  it('propagates delivery persistence failures and stops typing', async () => {
+    const persistenceError = new Error('operations database unavailable');
+    const sink = { emit: vi.fn(async () => undefined) };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn(async () => response) },
+      delivery: { deliver: vi.fn(async () => { throw persistenceError; }) },
+      sink,
+      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: [] },
+    });
+
+    await expect(gateway.handleInbound(message)).rejects.toBe(persistenceError);
+    expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivery-started', target: expect.any(Object) });
+    expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+  });
+
   it('does not let final lifecycle event failures change delivered results', async () => {
     const sink = {
       emit: vi.fn(async (event: { kind: string }) => {

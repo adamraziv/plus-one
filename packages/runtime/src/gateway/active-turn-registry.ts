@@ -2,6 +2,7 @@ type Work<T> = () => Promise<T>;
 
 type Slot<T> = {
   active: boolean;
+  activeDone?: Promise<void>;
   pending?: Work<T>;
   drain?: Promise<void>;
 };
@@ -22,11 +23,15 @@ export class ActiveTurnRegistry<T = unknown> {
       return { status: 'queued' };
     }
     slot.active = true;
+    let finishActive!: () => void;
+    slot.activeDone = new Promise<void>((resolve) => { finishActive = resolve; });
     try {
       const result = await work();
       return { status: 'started', result };
     } finally {
       slot.active = false;
+      finishActive();
+      delete slot.activeDone;
       this.scheduleDrain(key, slot);
     }
   }
@@ -36,11 +41,13 @@ export class ActiveTurnRegistry<T = unknown> {
   }
 
   async drainIdle(): Promise<void> {
-    await Promise.all(
-      [...this.slots.values()]
-        .map((slot) => slot.drain)
-        .filter((drain): drain is Promise<void> => drain !== undefined),
-    );
+    while (true) {
+      const work = [...this.slots.values()]
+        .flatMap((slot) => [slot.activeDone, slot.drain])
+        .filter((promise): promise is Promise<void> => promise !== undefined);
+      if (work.length === 0) return;
+      await Promise.all(work);
+    }
   }
 
   async shutdown(): Promise<void> {
