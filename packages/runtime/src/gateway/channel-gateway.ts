@@ -8,6 +8,7 @@ import {
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
 import type { DeliveryResult } from '../delivery/final-delivery-handler.js';
+import { createRequestId, getLogger, withLogContext } from '../logging/index.js';
 import { ActiveTurnRegistry } from './active-turn-registry.js';
 import {
   noopChannelEventSink,
@@ -27,6 +28,7 @@ export type ChannelGatewayResult =
 
 export class ChannelGateway {
   private readonly turns: ActiveTurnRegistry<ChannelGatewayResult>;
+  private readonly logger = getLogger('gateway.channel');
 
   constructor(private readonly dependencies: {
     inbound: { recordInboundMessage(message: InboundChannelMessageV1): Promise<{ inserted: boolean }> };
@@ -42,6 +44,14 @@ export class ChannelGateway {
 
   async handleInbound(candidate: InboundChannelMessageV1): Promise<ChannelGatewayResult> {
     const message = InboundChannelMessageSchemaV1.parse(candidate);
+    return withLogContext({
+      requestId: createRequestId(),
+      conversationId: message.conversationId,
+      householdId: message.householdId,
+    }, async () => this.handleValidatedInbound(message));
+  }
+
+  private async handleValidatedInbound(message: InboundChannelMessageV1): Promise<ChannelGatewayResult> {
     const command = ChannelCommandResultSchemaV1.optional().parse(
       await this.dependencies.commands?.handle(message),
     );
@@ -55,7 +65,11 @@ export class ChannelGateway {
     }
 
     const recorded = await this.dependencies.inbound.recordInboundMessage(message);
-    if (!recorded.inserted) return { status: 'duplicate' };
+    if (!recorded.inserted) {
+      this.logger.info('gateway.inbound.duplicate', { fields: { channel: message.channel } });
+      return { status: 'duplicate' };
+    }
+    this.logger.info('gateway.inbound.accepted', { fields: { channel: message.channel } });
 
     const submitted = await this.turns.submit(message.conversationId, async () => this.runRecordedTurn(message));
     if (submitted.status === 'started') return submitted.result;
