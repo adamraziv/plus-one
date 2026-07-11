@@ -3,7 +3,8 @@ import type { LogFields } from './types.js';
 const SENSITIVE_FIELD_NAMES = new Set([
   'body', 'content', 'prompt', 'response', 'payload', 'amount', 'description',
   'account', 'attachments', 'metadata', 'arguments', 'result', 'artifact',
-  'sql', 'query', 'connectionstring', 'connection_string',
+  'sql', 'query', 'connectionstring', 'connection_string', 'token', 'secret',
+  'password', 'apikey', 'authorization', 'privatekey', 'pairingcode', 'codehash',
 ]);
 
 const SECRET_PATTERNS: readonly [RegExp, string][] = [

@@ -17,6 +17,7 @@ export * from './gateway/channel-events.js';
 export * from './gateway/send-result.js';
 export * from './gateway/status-loop.js';
 export * from './ledger/ports.js';
+export * from './logging/index.js';
 export * from './orchestrator/channel-commands.js';
 export * from './orchestrator/orchestrator-ingress.js';
 export * from './policy/output-processors.js';
