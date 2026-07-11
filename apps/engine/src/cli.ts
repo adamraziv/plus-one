@@ -5,7 +5,7 @@ import {
   PostgresChannelPairingRepository,
   type DatabasePools,
 } from '@plus-one/database';
-import { TelegramPairingService } from '@plus-one/runtime/telegram/pairing-service';
+import { configureLogging, TelegramPairingService } from '@plus-one/runtime';
 import { loadConfig } from './config.js';
 import { runGatewayRuntime, type RunGatewayRuntimeDependencies } from './gateway-runtime.js';
 import { runLiveCli, type RunLiveCliDependencies } from './live-cli/index.js';
@@ -36,6 +36,7 @@ interface PlusOneCliDependencies {
   runGateway?: (dependencies: RunGatewayRuntimeDependencies) => Promise<number>;
   runLiveCli?: (dependencies: RunLiveCliDependencies) => Promise<number>;
   runLogs?: (argv: string[], dependencies: RunLogsCliDependencies) => Promise<number>;
+  configureLogging?: typeof configureLogging;
 }
 
 const usage = 'Usage: plus-one [live] | logs [agent|errors|gateway] [options] | telegram pairing approve <code> --household <household_id> | telegram pairing revoke <telegram_user_id> | telegram pairing list-pending\n';
@@ -52,6 +53,7 @@ export async function runPlusOneCli(
         environment: dependencies.environment ?? process.env,
         stdout,
         stderr,
+        ...(dependencies.configureLogging === undefined ? {} : { configureLogging: dependencies.configureLogging }),
       });
     }
 
@@ -69,6 +71,7 @@ export async function runPlusOneCli(
         stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
         stdout,
         stderr,
+        ...(dependencies.configureLogging === undefined ? {} : { configureLogging: dependencies.configureLogging }),
       });
     }
 
@@ -97,9 +100,16 @@ async function runTelegramPairingCommand(
     });
   }
 
-  const config = loadConfig(dependencies.environment ?? process.env);
-  const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
+  const environment = dependencies.environment ?? process.env;
+  const logging = (dependencies.configureLogging ?? configureLogging)({
+    environment,
+    mode: 'cli',
+    stderr: dependencies.stderr ?? process.stderr,
+  });
+  let pools: DatabasePools | undefined;
   try {
+    const config = loadConfig(environment);
+    pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
     return handleTelegramPairingCommand({
       argv,
       service: new TelegramPairingService({
@@ -108,7 +118,10 @@ async function runTelegramPairingCommand(
       approvedBy: dependencies.approvedBy ?? approvedBy(),
     });
   } finally {
-    await (dependencies.closePools ?? closeDatabasePools)(pools as DatabasePools);
+    if (pools !== undefined) {
+      await (dependencies.closePools ?? closeDatabasePools)(pools);
+    }
+    logging.close();
   }
 }
 

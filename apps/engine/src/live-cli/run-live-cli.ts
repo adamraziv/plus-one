@@ -3,7 +3,7 @@ import {
   createDatabasePools,
   PostgresChannelPairingRepository,
 } from '@plus-one/database';
-import { TelegramPairingService } from '@plus-one/runtime';
+import { configureLogging, TelegramPairingService } from '@plus-one/runtime';
 import { loadConfig } from '../config.js';
 import {
   clearBackgroundRuntimeState,
@@ -27,53 +27,59 @@ export interface RunLiveCliDependencies {
   stdin?: NodeJS.ReadStream & { setRawMode?: (value: boolean) => void };
   stdout?: Output;
   stderr?: Output;
+  configureLogging?: typeof configureLogging;
 }
 
 export async function runLiveCli(dependencies: RunLiveCliDependencies = {}): Promise<number> {
   const environment = dependencies.environment ?? process.env;
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
-  if (stdout.isTTY === false) {
-    stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
-    return 1;
-  }
-
-  const statePath = defaultBackgroundStatePath(environment);
-  const runtime = new LiveRuntimeController({
-    cwd: process.cwd(),
-    environment,
-    state: {
-      load: async () => loadBackgroundRuntimeState({
-        path: statePath,
-        isProcessAlive,
-      }),
-      save: async (state) => saveBackgroundRuntimeState({ path: statePath, state }),
-      clear: async () => clearBackgroundRuntimeState({ path: statePath }),
-    },
-    isProcessAlive,
-  });
-
-  const config = loadConfig(environment);
-  const pools = createDatabasePools(config.database.poolUrls);
+  const logging = (dependencies.configureLogging ?? configureLogging)({ environment, mode: 'cli', stderr });
   try {
-    const telegram = new LiveCliTelegramActions({
+    if (stdout.isTTY === false) {
+      stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
+      return 1;
+    }
+
+    const statePath = defaultBackgroundStatePath(environment);
+    const runtime = new LiveRuntimeController({
+      cwd: process.cwd(),
       environment,
-      approvedBy: `cli:${environment.USER ?? 'operator'}`,
-      service: new TelegramPairingService({
-        repository: new PostgresChannelPairingRepository(pools.operations),
-      }),
+      state: {
+        load: async () => loadBackgroundRuntimeState({
+          path: statePath,
+          isProcessAlive,
+        }),
+        save: async (state) => saveBackgroundRuntimeState({ path: statePath, state }),
+        clear: async () => clearBackgroundRuntimeState({ path: statePath }),
+      },
+      isProcessAlive,
     });
 
-    return runLiveCliSession({
-      stdin: dependencies.stdin ?? process.stdin,
-      stdout,
-      stderr,
-      environment,
-      runtime,
-      telegram,
-    });
+    const config = loadConfig(environment);
+    const pools = createDatabasePools(config.database.poolUrls);
+    try {
+      const telegram = new LiveCliTelegramActions({
+        environment,
+        approvedBy: `cli:${environment.USER ?? 'operator'}`,
+        service: new TelegramPairingService({
+          repository: new PostgresChannelPairingRepository(pools.operations),
+        }),
+      });
+
+      return runLiveCliSession({
+        stdin: dependencies.stdin ?? process.stdin,
+        stdout,
+        stderr,
+        environment,
+        runtime,
+        telegram,
+      });
+    } finally {
+      await closeDatabasePools(pools);
+    }
   } finally {
-    await closeDatabasePools(pools);
+    logging.close();
   }
 }
 

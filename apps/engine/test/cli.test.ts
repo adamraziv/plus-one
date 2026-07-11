@@ -65,11 +65,17 @@ describe('Plus One CLI', () => {
       operations: { query },
     } as never;
     const closePools = vi.fn(async () => {});
+    const configureLogging = vi.fn(() => ({
+      logDirectory: '/tmp/plus-one-test-logs',
+      flush: vi.fn(),
+      close: vi.fn(),
+    }));
 
     await expect(runPlusOneCli(['telegram', 'pairing', 'list-pending'], {
       environment,
       createPools: vi.fn(() => pools),
       closePools,
+      configureLogging,
       stdout: { write },
       stderr: { write: vi.fn() },
     })).resolves.toBe(0);
