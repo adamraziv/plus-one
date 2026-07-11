@@ -99,6 +99,26 @@ describe('Plus One CLI', () => {
     expect(runLiveCli).not.toHaveBeenCalled();
   });
 
+  it('dispatches the logs command without starting application resources', async () => {
+    const runLogs = vi.fn(async () => 0);
+    const runGateway = vi.fn(async () => 0);
+    const runLiveCli = vi.fn(async () => 0);
+
+    await expect(runPlusOneCli(['logs', 'gateway'], {
+      runLogs,
+      runGateway,
+      runLiveCli,
+      stdout: { write: vi.fn() },
+      stderr: { write: vi.fn() },
+    })).resolves.toBe(0);
+
+    expect(runLogs).toHaveBeenCalledWith(['gateway'], expect.objectContaining({
+      stdout: expect.any(Object), stderr: expect.any(Object),
+    }));
+    expect(runGateway).not.toHaveBeenCalled();
+    expect(runLiveCli).not.toHaveBeenCalled();
+  });
+
   it('prints gateway startup errors instead of rejecting', async () => {
     const error = new Error('Storage is unavailable');
     const runGateway = vi.fn(async () => {
