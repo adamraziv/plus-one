@@ -1,0 +1,22 @@
+diff --git a/dist/chunk-JVN7H2TP.js b/dist/chunk-JVN7H2TP.js
+index c62abbafbf5e75e76b7741efe827796de7422b7c..73bc967dd915c7658019c23f3daac550c52c5adb 100644
+--- a/dist/chunk-JVN7H2TP.js
++++ b/dist/chunk-JVN7H2TP.js
+@@ -2289,7 +2289,7 @@ var StructuredOutputProcessor = class {
+                 fallback: true
+               }
+             };
+-            controller?.enqueue(fallbackChunk);
++            if (controller) safeEnqueue(controller, fallbackChunk);
+             break;
+           }
+         }
+@@ -2299,7 +2299,7 @@ var StructuredOutputProcessor = class {
+             from: "structured-output"
+           }
+         };
+-        controller?.enqueue(newChunk);
++        if (controller) safeEnqueue(controller, newChunk);
+       }
+     } catch (error) {
+       this.handleError("Structured output processing failed", error, abort);
