@@ -99,6 +99,22 @@ describe('Plus One CLI', () => {
     expect(runLiveCli).not.toHaveBeenCalled();
   });
 
+  it('prints gateway startup errors instead of rejecting', async () => {
+    const error = new Error('Storage is unavailable');
+    const runGateway = vi.fn(async () => {
+      throw error;
+    });
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli([], {
+      runGateway,
+      stdout: { write: vi.fn() },
+      stderr,
+    })).resolves.toBe(1);
+
+    expect(stderr.write).toHaveBeenCalledWith('Storage is unavailable\n');
+  });
+
   it('opens the live CLI through the explicit live command', async () => {
     const runGateway = vi.fn(async () => 0);
     const runLiveCli = vi.fn(async () => 0);
@@ -112,6 +128,22 @@ describe('Plus One CLI', () => {
 
     expect(runLiveCli).toHaveBeenCalledOnce();
     expect(runGateway).not.toHaveBeenCalled();
+  });
+
+  it('prints live CLI startup errors instead of rejecting', async () => {
+    const error = new Error('Storage is unavailable');
+    const runLiveCli = vi.fn(async () => {
+      throw error;
+    });
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['live'], {
+      runLiveCli,
+      stdout: { isTTY: true, write: vi.fn() },
+      stderr,
+    })).resolves.toBe(1);
+
+    expect(stderr.write).toHaveBeenCalledWith('Storage is unavailable\n');
   });
 
   it('keeps direct Telegram pairing commands on the non-TUI path', async () => {

@@ -46,7 +46,7 @@ export async function runPlusOneCli(
   const stderr = dependencies.stderr ?? process.stderr;
   try {
     if (argv.length === 0) {
-      return (dependencies.runGateway ?? runGatewayRuntime)({
+      return await (dependencies.runGateway ?? runGatewayRuntime)({
         environment: dependencies.environment ?? process.env,
         stdout,
         stderr,
@@ -54,7 +54,7 @@ export async function runPlusOneCli(
     }
 
     if (argv[0] === 'live') {
-      return (dependencies.runLiveCli ?? runLiveCli)({
+      return await (dependencies.runLiveCli ?? runLiveCli)({
         environment: dependencies.environment ?? process.env,
         stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
         stdout,
