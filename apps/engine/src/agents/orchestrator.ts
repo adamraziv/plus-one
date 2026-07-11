@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
-import { z } from 'zod';
+import { ZodError, z } from 'zod';
 import {
   CurrencyCodeSchema,
   InboundChannelMessageSchemaV1,
@@ -15,7 +15,7 @@ import {
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
-import { targetFromInboundMessage, type ChannelEventSink, type TeamDefinition } from '@plus-one/runtime';
+import { getLogger, targetFromInboundMessage, type ChannelEventSink, type TeamDefinition, withLogContext } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
 import { QueryLeadRequestDraftSchemaV1 } from '../tools/delegate-team-schemas.js';
@@ -296,51 +296,70 @@ export class OrchestratorAgent {
       teamResults: [] as TeamResultEnvelopeV1[],
       ...(this.dependencies.channelEvents === undefined ? {} : { channelEvents: this.dependencies.channelEvents }),
     };
-    try {
-      const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
-        const prompt = await this.orchestratorInput(message);
-        const accountingIntentPrompt = accountingIntentPromptFromOrchestratorInput(message, prompt);
-        const queryIntentPrompt = intentPromptFromOrchestratorInput(prompt);
-        try {
-          const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
-          if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-            return turnFromTeamResults(message, invocation.teamResults);
-          }
-          if (invocation.teamResults.length === 0) {
-            const accountingRequest = await this.accountingRequestFromIntent(message, accountingIntentPrompt);
-            if (accountingRequest !== undefined) {
-              await this.delegateTeam(message, 'accounting', accountingRequest, signal);
+    const logger = getLogger('runtime.orchestrator');
+    return withLogContext({
+      conversationId: message.conversationId,
+      householdId: message.householdId,
+    }, async () => {
+      const startedAt = Date.now();
+      logger.info('turn.started', { fields: { channel: message.channel } });
+      try {
+        const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
+          const prompt = await this.orchestratorInput(message);
+          const accountingIntentPrompt = accountingIntentPromptFromOrchestratorInput(message, prompt);
+          const queryIntentPrompt = intentPromptFromOrchestratorInput(prompt);
+          try {
+            const result = await this.agent.generate(prompt, this.orchestratorGenerateOptions(message));
+            if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
               return turnFromTeamResults(message, invocation.teamResults);
             }
-            const queryRequest = await this.queryRequestFromIntent(message, queryIntentPrompt);
-            if (queryRequest !== undefined) {
-              await this.delegateTeam(message, 'query', queryRequest, signal);
-              if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+            if (invocation.teamResults.length === 0) {
+              const accountingRequest = await this.accountingRequestFromIntent(message, accountingIntentPrompt);
+              if (accountingRequest !== undefined) {
+                await this.delegateTeam(message, 'accounting', accountingRequest, signal);
                 return turnFromTeamResults(message, invocation.teamResults);
               }
-              const direct = parseFinalResponse(result.object);
-              return {
-                kind: 'final',
-                response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
-              };
+              const queryRequest = await this.queryRequestFromIntent(message, queryIntentPrompt);
+              if (queryRequest !== undefined) {
+                await this.delegateTeam(message, 'query', queryRequest, signal);
+                if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+                  return turnFromTeamResults(message, invocation.teamResults);
+                }
+                const direct = parseFinalResponse(result.object);
+                return {
+                  kind: 'final',
+                  response: await this.finalizeFromModelResult(message, direct?.body ?? result.text, invocation.teamResults),
+                };
+              }
             }
+            const direct = parseFinalResponse(result.object);
+            if (direct !== undefined) return { kind: 'final', response: normalizeFinalResponseDelivery(message, direct) };
+            return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
+          } catch (error) {
+            if (invocation.teamResults.length === 0) throw error;
+            return turnFromTeamResults(message, invocation.teamResults);
           }
-          const direct = parseFinalResponse(result.object);
-          if (direct !== undefined) return { kind: 'final', response: normalizeFinalResponseDelivery(message, direct) };
-          return { kind: 'final', response: await this.finalizeFromModelResult(message, result.text, invocation.teamResults) };
-        } catch (error) {
-          if (invocation.teamResults.length === 0) throw error;
-          return turnFromTeamResults(message, invocation.teamResults);
-        }
-      });
-      await this.dependencies.sessionMemory?.persistTurn({
-        message,
-        assistantText: turn.response.body,
-      });
-      return turn;
-    } finally {
-      timeoutSignal?.clear();
-    }
+        });
+        await this.dependencies.sessionMemory?.persistTurn({
+          message,
+          assistantText: turn.response.body,
+        });
+        logger.info('turn.completed', {
+          fields: { status: turn.kind, durationMs: Date.now() - startedAt },
+        });
+        return turn;
+      } catch (error) {
+        logger.warn('turn.failed', {
+          fields: {
+            failureCategory: turnFailureCategory(error),
+            durationMs: Date.now() - startedAt,
+          },
+        });
+        throw error;
+      } finally {
+        timeoutSignal?.clear();
+      }
+    });
   }
 
   private async orchestratorInput(message: InboundChannelMessageV1) {
@@ -709,6 +728,12 @@ function labelForTeam(team: string): string {
   if (team === 'accounting') return 'Accounting team';
   if (team === 'query') return 'Query team';
   return `${team} team`;
+}
+
+function turnFailureCategory(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
+  if (error instanceof ZodError) return 'schema_validation';
+  return 'runtime_failure';
 }
 
 function transactionKnownFromIntent(known: AccountingIntentDraft['known']) {
