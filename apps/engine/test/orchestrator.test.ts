@@ -227,12 +227,12 @@ describe('OrchestratorAgent', () => {
   });
 
   it('limits model construction to the top-level orchestrator agent', () => {
-    const configs: Array<{ id?: string; inputProcessors?: unknown; tools?: unknown }> = [];
+    const configs: Array<{ id: string | undefined; inputProcessors: unknown; tools: unknown }> = [];
 
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => {
-        configs.push(config);
+        configs.push({ id: config.id, inputProcessors: config.inputProcessors, tools: config.tools });
         return { ...config, generate: vi.fn() } as never;
       },
       teams: [queryTeam],
@@ -241,10 +241,12 @@ describe('OrchestratorAgent', () => {
 
     expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
     expect(configs[0]?.tools).toEqual(expect.objectContaining({ delegateTeam: expect.anything() }));
-    expect(Array.isArray(configs[0]?.inputProcessors)).toBe(true);
-    expect(configs[0]?.inputProcessors).toHaveLength(1);
-    expect(configs[0]?.inputProcessors?.[0]).toBeInstanceOf(TokenLimiter);
-    expect((configs[0]?.inputProcessors?.[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
+    const processors = configs[0]?.inputProcessors;
+    expect(Array.isArray(processors)).toBe(true);
+    if (!Array.isArray(processors)) throw new Error('Expected orchestrator input processors.');
+    expect(processors).toHaveLength(1);
+    expect(processors[0]).toBeInstanceOf(TokenLimiter);
+    expect((processors[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
   });
 
   it('uses prepared thread context and persists the final user-facing reply', async () => {
