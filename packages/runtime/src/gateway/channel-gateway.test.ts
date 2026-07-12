@@ -165,6 +165,23 @@ describe('ChannelGateway', () => {
     expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
   });
 
+  it('passes the gateway deadline signal to orchestration and reports a timeout safely', async () => {
+    const run = vi.fn(({ signal }: { signal: AbortSignal }) => new Promise<never>((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run },
+      delivery: { deliver: vi.fn() },
+      turnDeadlineMs: 1,
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toEqual({
+      status: 'failed', error: 'orchestrator_timed_out', sent: false,
+    });
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ message, signal: expect.any(AbortSignal) }));
+  });
+
   it('propagates delivery persistence failures and stops typing', async () => {
     const persistenceError = new Error('operations database unavailable');
     const sink = { emit: vi.fn(async () => undefined) };

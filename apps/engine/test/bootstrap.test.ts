@@ -36,7 +36,7 @@ describe('engine scaffold', () => {
       TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
     });
-    expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
+    expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111, turnDeadlineMs: 60_000 });
     expect(config.telegram).toEqual({
       botToken: 'telegram-token',
       receiver: {

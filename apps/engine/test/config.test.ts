@@ -26,6 +26,11 @@ const baseEnvironment = {
 } satisfies Record<string, string>;
 
 describe('engine config', () => {
+  it('uses a configurable end-to-end orchestrator turn deadline', () => {
+    expect(loadConfig({ ...baseEnvironment, ORCHESTRATOR_TURN_TIMEOUT_MS: '45000' }).turnDeadlineMs).toBe(45_000);
+    expect(loadConfig(baseEnvironment).turnDeadlineMs).toBe(60_000);
+  });
+
   it('rejects raw model ids without provider prefix', () => {
     expect(() => loadConfig({
       ...baseEnvironment,

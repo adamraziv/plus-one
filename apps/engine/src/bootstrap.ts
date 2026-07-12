@@ -152,13 +152,14 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
           inbound: deliveryRepository,
           commands: channelCommands,
           orchestrator: {
-            run: async (candidate) => {
+            run: async ({ message, signal }) => {
               const workflow = mastra.getWorkflow('orchestrator-loop');
-              return runOrchestratorLoop({ workflow, message: candidate.message });
+              return runOrchestratorLoop({ workflow, message, signal });
             },
           },
           delivery: telegramDelivery,
           sink: channelEvents,
+          turnDeadlineMs: config.turnDeadlineMs,
         });
         const telegramGatewayForProcessor = telegramGateway;
 

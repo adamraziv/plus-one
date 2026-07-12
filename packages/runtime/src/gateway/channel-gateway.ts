@@ -32,12 +32,15 @@ export class ChannelGateway {
 
   constructor(private readonly dependencies: {
     inbound: { recordInboundMessage(message: InboundChannelMessageV1): Promise<{ inserted: boolean }> };
-    orchestrator: { run(input: { message: InboundChannelMessageV1 }): Promise<OrchestratorFinalResponseV1> };
+    orchestrator: {
+      run(input: { message: InboundChannelMessageV1; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
+    };
     delivery: { deliver(response: OrchestratorFinalResponseV1): Promise<DeliveryResult> };
     commands?: { handle(message: InboundChannelMessageV1): Promise<ChannelCommandResultV1 | undefined> };
     sink?: ChannelEventSink;
     turns?: ActiveTurnRegistry<ChannelGatewayResult>;
     heartbeat?: { typingEveryMs: number; statusEveryMs: number; statuses: readonly string[] };
+    turnDeadlineMs?: number;
   }) {
     this.turns = dependencies.turns ?? new ActiveTurnRegistry<ChannelGatewayResult>();
   }
@@ -83,6 +86,7 @@ export class ChannelGateway {
   private async runRecordedTurn(message: InboundChannelMessageV1): Promise<ChannelGatewayResult> {
     const sink = this.dependencies.sink ?? noopChannelEventSink;
     const target = targetFromInboundMessage(message);
+    const signal = AbortSignal.timeout(this.dependencies.turnDeadlineMs ?? 60_000);
     const heartbeat = startGatewayHeartbeat({
       sink,
       target,
@@ -98,9 +102,18 @@ export class ChannelGateway {
       let response: OrchestratorFinalResponseV1;
       try {
         response = OrchestratorFinalResponseSchemaV1.parse(
-          await this.dependencies.orchestrator.run({ message }),
+          await this.dependencies.orchestrator.run({ message, signal }),
         );
       } catch {
+        if (signal.aborted) {
+          await emitGatewayEvent(sink, {
+            kind: 'final.failed',
+            target,
+            status: 'failed',
+            reason: 'orchestrator_timed_out',
+          });
+          return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
+        }
         await emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
