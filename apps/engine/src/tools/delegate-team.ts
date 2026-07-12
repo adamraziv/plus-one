@@ -25,7 +25,11 @@ export interface OrchestratorTeamRuntime {
 export function createDelegateTeamTool(input: {
   teams: ReadonlyMap<string, TeamDefinition>;
   teamRuntime: OrchestratorTeamRuntime;
-  getActiveInvocation(): { message: InboundChannelMessageV1; signal: AbortSignal } | undefined;
+  getActiveInvocation(): {
+    message: InboundChannelMessageV1;
+    signal: AbortSignal;
+    delegationCount: number;
+  } | undefined;
 }) {
   const teamIds = [...input.teams.keys()];
   return createTool({
@@ -45,6 +49,10 @@ export function createDelegateTeamTool(input: {
       const context = parseDelegateTeamToolInput(inputData);
       const active = input.getActiveInvocation();
       if (active === undefined) throw new Error('No active orchestrator invocation.');
+      if (active.delegationCount !== 0) {
+        throw new Error('Only one specialist delegation is allowed per orchestrator turn.');
+      }
+      active.delegationCount += 1;
       const team = input.teams.get(context.team);
       if (team === undefined) throw new Error(`Unknown team: ${context.team}`);
       const result = TeamResultEnvelopeSchemaV1.parse(await input.teamRuntime.runTeamLead({

@@ -6,9 +6,7 @@ import { TokenLimiter } from '@mastra/core/processors';
 import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
-  OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV1,
-  type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
@@ -22,6 +20,7 @@ const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactHash = 'a'.repeat(64);
 const now = '2026-06-23T10:00:00.000Z';
+
 const queryTeam = {
   team: 'query',
   lead: {
@@ -66,13 +65,13 @@ function message(body: string) {
   });
 }
 
-function teamResult() {
+function teamResult(team: 'accounting' | 'query' = 'query') {
   return TeamResultEnvelopeSchemaV1.parse({
     schemaName: 'team-result',
     schemaVersion: 1,
     householdId,
     taskId,
-    team: 'query',
+    team,
     status: 'verified',
     claims: [{
       claimId: 'accounts-listed',
@@ -82,7 +81,7 @@ function teamResult() {
     }],
     assumptions: [],
     uncertainty: [],
-    freshness: [`query refreshed ${now}`],
+    freshness: [`${team} refreshed ${now}`],
     coverage: ['query'],
     makerArtifacts: [{
       artifactId,
@@ -115,8 +114,7 @@ function teamResult() {
 
 function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting') {
   return TeamResultEnvelopeSchemaV1.parse({
-    ...teamResult(),
-    team,
+    ...teamResult(team),
     status: 'insufficient_evidence',
     claims: [],
     completionReason: 'Need the payment account before recording this transaction.',
@@ -124,24 +122,16 @@ function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting')
   });
 }
 
-function finalResponse(body = 'Structured response.'): OrchestratorFinalResponseV1 {
-  return OrchestratorFinalResponseSchemaV1.parse({
-    schemaName: 'orchestrator-final-response',
-    schemaVersion: 1,
-    responseId: 'response-structured',
-    householdId,
-    conversationId,
-    body,
-    policyBoundary: 'informational_only',
-    citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-    assumptions: [],
-    freshness: ['current invocation only'],
-    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-    unsupportedCapabilities: [],
-    recommendationActions: [],
-    delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-    responseHash: 'd'.repeat(64),
-    createdAt: now,
+function failedTeamResult() {
+  return TeamResultEnvelopeSchemaV1.parse({
+    ...teamResult(),
+    status: 'failed',
+    claims: [],
+    makerArtifacts: [],
+    checkerVerdicts: [],
+    freshness: [],
+    completionReason: 'The checker rejected the artifact or revision attempts were exhausted.',
+    outstanding: ['grain mismatch'],
   });
 }
 
@@ -152,6 +142,19 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
     businessQuestion,
     requiredCalculations: [],
     ...extra,
+  };
+}
+
+function directDraft(body: string) {
+  return {
+    body,
+    policyBoundary: 'informational_only' as const,
+    citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+    assumptions: [],
+    freshness: ['current invocation only'],
+    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+    unsupportedCapabilities: [],
+    recommendationActions: [],
   };
 }
 
@@ -166,19 +169,26 @@ function memoryMessage(role: 'user' | 'assistant', body: string) {
   };
 }
 
+function singleLoopOrchestrator(input: {
+  generate: (...args: unknown[]) => Promise<unknown>;
+  runTeamLead: OrchestratorTeamRuntime['runTeamLead'];
+  teams: readonly TeamDefinition[];
+}) {
+  return new OrchestratorAgent({
+    model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+    agentFactory: (config) => ({ ...config, generate: input.generate }) as never,
+    teams: input.teams,
+    teamRuntime: { runTeamLead: input.runTeamLead },
+  });
+}
+
 describe('OrchestratorAgent', () => {
   it('logs turn lifecycle metadata while preserving inherited request context', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
     const logging = configureLogging({ homeDirectory });
     const inbound = message('What did we spend this month?');
-    const final = finalResponse('Private final response body');
-    const generate = vi.fn(async () => ({ object: final }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate } as never),
-      teams: [],
-      teamRuntime: { runTeamLead: vi.fn() },
-    });
+    const generate = vi.fn(async () => ({ object: directDraft('Private final response body') }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [] });
 
     try {
       await withLogContext({ requestId: 'req_inherited' }, () => orchestrator.run({ message: inbound }));
@@ -198,19 +208,14 @@ describe('OrchestratorAgent', () => {
   it('logs a sanitized failed turn without serializing the thrown message', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
     const logging = configureLogging({ homeDirectory });
-    const inbound = message('What did we spend this month?');
     const generate = vi.fn(async () => {
       throw new Error('Private model response should not be logged');
     });
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate } as never),
-      teams: [],
-      teamRuntime: { runTeamLead: vi.fn() },
-    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [] });
 
     try {
-      await expect(orchestrator.run({ message: inbound })).rejects.toThrow('Private model response should not be logged');
+      await expect(orchestrator.run({ message: message('What did we spend this month?') }))
+        .rejects.toThrow('Private model response should not be logged');
       const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
       expect(agentLog).toContain('turn.failed');
       expect(agentLog).toContain('failureCategory=runtime_failure');
@@ -221,8 +226,8 @@ describe('OrchestratorAgent', () => {
     }
   });
 
-  it('limits only the top-level orchestrator input context', () => {
-    const configs: Array<{ id?: string; inputProcessors?: unknown }> = [];
+  it('limits model construction to the top-level orchestrator agent', () => {
+    const configs: Array<{ id?: string; inputProcessors?: unknown; tools?: unknown }> = [];
 
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -234,18 +239,12 @@ describe('OrchestratorAgent', () => {
       teamRuntime: { runTeamLead: vi.fn() },
     });
 
-    const byId = Object.fromEntries(configs.map((config) => [config.id, config]));
-    const inputProcessors = byId.orchestrator?.inputProcessors;
-
-    expect(Array.isArray(inputProcessors)).toBe(true);
-    if (!Array.isArray(inputProcessors)) throw new Error('Expected orchestrator input processors.');
-    expect(inputProcessors).toHaveLength(1);
-    expect(inputProcessors[0]).toBeInstanceOf(TokenLimiter);
-    expect(inputProcessors[0]).toMatchObject({ id: 'token-limiter' });
-    expect((inputProcessors[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
-    expect(byId['orchestrator-accounting-intent']?.inputProcessors).toBeUndefined();
-    expect(byId['orchestrator-query-intent']?.inputProcessors).toBeUndefined();
-    expect(byId['orchestrator-finalizer']?.inputProcessors).toBeUndefined();
+    expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
+    expect(configs[0]?.tools).toEqual(expect.objectContaining({ delegateTeam: expect.anything() }));
+    expect(Array.isArray(configs[0]?.inputProcessors)).toBe(true);
+    expect(configs[0]?.inputProcessors).toHaveLength(1);
+    expect(configs[0]?.inputProcessors?.[0]).toBeInstanceOf(TokenLimiter);
+    expect((configs[0]?.inputProcessors?.[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
   });
 
   it('uses prepared thread context and persists the final user-facing reply', async () => {
@@ -257,47 +256,16 @@ describe('OrchestratorAgent', () => {
       persistTurn: vi.fn(),
       close: vi.fn(),
     };
-    const mainGenerate = vi.fn(async (messages) => {
+    const generate = vi.fn(async (messages: unknown) => {
       expect(messages).toEqual([
         expect.objectContaining({ role: 'assistant' }),
         expect.objectContaining({ role: 'user' }),
       ]);
-      return { text: 'raw reasoning answer' };
+      return { object: directDraft('Final clean answer.') };
     });
-    const accountingIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateTransactionCapture: false, known: {} },
-    }));
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
-    }));
-    const finalizerGenerate = vi.fn(async () => ({
-      object: {
-        body: 'Final clean answer.',
-        policyBoundary: 'informational_only',
-        citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-      },
-    }));
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
+      agentFactory: (config) => ({ ...config, generate }) as never,
       sessionMemory,
       teams: [queryTeam],
       teamRuntime: { runTeamLead: vi.fn() },
@@ -305,7 +273,6 @@ describe('OrchestratorAgent', () => {
 
     await expect(orchestrator.run({ message: message('Use checking for that transfer.') }))
       .resolves.toMatchObject({ body: 'Final clean answer.' });
-
     expect(sessionMemory.prepareInput).toHaveBeenCalledWith({
       message: message('Use checking for that transfer.'),
     });
@@ -315,189 +282,82 @@ describe('OrchestratorAgent', () => {
     });
   });
 
-  it('passes prior transcript context into accounting intent classification on a follow-up turn', async () => {
-    const sessionMemory: OrchestratorSessionMemoryPort = {
-      prepareInput: vi.fn(async () => [
-        memoryMessage('user', 'I spent 10 USD on groceries.'),
-        memoryMessage('assistant', 'Which internal payment account should this use?'),
-        memoryMessage('user', 'Use my checking account and the purchase was today.'),
-      ]),
-      persistTurn: vi.fn(),
-      close: vi.fn(),
-    };
-    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
-    const mainGenerate = vi.fn(async () => ({
-      text: 'Need more accounting details.',
+  it('answers a direct message with one structured two-step-bounded orchestrator generation', async () => {
+    const generate = vi.fn(async () => ({
+      object: directDraft('Plus One can help with household finance questions.'),
     }));
-    const accountingIntentGenerate = vi.fn(async (prompt: string) => {
-      expect(prompt).toContain('Conversation transcript before the latest inbound message:');
-      expect(prompt).toContain('Latest inbound message JSON:');
-      expect(prompt).toContain('When the latest user message answers a prior clarification, merge it with earlier user-stated transaction details from the same conversation.');
-      expect(prompt).toContain('I spent 10 USD on groceries.');
-      expect(prompt).toContain('Use my checking account and the purchase was today.');
-      return {
-        object: {
-          shouldDelegateTransactionCapture: true,
-          shouldDelegateJournal: false,
-          instruction: 'I spent 10 USD on groceries.',
-          known: {
-            amount: '10.00',
-            currency: 'USD',
-            paymentAccountName: 'checking',
-            occurredOn: '2026-06-23',
-            categoryName: 'groceries',
-          },
-        },
-      };
-    });
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
-    }));
+    const configs: Array<{ id?: string; tools?: unknown }> = [];
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return { ...config, generate: mainGenerate } as never;
+        configs.push(config);
+        return { ...config, generate } as never;
       },
-      sessionMemory,
-      teams: [accountingTeam],
-      teamRuntime: { runTeamLead },
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
     });
+    const signal = AbortSignal.timeout(1_000);
 
-    const response = await orchestrator.run({
-      message: message('Use my checking account and the purchase was today.'),
-    });
-
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(queryIntentGenerate).not.toHaveBeenCalled();
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      message: expect.objectContaining({ body: 'Use my checking account and the purchase was today.' }),
-      team: accountingTeam,
-      request: expect.objectContaining({
-        intent: 'transaction_capture',
-        request: expect.objectContaining({
-          instruction: 'I spent 10 USD on groceries.',
-          known: expect.objectContaining({
-            amount: '10.00',
-            currency: 'USD',
-          }),
-        }),
-      }),
+    await expect(orchestrator.run({ message: message('hi'), signal }))
+      .resolves.toMatchObject({ body: 'Plus One can help with household finance questions.' });
+    expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      maxSteps: 2,
+      abortSignal: signal,
+      structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
     }));
-    expect(response.body).toContain('Which internal payment account should this use?');
   });
 
-  it('lets the orchestrator agent delegate through the existing team lead runtime', async () => {
-    const channelEvents = { emit: vi.fn(async () => undefined) };
-    const inbound = message('List our accounts.');
-    const runTeamLead = vi.fn(async (input) => {
-      expect(input.request).toMatchObject({ businessQuestion: 'List our accounts.' });
-      return teamResult();
-    });
-    const generate = vi.fn(async (messages) => {
-      expect(messages).toContain('List our accounts.');
-      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+  it('lets the single orchestrator generation delegate once and return a checked structured reply', async () => {
+    let orchestrator: OrchestratorAgent;
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('List our accounts.', {
           desiredGrain: ['household', 'account'],
           coverage: ['account list'],
         }),
       });
-      return {
-        object: OrchestratorFinalResponseSchemaV1.parse({
-          schemaName: 'orchestrator-final-response',
-          schemaVersion: 1,
-          responseId: 'response-1',
-          householdId,
-          conversationId,
-          body: result.claims[0]!.text + '\n\nPlus One is an AI assistant, not a licensed financial professional.',
-          policyBoundary: 'personalized_finance',
-          citations: [{ label: 'query:accounts-listed', artifactId }],
-          assumptions: [],
-          freshness: result.freshness,
-          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-          unsupportedCapabilities: [],
-          recommendationActions: [],
-          delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-          responseHash: 'c'.repeat(64),
-          createdAt: now,
-        }),
-      };
+      return { object: directDraft('The checked evidence includes one account row.') };
     });
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate }) as never,
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead },
-      channelEvents,
-    });
+    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
-    const response = await orchestrator.run({ message: inbound });
+    const response = await orchestrator.run({ message: message('List our accounts.') });
 
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({ team: queryTeam }));
-    expect(channelEvents.emit).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'tool.started',
-      toolName: 'delegateTeam',
-      target: expect.objectContaining({
-        conversationId,
-        destination: { chatId: 'telegram-chat-42' },
-      }),
-    }));
-    expect(channelEvents.emit).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'tool.finished',
-      toolName: 'delegateTeam',
-      ok: true,
-    }));
     expect(generate).toHaveBeenCalledTimes(1);
-    expect((orchestrator.agent as unknown as { description: string }).description).toContain('single entrypoint');
-    expect(orchestrator.agentTools.delegateTeam.description).toContain('specialist team lead');
-    expect(response.body).toContain('one account row');
-    expect(response.body).not.toContain('Delegating to query');
-    expect(inbound.metadata).toEqual({ destination: { chatId: 'telegram-chat-42' } });
+    expect(runTeamLead).toHaveBeenCalledTimes(1);
+    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+  });
+
+  it('rejects a second delegateTeam call in one orchestrator turn', async () => {
+    let orchestrator: OrchestratorAgent;
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
+      await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
+      return { object: directDraft('unreachable') };
+    });
+    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .rejects.toThrow('Only one specialist delegation is allowed per orchestrator turn.');
+    expect(runTeamLead).toHaveBeenCalledTimes(1);
   });
 
   it('does not let progress event failures fail delegated turns', async () => {
-    const channelEvents = {
-      emit: vi.fn(async () => {
-        throw new Error('status transport unavailable');
-      }),
-    };
+    const channelEvents = { emit: vi.fn(async () => { throw new Error('status transport unavailable'); }) };
+    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
-      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: queryDraft('List our accounts.', {
-          desiredGrain: ['household', 'account'],
-          coverage: ['account list'],
-        }),
+        request: queryDraft('List our accounts.', { desiredGrain: ['household', 'account'], coverage: ['account list'] }),
       });
-      return {
-        object: OrchestratorFinalResponseSchemaV1.parse({
-          schemaName: 'orchestrator-final-response',
-          schemaVersion: 1,
-          responseId: 'response-1',
-          householdId,
-          conversationId,
-          body: result.claims[0]!.text + '\n\nPlus One is an AI assistant, not a licensed financial professional.',
-          policyBoundary: 'personalized_finance',
-          citations: [{ label: 'query:accounts-listed', artifactId }],
-          assumptions: [],
-          freshness: result.freshness,
-          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-          unsupportedCapabilities: [],
-          recommendationActions: [],
-          delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-          responseHash: 'c'.repeat(64),
-          createdAt: now,
-        }),
-      };
+      return { object: directDraft('The checked evidence includes one account row.') };
     });
-    const orchestrator = new OrchestratorAgent({
+    orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
@@ -506,171 +366,48 @@ describe('OrchestratorAgent', () => {
     });
 
     await expect(orchestrator.run({ message: message('List our accounts.') }))
-      .resolves.toMatchObject({ body: expect.stringContaining('one account row') });
+      .resolves.toMatchObject({ body: expect.stringContaining('checked evidence') });
     expect(channelEvents.emit).toHaveBeenCalled();
     expect(runTeamLead).toHaveBeenCalledOnce();
   });
 
   it('keeps delegate context isolated across concurrent runs', async () => {
-    const runTeamLead = vi.fn(async (_input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
-      void _input;
-      return teamResult();
-    });
+    const runTeamLead = vi.fn(async (_input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => teamResult());
+    let orchestrator: OrchestratorAgent;
     let secondDelegated!: () => void;
-    const secondDelegatedPromise = new Promise<void>((resolve) => {
-      secondDelegated = resolve;
-    });
+    const secondDelegatedPromise = new Promise<void>((resolve) => { secondDelegated = resolve; });
     let firstEntered!: () => void;
-    const firstEnteredPromise = new Promise<void>((resolve) => {
-      firstEntered = resolve;
-    });
-    const mainGenerate = vi.fn(async (messages: string) => {
-      const body = messages.includes('first') ? 'first' : 'second';
+    const firstEnteredPromise = new Promise<void>((resolve) => { firstEntered = resolve; });
+    const generate = vi.fn(async (prompt: unknown) => {
+      const body = typeof prompt === 'string' && prompt.includes('first') ? 'first' : 'second';
       if (body === 'first') {
         firstEntered();
         await secondDelegatedPromise;
       } else {
         await firstEnteredPromise;
       }
-      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft(body),
       });
       if (body === 'second') secondDelegated();
-      return {
-        object: OrchestratorFinalResponseSchemaV1.parse({
-          schemaName: 'orchestrator-final-response',
-          schemaVersion: 1,
-          responseId: `response-${body}`,
-          householdId,
-          conversationId,
-          body: result.claims[0]!.text + '\n\nPlus One is an AI assistant, not a licensed financial professional.',
-          policyBoundary: 'personalized_finance',
-          citations: [{ label: 'query:accounts-listed', artifactId }],
-          assumptions: [],
-          freshness: result.freshness,
-          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-          unsupportedCapabilities: [],
-          recommendationActions: [],
-          delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-          responseHash: 'c'.repeat(64),
-          createdAt: now,
-        }),
-      };
+      return { object: directDraft(`${body} checked reply`) };
     });
-    const accountingIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateTransactionCapture: false, known: {} },
-    }));
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
-    }));
-    const finalizerGenerate = vi.fn();
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead },
-    });
+    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await Promise.all([
       orchestrator.run({ message: message('first') }),
       orchestrator.run({ message: message('second') }),
     ]);
 
-    expect(runTeamLead.mock.calls.map(([input]) => input.message.body).sort())
-      .toEqual(['first', 'second']);
-    expect(accountingIntentGenerate).not.toHaveBeenCalled();
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(2);
-    expect(finalizerGenerate).not.toHaveBeenCalled();
-  });
-
-  it('keeps final schema off the reasoning agent and uses a no-tools finalizer', async () => {
-    const mainGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
-      expect(options).toEqual({
-        memory: {
-          thread: conversationId,
-          resource: householdId,
-        },
-      });
-      return { text: 'Plus One can help with household finance questions.' };
-    });
-    const accountingIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
-      expect(options).toMatchObject({
-        toolChoice: 'none',
-      });
-      return { object: { shouldDelegateTransactionCapture: false, known: {} } };
-    });
-    const queryIntentGenerate = vi.fn();
-    const finalizerGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
-      expect(options).toMatchObject({
-        structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
-        toolChoice: 'none',
-      });
-      return {
-        object: {
-          body: 'Plus One can help with household finance questions.',
-          policyBoundary: 'informational_only',
-          citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-          assumptions: [],
-          freshness: ['current invocation only'],
-          disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-          unsupportedCapabilities: [],
-          recommendationActions: [],
-        },
-      };
-    });
-    const configs: Array<{ id?: string; tools: Record<string, unknown> | undefined }> = [];
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        configs.push({ id: config.id, tools: config.tools as Record<string, unknown> | undefined });
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead: vi.fn() },
-    });
-
-    await expect(orchestrator.run({ message: message('What can you do?') }))
-      .resolves.toMatchObject({ body: 'Plus One can help with household finance questions.' });
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
-    expect(configs).toEqual([
-      expect.objectContaining({ id: 'orchestrator', tools: expect.any(Object) }),
-      expect.objectContaining({ id: 'orchestrator-accounting-intent', tools: {} }),
-      expect.objectContaining({ id: 'orchestrator-query-intent', tools: {} }),
-      expect.objectContaining({ id: 'orchestrator-finalizer', tools: {} }),
-    ]);
+    expect(runTeamLead.mock.calls.map(([input]) => input.message.body).sort()).toEqual(['first', 'second']);
+    expect(generate).toHaveBeenCalledTimes(2);
   });
 
   it('returns a non-terminal turn result when a delegated team needs user clarification', async () => {
+    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
-    const mainGenerate = vi.fn(async () => {
+    const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'accounting',
         request: {
@@ -685,639 +422,73 @@ describe('OrchestratorAgent', () => {
           },
         },
       });
-      return { text: 'The accounting team needs clarification before posting.' };
+      return { object: directDraft('The accounting team needs clarification before posting.') };
     });
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({ ...config, generate: mainGenerate }) as never,
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
+    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
-    const result = await (orchestrator as OrchestratorAgent & {
-      runTurn: (input: { message: ReturnType<typeof message> }) => Promise<unknown>;
-    }).runTurn({ message: message('add $10 of buying a burger') });
-
-    expect(result).toMatchObject({
+    await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') })).resolves.toMatchObject({
       kind: 'ask-user',
-      response: {
-        body: expect.stringContaining('Which internal payment account should this use?'),
-      },
+      response: { body: expect.stringContaining('Which internal payment account should this use?') },
     });
   });
 
-  it('uses checked team results when a reasoning model returns prose plus fenced JSON after delegation', async () => {
-    const runTeamLead = vi.fn(async () => teamResult());
-    const mainGenerate = vi.fn(async () => {
-      const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query',
-        request: queryDraft('List our accounts.', {
-          desiredGrain: ['household', 'account'],
-          coverage: ['account list'],
-        }),
-      });
-      return {
-        text: [
-          'Here is the answer.',
-          '```json',
-          JSON.stringify(finalResponse(result.claims[0]!.text)),
-          '```',
-        ].join('\n'),
-      };
-    });
-    const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const response = await orchestrator.run({ message: message('List our accounts.') });
-
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
-    expect(runTeamLead).toHaveBeenCalledTimes(1);
-    expect(response).toMatchObject({
-      schemaName: 'orchestrator-final-response',
-      body: expect.stringContaining('Ready for orchestrator reconciliation.'),
-      citations: [{ label: 'query:accounts-listed', artifactId }],
-    });
-  });
-
-  it('uses checked team citations when the finalizer omits citations after delegation', async () => {
-    const runTeamLead = vi.fn(async () => teamResult());
-    const mainGenerate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query',
-        request: queryDraft('List our accounts.', {
-          desiredGrain: ['household', 'account'],
-          coverage: ['account list'],
-        }),
-      });
-      return { text: 'The Query team found one account.' };
-    });
-    const finalizerGenerate = vi.fn(async () => ({
-      object: {
-        body: 'The Query team found one account.',
-        policyBoundary: 'personalized_finance',
-        citations: [],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-      },
-    }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const response = await orchestrator.run({ message: message('List our accounts.') });
-
-    expect(runTeamLead).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
-    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
-    expect(response.delivery.format).toBe('mrkdwn');
-  });
-
-  it('does not let the finalizer rewrite failed team results as successful answers', async () => {
-    const failedResult = TeamResultEnvelopeSchemaV1.parse({
-      ...teamResult(),
-      status: 'failed',
-      claims: [],
-      makerArtifacts: [],
-      checkerVerdicts: [],
-      freshness: [],
-      completionReason: 'The checker rejected the artifact or revision attempts were exhausted.',
-      outstanding: ['grain mismatch'],
-    });
-    const runTeamLead = vi.fn(async () => failedResult);
-    const mainGenerate = vi.fn(async () => {
+  it('uses checked team results instead of a direct answer when delegation is not verified', async () => {
+    let orchestrator: OrchestratorAgent;
+    const runTeamLead = vi.fn(async () => failedTeamResult());
+    const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('Show our transactions.'),
       });
-      return { text: 'The query returned verified transactions.' };
+      return { object: directDraft('The query returned verified transactions.') };
     });
-    const finalizerGenerate = vi.fn(async () => ({
-      object: {
-        body: 'The query returned verified transactions.',
-        policyBoundary: 'personalized_finance',
-        citations: [],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-      },
-    }));
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
-    }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead },
-    });
+    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     const response = await orchestrator.run({ message: message('Show our transactions.') });
 
-    expect(finalizerGenerate).not.toHaveBeenCalled();
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
     expect(response.body).toContain('Query team status: failed');
     expect(response.body).toContain('grain mismatch');
     expect(response.body).not.toContain('verified transactions');
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
+  });
+
+  it('uses checked team citations when the orchestrator draft contains only policy citations', async () => {
+    let orchestrator: OrchestratorAgent;
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', { desiredGrain: ['household', 'account'], coverage: ['account list'] }),
+      });
+      return { object: directDraft('The Query team found one account.') };
+    });
+    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
     expect(response.delivery.format).toBe('mrkdwn');
   });
 
-  it('uses a later verified team result over an earlier failed retry result', async () => {
-    const failedResult = TeamResultEnvelopeSchemaV1.parse({
-      ...teamResult(),
-      status: 'failed',
-      claims: [],
-      makerArtifacts: [],
-      checkerVerdicts: [],
-      freshness: [],
-      completionReason: 'Agent output failed structured validation',
-      outstanding: ['agent_output_schema_failed'],
-    });
-    const verifiedResult = teamResult();
-    const runTeamLead = vi.fn()
-      .mockResolvedValueOnce(failedResult)
-      .mockResolvedValueOnce(verifiedResult);
-    const mainGenerate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query',
-        request: queryDraft('List our accounts.', {
-          desiredGrain: ['household', 'account'],
-          coverage: ['account list'],
-        }),
-      });
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query',
-        request: queryDraft('List our accounts.', {
-          desiredGrain: ['household', 'account'],
-          coverage: ['account list'],
-        }),
-      });
-      return { text: 'The Query team found one account.' };
-    });
-    const finalizerGenerate = vi.fn();
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead },
-    });
+  it('does not delegate when the orchestrator returns a direct structured response', async () => {
+    const runTeamLead = vi.fn();
+    const generate = vi.fn(async () => ({ object: directDraft('I can answer directly without a team.') }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
-    const response = await orchestrator.run({ message: message('List our accounts.') });
+    const response = await orchestrator.run({ message: message('What can you do?') });
 
-    expect(runTeamLead).toHaveBeenCalledTimes(2);
-    expect(finalizerGenerate).not.toHaveBeenCalled();
-    expect(response.body).toContain('Query team status: verified');
-    expect(response.body).not.toContain('agent_output_schema_failed');
-    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
-  });
-
-  it('does not synthesize query delegation when the model returns a direct final response', async () => {
-    const runTeamLead = vi.fn(async () => teamResult());
-    const mainGenerate = vi.fn(async () => ({
-      object: finalResponse('I can answer directly without a team.'),
-    }));
-    const accountingIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateTransactionCapture: false, known: {} },
-    }));
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
-    }));
-    const finalizerGenerate = vi.fn();
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const response = await orchestrator.run({ message: message('List our accounts.') });
-
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledTimes(1);
     expect(runTeamLead).not.toHaveBeenCalled();
     expect(response.body).toBe('I can answer directly without a team.');
     expect(response.delivery.format).toBe('mrkdwn');
   });
 
-  it('delegates internal finance reads when the reasoning model answers without checked data', async () => {
-    const runTeamLead = vi.fn(async () => teamResult());
-    const mainGenerate = vi.fn(async () => ({
-      object: finalResponse('I currently do not have access to your transaction history.'),
-    }));
-    const accountingIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateTransactionCapture: false, known: {} },
-    }));
-    const queryIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
-      expect(options).toMatchObject({
-        toolChoice: 'none',
-      });
-      return {
-        object: {
-          shouldDelegateQuery: true,
-          businessQuestion: 'What are my top expenses this month?',
-          timeframe: { start: '2026-06-01', end: '2026-06-30' },
-          desiredGrain: ['household', 'month', 'category'],
-          requiredCalculations: [],
-          coverage: ['category spend monthly'],
-        },
-      };
-    });
-    const finalizerGenerate = vi.fn(async () => ({
-      object: {
-        body: 'Your checked expense data is ready.',
-        policyBoundary: 'personalized_finance',
-        citations: [],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-      },
-    }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const response = await orchestrator.run({
-      message: message('What are my top expenses this month?'),
-    });
-
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      team: queryTeam,
-      request: expect.objectContaining({
-        schemaName: 'query-lead-request-draft',
-        businessQuestion: 'What are my top expenses this month?',
-        desiredGrain: ['household', 'month', 'category'],
-        requiredCalculations: [],
-        coverage: ['category spend monthly'],
-      }),
-    }));
-    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
-    expect(response.body).toBe('Your checked expense data is ready.');
-  });
-
-  it('refines bare query delegations before they reach the query team', async () => {
-    const runTeamLead = vi.fn(async () => teamResult());
-    const mainGenerate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query',
-        request: {
-          schemaName: 'query-lead-request-draft',
-          schemaVersion: 1,
-          businessQuestion: 'What is my current bank account balance?',
-          requiredCalculations: [],
-        },
-      });
-      return { text: 'The query team found checked balance evidence.' };
-    });
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: {
-        shouldDelegateQuery: true,
-        businessQuestion: 'What is my current bank account balance?',
-        desiredGrain: ['household', 'account'],
-        requiredCalculations: [],
-        coverage: ['balance snapshot'],
-      },
-    }));
-    const finalizerGenerate = vi.fn(async () => ({
-      object: {
-        body: 'Your checked balance data is ready.',
-        policyBoundary: 'personalized_finance',
-        citations: [],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-      },
-    }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const response = await orchestrator.run({
-      message: message('What is my current bank account balance?'),
-    });
-
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      team: queryTeam,
-      request: expect.objectContaining({
-        businessQuestion: 'What is my current bank account balance?',
-        desiredGrain: ['household', 'account'],
-        coverage: ['balance snapshot'],
-      }),
-    }));
-    expect(response.body).toBe('Your checked balance data is ready.');
-  });
-
-  it('uses the Mastra delegate tool for accounting writes instead of regex pre-routing', async () => {
-    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
-    const mainGenerate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'accounting',
-        request: {
-          schemaName: 'accounting-lead-request',
-          schemaVersion: 1,
-          intent: 'transaction_capture',
-          request: {
-            schemaName: 'transaction-capture-request-draft',
-            schemaVersion: 1,
-            instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
-            known: {
-              amount: '10.00',
-              currency: 'USD',
-              occurredOn: '2026-06-27',
-              paymentAccountName: 'checking',
-              categoryName: 'dining out',
-            },
-          },
-        },
-      });
-      return { text: 'The accounting team needs clarification before posting.' };
-    });
-    const finalizerGenerate = vi.fn();
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => ({
-        ...config,
-        generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-          ? finalizerGenerate
-          : mainGenerate,
-      }) as never,
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const result = await orchestrator.runTurn({
-      message: message('Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.'),
-    });
-
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).not.toHaveBeenCalled();
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      team: accountingTeam,
-      request: expect.objectContaining({
-        schemaName: 'accounting-lead-request',
-        schemaVersion: 1,
-        intent: 'transaction_capture',
-      }),
-    }));
-    expect(result).toMatchObject({
-      kind: 'ask-user',
-      response: {
-        body: expect.stringContaining('Which internal payment account should this use?'),
-      },
-    });
-  });
-
-  it('uses structured intent classification when the reasoning model answers directly without delegating', async () => {
-    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
-    const mainGenerate = vi.fn(async () => ({ text: 'Transaction recorded.' }));
-    const accountingIntentGenerate = vi.fn(async (_messages: unknown, options: Record<string, unknown>) => {
-      expect(options).toMatchObject({
-        toolChoice: 'none',
-      });
-      return {
-        object: {
-          shouldDelegateTransactionCapture: true,
-          instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
-          known: {
-            amount: '10.00',
-            currency: 'USD',
-            occurredOn: '2026-06-27',
-            paymentAccountName: 'checking',
-            categoryName: 'dining out',
-          },
-        },
-      };
-    });
-    const finalizerGenerate = vi.fn();
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const result = await orchestrator.runTurn({
-      message: message('Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.'),
-    });
-
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).not.toHaveBeenCalled();
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      team: accountingTeam,
-      request: expect.objectContaining({
-        schemaName: 'accounting-lead-request',
-        schemaVersion: 1,
-        intent: 'transaction_capture',
-        request: expect.objectContaining({
-          schemaName: 'transaction-capture-request-draft',
-          known: expect.objectContaining({
-            amount: '10.00',
-            currency: 'USD',
-            occurredOn: '2026-06-27',
-            paymentAccountName: 'checking',
-            categoryName: 'dining out',
-          }),
-        }),
-      }),
-    }));
-    expect(result).toMatchObject({
-      kind: 'ask-user',
-      response: {
-        body: expect.stringContaining('Which internal payment account should this use?'),
-      },
-    });
-  });
-
-  it('routes internal transfers to accounting journal work when the reasoning model answers directly', async () => {
-    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
-    const mainGenerate = vi.fn(async () => ({ text: 'Transfer recorded.' }));
-    const accountingIntentGenerate = vi.fn(async () => ({
-      object: {
-        shouldDelegateTransactionCapture: false,
-        shouldDelegateJournal: true,
-        journalOperation: 'transfer',
-        instruction: 'transfer $1000 from my savings to my checking account',
-        known: {},
-      },
-    }));
-    const finalizerGenerate = vi.fn();
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam, accountingTeam],
-      teamRuntime: { runTeamLead },
-    });
-
-    const result = await orchestrator.runTurn({
-      message: message('transfer $1000 from my savings to my checking account'),
-    });
-
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
-      team: accountingTeam,
-      request: expect.objectContaining({
-        schemaName: 'accounting-lead-request',
-        schemaVersion: 1,
-        intent: 'journal',
-        request: expect.objectContaining({
-          operation: 'transfer',
-          instruction: 'transfer $1000 from my savings to my checking account',
-        }),
-      }),
-    }));
-    expect(result).toMatchObject({
-      kind: 'ask-user',
-      response: {
-        body: expect.stringContaining('Which internal payment account should this use?'),
-      },
-    });
-  });
-
   it('fails instead of wrapping invalid no-team model output as plain text', async () => {
-    const mainGenerate = vi.fn(async () => ({ text: 'I recorded it.' }));
-    const accountingIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateTransactionCapture: false, known: {} },
-    }));
-    const queryIntentGenerate = vi.fn(async () => ({
-      object: { shouldDelegateQuery: false, desiredGrain: [], requiredCalculations: [], coverage: [] },
-    }));
-    const finalizerGenerate = vi.fn(async () => ({ text: 'still not structured' }));
-    const orchestrator = new OrchestratorAgent({
-      model: { id: 'deepseek/deepseek-v4-flash', endpoint: 'https://api.deepseek.com', apiKey: 'test-api-key' },
-      agentFactory: (config) => {
-        if (config.id === 'orchestrator-accounting-intent') {
-          return { ...config, generate: accountingIntentGenerate } as never;
-        }
-        if (config.id === 'orchestrator-query-intent') {
-          return { ...config, generate: queryIntentGenerate } as never;
-        }
-        return {
-          ...config,
-          generate: Object.keys((config.tools as Record<string, unknown> | undefined) ?? {}).length === 0
-            ? finalizerGenerate
-            : mainGenerate,
-        } as never;
-      },
-      teams: [queryTeam],
-      teamRuntime: { runTeamLead: vi.fn() },
-    });
+    const generate = vi.fn(async () => ({ text: 'I recorded it.' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
 
-    await expect(orchestrator.run({ message: message('What can you do?') }))
-      .rejects.toThrow();
-    expect(mainGenerate).toHaveBeenCalledTimes(1);
-    expect(accountingIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(queryIntentGenerate).toHaveBeenCalledTimes(1);
-    expect(finalizerGenerate).toHaveBeenCalledTimes(1);
+    await expect(orchestrator.run({ message: message('What can you do?') })).rejects.toThrow();
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 
   it('rejects non-canonical delegate tool input before team execution', async () => {
@@ -1329,10 +500,7 @@ describe('OrchestratorAgent', () => {
       teamRuntime: { runTeamLead },
     });
 
-    const execute = orchestrator.agentTools.delegateTeam.execute as unknown as (
-      input: unknown,
-      options: unknown,
-    ) => Promise<unknown>;
+    const execute = orchestrator.agentTools.delegateTeam.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
     await expect(execute({ team: 'Query Team', request: 'test' }, {})).resolves.toMatchObject({ error: true });
     await expect(execute({ team: 'query', request: '"test"' }, {})).resolves.toMatchObject({ error: true });
     expect(runTeamLead).not.toHaveBeenCalled();
