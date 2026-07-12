@@ -187,13 +187,23 @@ describe('OrchestratorAgent', () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
     const logging = configureLogging({ homeDirectory });
     const inbound = message('What did we spend this month?');
-    const generate = vi.fn(async () => ({ object: directDraft('Private final response body') }));
-    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [] });
+    const generate = vi.fn(async (_prompt: unknown, options: { onStepFinish?: (step: unknown) => void }) => {
+      options.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 8 }, toolCalls: [] });
+      return { object: directDraft('Private final response body') };
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate: generate as (...args: unknown[]) => Promise<unknown>,
+      runTeamLead: vi.fn(),
+      teams: [],
+    });
 
     try {
       await withLogContext({ requestId: 'req_inherited' }, () => orchestrator.run({ message: inbound }));
       const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
       expect(agentLog).toContain('turn.started');
+      expect(agentLog).toContain('turn.context.prepared');
+      expect(agentLog).toContain('orchestrator.step.completed');
+      expect(agentLog).toContain('durationMs=');
       expect(agentLog).toContain('turn.completed');
       expect(agentLog).toContain('requestId=req_inherited');
       expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
@@ -312,8 +322,10 @@ describe('OrchestratorAgent', () => {
   });
 
   it('lets the single orchestrator generation delegate once and return a checked structured reply', async () => {
-    let orchestrator: OrchestratorAgent;
-    const runTeamLead = vi.fn(async () => teamResult());
+    const runTeamLead = vi.fn(async (input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
+      void input;
+      return teamResult();
+    });
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
@@ -324,7 +336,7 @@ describe('OrchestratorAgent', () => {
       });
       return { object: directDraft('The checked evidence includes one account row.') };
     });
-    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     const response = await orchestrator.run({ message: message('List our accounts.') });
 
@@ -334,14 +346,13 @@ describe('OrchestratorAgent', () => {
   });
 
   it('rejects a second delegateTeam call in one orchestrator turn', async () => {
-    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
       await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
       return { object: directDraft('unreachable') };
     });
-    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('List our accounts.') }))
       .rejects.toThrow('Only one specialist delegation is allowed per orchestrator turn.');
@@ -350,7 +361,6 @@ describe('OrchestratorAgent', () => {
 
   it('does not let progress event failures fail delegated turns', async () => {
     const channelEvents = { emit: vi.fn(async () => { throw new Error('status transport unavailable'); }) };
-    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -359,7 +369,7 @@ describe('OrchestratorAgent', () => {
       });
       return { object: directDraft('The checked evidence includes one account row.') };
     });
-    orchestrator = new OrchestratorAgent({
+    const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
@@ -374,8 +384,10 @@ describe('OrchestratorAgent', () => {
   });
 
   it('keeps delegate context isolated across concurrent runs', async () => {
-    const runTeamLead = vi.fn(async (_input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => teamResult());
-    let orchestrator: OrchestratorAgent;
+    const runTeamLead = vi.fn(async (input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
+      void input;
+      return teamResult();
+    });
     let secondDelegated!: () => void;
     const secondDelegatedPromise = new Promise<void>((resolve) => { secondDelegated = resolve; });
     let firstEntered!: () => void;
@@ -395,7 +407,7 @@ describe('OrchestratorAgent', () => {
       if (body === 'second') secondDelegated();
       return { object: directDraft(`${body} checked reply`) };
     });
-    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await Promise.all([
       orchestrator.run({ message: message('first') }),
@@ -407,7 +419,6 @@ describe('OrchestratorAgent', () => {
   });
 
   it('returns a non-terminal turn result when a delegated team needs user clarification', async () => {
-    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -426,7 +437,7 @@ describe('OrchestratorAgent', () => {
       });
       return { object: directDraft('The accounting team needs clarification before posting.') };
     });
-    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
     await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') })).resolves.toMatchObject({
       kind: 'ask-user',
@@ -435,7 +446,6 @@ describe('OrchestratorAgent', () => {
   });
 
   it('uses checked team results instead of a direct answer when delegation is not verified', async () => {
-    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => failedTeamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -444,7 +454,7 @@ describe('OrchestratorAgent', () => {
       });
       return { object: directDraft('The query returned verified transactions.') };
     });
-    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     const response = await orchestrator.run({ message: message('Show our transactions.') });
 
@@ -455,7 +465,6 @@ describe('OrchestratorAgent', () => {
   });
 
   it('uses checked team citations when the orchestrator draft contains only policy citations', async () => {
-    let orchestrator: OrchestratorAgent;
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -464,7 +473,7 @@ describe('OrchestratorAgent', () => {
       });
       return { object: directDraft('The Query team found one account.') };
     });
-    orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     const response = await orchestrator.run({ message: message('List our accounts.') });
 

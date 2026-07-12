@@ -118,6 +118,9 @@ export class FinalDeliveryHandler {
       idempotencyKey: createDeliveryKey(response),
       response,
     });
+    logger.info('delivery.reserved', {
+      fields: { channel, status: delivery.status },
+    });
     return withLogContext({
       deliveryId: delivery.deliveryId,
       householdId: response.householdId,
@@ -158,6 +161,13 @@ export class FinalDeliveryHandler {
           delivery.deliveryId,
           sent.platformMessageId,
         );
+        logger.info('delivery.sent', {
+          fields: {
+            channel,
+            sent: true,
+            durationMs: Date.now() - startedAt,
+          },
+        });
         logger.info('delivery.completed', {
           fields: {
             channel,

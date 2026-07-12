@@ -76,6 +76,9 @@ export class ChannelGateway {
 
     const submitted = await this.turns.submit(message.conversationId, async () => this.runRecordedTurn(message));
     if (submitted.status === 'started') return submitted.result;
+    if (submitted.status === 'queued') {
+      this.logger.info('gateway.inbound.queued', { fields: { channel: message.channel } });
+    }
     return submitted;
   }
 
@@ -87,6 +90,7 @@ export class ChannelGateway {
     const sink = this.dependencies.sink ?? noopChannelEventSink;
     const target = targetFromInboundMessage(message);
     const signal = AbortSignal.timeout(this.dependencies.turnDeadlineMs ?? 60_000);
+    const startedAt = Date.now();
     const heartbeat = startGatewayHeartbeat({
       sink,
       target,
@@ -100,6 +104,9 @@ export class ChannelGateway {
         );
       } catch {
         if (signal.aborted) {
+          this.logger.warn('gateway.turn.timed_out', {
+            fields: { channel: message.channel, durationMs: Date.now() - startedAt },
+          });
           await emitGatewayEvent(sink, {
             kind: 'final.failed',
             target,

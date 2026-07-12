@@ -146,6 +146,8 @@ describe('FinalDeliveryHandler', () => {
     const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
     expect(result).toMatchObject({ status: 'delivered', sent: true });
     expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.reserved');
+    expect(log).toContain('delivery.sent');
     expect(log).toContain('delivery.completed');
     expect(log).toContain('status=delivered');
     expect(log).toContain('sent=true');

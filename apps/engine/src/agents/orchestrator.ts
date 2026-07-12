@@ -170,12 +170,34 @@ export class OrchestratorAgent {
       logger.info('turn.started', { fields: { channel: message.channel } });
       try {
         const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
+          const contextStartedAt = Date.now();
           const prompt = await this.orchestratorInput(message);
+          logger.info('turn.context.prepared', {
+            fields: {
+              durationMs: Date.now() - contextStartedAt,
+              messageCount: Array.isArray(prompt) ? prompt.length : 1,
+            },
+          });
+          let stepOrdinal = 0;
+          let stepStartedAt = Date.now();
           try {
             const result = await this.agent.generate(prompt, {
               ...this.orchestratorGenerateOptions(message),
               maxSteps: MAX_ORCHESTRATOR_STEPS,
               abortSignal: signal,
+              onStepFinish: (step) => {
+                const usage = step.usage ?? {};
+                logger.info('orchestrator.step.completed', {
+                  fields: {
+                    step: ++stepOrdinal,
+                    durationMs: Date.now() - stepStartedAt,
+                    inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
+                    outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
+                    toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
+                  },
+                });
+                stepStartedAt = Date.now();
+              },
               structuredOutput: {
                 schema: OrchestratorResponseDraftSchema,
                 jsonPromptInjection: true,

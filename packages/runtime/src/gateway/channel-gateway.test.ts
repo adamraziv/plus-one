@@ -113,6 +113,27 @@ describe('ChannelGateway', () => {
     }
   });
 
+  it('logs when an inbound turn is queued behind an active conversation turn', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-gateway-'));
+    const logging = configureLogging({ homeDirectory });
+    const turns = { submit: vi.fn(async () => ({ status: 'queued' as const })) };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn() },
+      delivery: { deliver: vi.fn() },
+      turns: turns as never,
+    });
+
+    try {
+      await expect(gateway.handleInbound(message)).resolves.toEqual({ status: 'queued' });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('gateway.inbound.queued');
+      expect(agentLog).not.toContain(message.body);
+    } finally {
+      logging.close();
+    }
+  });
+
   it('emits typing, runs orchestrator, delivers final, and stops typing', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-gateway-'));
     const logging = configureLogging({ homeDirectory });
@@ -186,6 +207,8 @@ describe('ChannelGateway', () => {
   });
 
   it('passes the gateway deadline signal to orchestration and reports a timeout safely', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-gateway-'));
+    const logging = configureLogging({ homeDirectory });
     const run = vi.fn(({ signal }: { signal: AbortSignal }) => new Promise<never>((_, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }));
@@ -196,10 +219,17 @@ describe('ChannelGateway', () => {
       turnDeadlineMs: 1,
     });
 
-    await expect(gateway.handleInbound(message)).resolves.toEqual({
-      status: 'failed', error: 'orchestrator_timed_out', sent: false,
-    });
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ message, signal: expect.any(AbortSignal) }));
+    try {
+      await expect(gateway.handleInbound(message)).resolves.toEqual({
+        status: 'failed', error: 'orchestrator_timed_out', sent: false,
+      });
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ message, signal: expect.any(AbortSignal) }));
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('gateway.turn.timed_out');
+      expect(agentLog).not.toContain(message.body);
+    } finally {
+      logging.close();
+    }
   });
 
   it('propagates delivery persistence failures and stops typing', async () => {
