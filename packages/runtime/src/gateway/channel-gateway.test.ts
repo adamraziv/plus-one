@@ -113,7 +113,7 @@ describe('ChannelGateway', () => {
     }
   });
 
-  it('emits typing/status, runs orchestrator, delivers final, and stops typing', async () => {
+  it('emits typing, runs orchestrator, delivers final, and stops typing', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-gateway-'));
     const logging = configureLogging({ homeDirectory });
     const sink = { emit: vi.fn(async () => undefined) };
@@ -122,7 +122,7 @@ describe('ChannelGateway', () => {
       orchestrator: { run: vi.fn(async () => response) },
       delivery: { deliver: vi.fn(async () => ({ status: 'delivered' as const, sent: true, delivery: deliveredRecord })) },
       sink,
-      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: ['Checking records...'] },
+      heartbeat: { typingEveryMs: 60_000 },
     });
 
     try {
@@ -148,7 +148,7 @@ describe('ChannelGateway', () => {
       orchestrator: { run: vi.fn(async () => { throw new Error('model unavailable'); }) },
       delivery: { deliver: vi.fn() },
       sink,
-      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: [] },
+      heartbeat: { typingEveryMs: 60_000 },
     });
 
     await expect(gateway.handleInbound(message)).resolves.toEqual({
@@ -163,6 +163,26 @@ describe('ChannelGateway', () => {
       reason: 'orchestrator_failed',
     });
     expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+  });
+
+  it('does not create timer-driven status events while a delegated turn is running', async () => {
+    const sink = { emit: vi.fn(async () => undefined) };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: {
+        run: vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return response;
+        }),
+      },
+      delivery: { deliver: vi.fn(async () => ({ status: 'delivered' as const, sent: true, delivery: deliveredRecord })) },
+      sink,
+      heartbeat: { typingEveryMs: 1_000 },
+      turnDeadlineMs: 1_000,
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toMatchObject({ status: 'delivered' });
+    expect(sink.emit).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'status.update' }));
   });
 
   it('passes the gateway deadline signal to orchestration and reports a timeout safely', async () => {
@@ -190,7 +210,7 @@ describe('ChannelGateway', () => {
       orchestrator: { run: vi.fn(async () => response) },
       delivery: { deliver: vi.fn(async () => { throw persistenceError; }) },
       sink,
-      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: [] },
+      heartbeat: { typingEveryMs: 60_000 },
     });
 
     await expect(gateway.handleInbound(message)).rejects.toBe(persistenceError);
@@ -209,7 +229,7 @@ describe('ChannelGateway', () => {
       orchestrator: { run: vi.fn(async () => response) },
       delivery: { deliver: vi.fn(async () => ({ status: 'delivered' as const, sent: true, delivery: deliveredRecord })) },
       sink,
-      heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: [] },
+      heartbeat: { typingEveryMs: 60_000 },
     });
 
     await expect(gateway.handleInbound(message)).resolves.toMatchObject({ status: 'delivered' });

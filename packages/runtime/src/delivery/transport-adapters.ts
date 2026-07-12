@@ -56,6 +56,16 @@ export class TelegramTransportAdapter implements TransportAdapter {
     });
   }
 
+  async deleteMessage(input: {
+    destination: Record<string, unknown>;
+    platformMessageId: string;
+  }): Promise<void> {
+    await this.request('deleteMessage', {
+      chat_id: this.chatId(input.destination),
+      message_id: input.platformMessageId,
+    });
+  }
+
   async editMessage(input: {
     destination: Record<string, unknown>;
     platformMessageId: string;

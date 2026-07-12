@@ -10,6 +10,20 @@ const target: ChannelEventTarget = {
 };
 
 describe('gateway heartbeat', () => {
+  it('refreshes typing without emitting timer-driven status events', async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn(async () => undefined);
+    const heartbeat = startGatewayHeartbeat({ sink: { emit }, target, typingEveryMs: 1000 });
+
+    await vi.advanceTimersByTimeAsync(2100);
+    await heartbeat.close();
+
+    expect(emit).toHaveBeenCalledWith({ kind: 'typing.start', target });
+    expect(emit).toHaveBeenCalledWith({ kind: 'typing.stop', target });
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'status.update' }));
+    vi.useRealTimers();
+  });
+
   it('emits typing immediately and stops it on close', async () => {
     vi.useFakeTimers();
     const emit = vi.fn(async () => undefined);
@@ -19,44 +33,12 @@ describe('gateway heartbeat', () => {
       sink,
       target,
       typingEveryMs: 1000,
-      statusEveryMs: 5000,
-      statuses: ['Still working...'],
     });
     await vi.runOnlyPendingTimersAsync();
     await heartbeat.close();
 
     expect(emit).toHaveBeenCalledWith({ kind: 'typing.start', target });
     expect(emit).toHaveBeenCalledWith({ kind: 'typing.stop', target });
-    vi.useRealTimers();
-  });
-
-  it('emits rotating status messages without persisting them', async () => {
-    vi.useFakeTimers();
-    const emit = vi.fn(async () => undefined);
-    const heartbeat = startGatewayHeartbeat({
-      sink: { emit },
-      target,
-      typingEveryMs: 1000,
-      statusEveryMs: 2000,
-      statuses: ['Checking accounts...', 'Preparing final answer...'],
-    });
-
-    await vi.advanceTimersByTimeAsync(2100);
-    await vi.advanceTimersByTimeAsync(2100);
-    await heartbeat.close();
-
-    expect(emit).toHaveBeenCalledWith({
-      kind: 'status.update',
-      target,
-      statusKey: 'turn',
-      body: 'Checking accounts...',
-    });
-    expect(emit).toHaveBeenCalledWith({
-      kind: 'status.update',
-      target,
-      statusKey: 'turn',
-      body: 'Preparing final answer...',
-    });
     vi.useRealTimers();
   });
 
@@ -69,8 +51,6 @@ describe('gateway heartbeat', () => {
       sink: { emit },
       target,
       typingEveryMs: 1000,
-      statusEveryMs: 2000,
-      statuses: ['Checking accounts...'],
     });
 
     await vi.advanceTimersByTimeAsync(2100);

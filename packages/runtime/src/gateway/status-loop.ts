@@ -8,11 +8,8 @@ export function startGatewayHeartbeat(input: {
   sink: ChannelEventSink;
   target: ChannelEventTarget;
   typingEveryMs: number;
-  statusEveryMs: number;
-  statuses: readonly string[];
 }): GatewayHeartbeat {
   let closed = false;
-  let statusIndex = 0;
   const timers = new Set<NodeJS.Timeout>();
 
   const emit = async (event: Parameters<ChannelEventSink['emit']>[0]) => {
@@ -23,29 +20,18 @@ export function startGatewayHeartbeat(input: {
     }
   };
 
-  const schedule = (fn: () => Promise<void>, ms: number) => {
+  const scheduleTyping = () => {
     const timer = setTimeout(async () => {
       timers.delete(timer);
       if (closed) return;
-      await fn();
-      if (!closed) schedule(fn, ms);
-    }, ms);
+      await emit({ kind: 'typing.start', target: input.target });
+      if (!closed) scheduleTyping();
+    }, input.typingEveryMs);
     timers.add(timer);
   };
 
   void emit({ kind: 'typing.start', target: input.target });
-  schedule(async () => {
-    await emit({ kind: 'typing.start', target: input.target });
-  }, input.typingEveryMs);
-  if (input.statuses.length > 0) {
-    schedule(async () => {
-      const body = input.statuses[Math.min(statusIndex, input.statuses.length - 1)];
-      statusIndex += 1;
-      if (body !== undefined) {
-        await emit({ kind: 'status.update', target: input.target, statusKey: 'turn', body });
-      }
-    }, input.statusEveryMs);
-  }
+  scheduleTyping();
 
   return {
     close: async () => {

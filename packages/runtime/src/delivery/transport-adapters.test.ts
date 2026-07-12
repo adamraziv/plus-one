@@ -111,6 +111,20 @@ describe('transport adapters', () => {
     ]);
   });
 
+  it('deletes a temporary Telegram status message', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200 }));
+    const adapter = new TelegramTransportAdapter('token-123', fetch);
+
+    await expect(adapter.deleteMessage?.({
+      destination: { chatId: 'telegram-chat-42' }, platformMessageId: '501',
+    })).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.telegram.org/bottoken-123/deleteMessage',
+      expect.objectContaining({ body: JSON.stringify({ chat_id: 'telegram-chat-42', message_id: '501' }) }),
+    );
+  });
+
   it('posts Slack messages with native fetch and returns the platform id', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({
       ok: true,

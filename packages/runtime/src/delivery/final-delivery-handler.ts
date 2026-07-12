@@ -31,6 +31,10 @@ export interface TransportAdapter {
     destination: Record<string, unknown>;
     statusMessageId?: string;
   }): Promise<{ platformMessageId: string }>;
+  deleteMessage?(input: {
+    destination: Record<string, unknown>;
+    platformMessageId: string;
+  }): Promise<void>;
   editMessage?(input: {
     destination: Record<string, unknown>;
     platformMessageId: string;

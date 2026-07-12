@@ -39,7 +39,7 @@ export class ChannelGateway {
     commands?: { handle(message: InboundChannelMessageV1): Promise<ChannelCommandResultV1 | undefined> };
     sink?: ChannelEventSink;
     turns?: ActiveTurnRegistry<ChannelGatewayResult>;
-    heartbeat?: { typingEveryMs: number; statusEveryMs: number; statuses: readonly string[] };
+    heartbeat?: { typingEveryMs: number };
     turnDeadlineMs?: number;
   }) {
     this.turns = dependencies.turns ?? new ActiveTurnRegistry<ChannelGatewayResult>();
@@ -91,12 +91,6 @@ export class ChannelGateway {
       sink,
       target,
       typingEveryMs: this.dependencies.heartbeat?.typingEveryMs ?? 2_000,
-      statusEveryMs: this.dependencies.heartbeat?.statusEveryMs ?? 8_000,
-      statuses: this.dependencies.heartbeat?.statuses ?? [
-        'Checking household records...',
-        'Verifying the answer...',
-        'Preparing the final reply...',
-      ],
     });
     try {
       let response: OrchestratorFinalResponseV1;
