@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@hono/node-server": "1.19.14",
     "@mastra/core": "1.47.0",
+    "@mastra/hono": "1.5.2",
     "@mastra/memory": "1.21.2",
     "@mastra/pg": "1.14.0",
     "@plus-one/accounting": "workspace:*",
@@ -14,6 +16,7 @@
     "@plus-one/query": "workspace:*",
     "@plus-one/reporting": "workspace:*",
     "@plus-one/runtime": "workspace:*",
+    "hono": "4.12.25",
     "zod": "4.1.12"
   }
 }

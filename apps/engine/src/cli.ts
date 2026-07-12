@@ -7,6 +7,12 @@ import {
 } from '@plus-one/database';
 import { configureLogging, TelegramPairingService } from '@plus-one/runtime';
 import { loadConfig } from './config.js';
+import {
+  getGatewayDaemonStatus,
+  startGatewayDaemon,
+  stopGatewayDaemon,
+  type DaemonRuntimeDependencies,
+} from './daemon-runtime.js';
 import { runGatewayRuntime, type RunGatewayRuntimeDependencies } from './gateway-runtime.js';
 import { runLiveCli, type RunLiveCliDependencies } from './live-cli/index.js';
 import { runLogsCli, type RunLogsCliDependencies } from './logs-cli.js';
@@ -34,12 +40,16 @@ interface PlusOneCliDependencies {
   stderr?: Output;
   isInteractive?: boolean;
   runGateway?: (dependencies: RunGatewayRuntimeDependencies) => Promise<number>;
+  runDaemonStart?: (dependencies: DaemonRuntimeDependencies) => Promise<number>;
+  runDaemonStop?: (dependencies: DaemonRuntimeDependencies) => Promise<number>;
+  runDaemonStatus?: (dependencies: DaemonRuntimeDependencies) => Promise<number>;
+  runForegroundGateway?: (dependencies: RunGatewayRuntimeDependencies) => Promise<number>;
   runLiveCli?: (dependencies: RunLiveCliDependencies) => Promise<number>;
   runLogs?: (argv: string[], dependencies: RunLogsCliDependencies) => Promise<number>;
   configureLogging?: typeof configureLogging;
 }
 
-const usage = 'Usage: plus-one [live] | logs [agent|errors|gateway] [options] | telegram pairing approve <code> --household <household_id> | telegram pairing revoke <telegram_user_id> | telegram pairing list-pending\n';
+const usage = 'Usage: plus-one [stop|status|live] | logs [agent|errors|gateway] [options] | telegram pairing approve <code> --household <household_id> | telegram pairing revoke <telegram_user_id> | telegram pairing list-pending\n';
 
 export async function runPlusOneCli(
   argv: string[] = process.argv.slice(2),
@@ -49,11 +59,34 @@ export async function runPlusOneCli(
   const stderr = dependencies.stderr ?? process.stderr;
   try {
     if (argv.length === 0) {
-      return await (dependencies.runGateway ?? runGatewayRuntime)({
+      return await (dependencies.runDaemonStart ?? dependencies.runGateway ?? startGatewayDaemon)({
         environment: dependencies.environment ?? process.env,
         stdout,
         stderr,
-        ...(dependencies.configureLogging === undefined ? {} : { configureLogging: dependencies.configureLogging }),
+      });
+    }
+
+    if (argv[0] === '--foreground' && argv.length === 1) {
+      return await (dependencies.runForegroundGateway ?? runGatewayRuntime)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'stop' && argv.length === 1) {
+      return await (dependencies.runDaemonStop ?? stopGatewayDaemon)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'status' && argv.length === 1) {
+      return await (dependencies.runDaemonStatus ?? getGatewayDaemonStatus)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
       });
     }
 

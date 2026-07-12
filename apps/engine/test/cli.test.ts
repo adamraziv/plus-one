@@ -89,19 +89,19 @@ describe('Plus One CLI', () => {
   });
 
   it('starts the gateway runtime when no arguments are supplied', async () => {
-    const runGateway = vi.fn(async () => 0);
+    const runDaemonStart = vi.fn(async () => 0);
     const runLiveCli = vi.fn(async () => 0);
     const stdout = { isTTY: false, write: vi.fn() };
     const stderr = { isTTY: false, write: vi.fn() };
 
     await expect(runPlusOneCli([], {
-      runGateway,
+      runDaemonStart,
       runLiveCli,
       stdout,
       stderr,
     })).resolves.toBe(0);
 
-    expect(runGateway).toHaveBeenCalledWith(expect.objectContaining({ stdout, stderr }));
+    expect(runDaemonStart).toHaveBeenCalledWith(expect.objectContaining({ stdout, stderr }));
     expect(runLiveCli).not.toHaveBeenCalled();
   });
 
@@ -125,6 +125,33 @@ describe('Plus One CLI', () => {
     expect(runLiveCli).not.toHaveBeenCalled();
   });
 
+  it('keeps foreground gateway and daemon controls operational', async () => {
+    const runForegroundGateway = vi.fn(async () => 0);
+    const runDaemonStop = vi.fn(async () => 0);
+    const runDaemonStatus = vi.fn(async () => 0);
+    const output = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['--foreground'], {
+      runForegroundGateway,
+      stdout: output,
+      stderr: output,
+    })).resolves.toBe(0);
+    await expect(runPlusOneCli(['stop'], {
+      runDaemonStop,
+      stdout: output,
+      stderr: output,
+    })).resolves.toBe(0);
+    await expect(runPlusOneCli(['status'], {
+      runDaemonStatus,
+      stdout: output,
+      stderr: output,
+    })).resolves.toBe(0);
+
+    expect(runForegroundGateway).toHaveBeenCalledOnce();
+    expect(runDaemonStop).toHaveBeenCalledOnce();
+    expect(runDaemonStatus).toHaveBeenCalledOnce();
+  });
+
   it('prints gateway startup errors instead of rejecting', async () => {
     const error = new Error('Storage is unavailable');
     const runGateway = vi.fn(async () => {
@@ -139,6 +166,20 @@ describe('Plus One CLI', () => {
     })).resolves.toBe(1);
 
     expect(stderr.write).toHaveBeenCalledWith('Storage is unavailable\n');
+  });
+
+  it('rejects chat as a CLI command', async () => {
+    const runGateway = vi.fn(async () => 0);
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['chat', 'hello'], {
+      runGateway,
+      stdout: { write: vi.fn() },
+      stderr,
+    })).resolves.toBe(1);
+
+    expect(runGateway).not.toHaveBeenCalled();
+    expect(stderr.write).toHaveBeenCalledWith(expect.stringContaining('Usage: plus-one'));
   });
 
   it('opens the live CLI through the explicit live command', async () => {

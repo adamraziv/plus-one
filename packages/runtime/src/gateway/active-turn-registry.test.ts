@@ -10,7 +10,7 @@ describe('ActiveTurnRegistry', () => {
     });
   });
 
-  it('keeps one pending replacement while a turn is active and drains it after completion', async () => {
+  it('drains queued turns in FIFO order after the active turn completes', async () => {
     const registry = new ActiveTurnRegistry();
     const order: string[] = [];
     let release!: () => void;
@@ -35,7 +35,7 @@ describe('ActiveTurnRegistry', () => {
     await active;
     await registry.drainIdle();
 
-    expect(order).toEqual(['active-start', 'active-end', 'pending-b']);
+    expect(order).toEqual(['active-start', 'active-end', 'pending-a', 'pending-b']);
   });
 
   it('does not reject drainIdle when queued work fails during the background drain', async () => {
@@ -66,25 +66,27 @@ describe('ActiveTurnRegistry', () => {
     expect(registry.activeCount()).toBe(0);
   });
 
-  it('cancels pending work on shutdown', async () => {
+  it('drains accepted queued work during shutdown and rejects later work', async () => {
     const registry = new ActiveTurnRegistry();
     let release!: () => void;
-    let pendingRan = false;
+    const order: string[] = [];
     const active = registry.submit('conversation-1', async () => {
+      order.push('active');
       await new Promise<void>((resolve) => { release = resolve; });
       return 'first';
     });
     await Promise.resolve();
     await registry.submit('conversation-1', async () => {
-      pendingRan = true;
+      order.push('queued');
       return 'pending';
     });
     const shutdown = registry.shutdown();
+    await expect(registry.submit('conversation-1', async () => 'late')).resolves.toEqual({ status: 'closed' });
     release();
     await active;
     await shutdown;
     await registry.drainIdle();
-    expect(pendingRan).toBe(false);
+    expect(order).toEqual(['active', 'queued']);
     expect(registry.activeCount()).toBe(0);
   });
 
