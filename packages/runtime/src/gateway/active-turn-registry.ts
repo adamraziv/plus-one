@@ -18,7 +18,7 @@ export class ActiveTurnRegistry<T = unknown> {
     if (!this.accepting) return { status: 'closed' };
     const slot = this.slots.get(key) ?? { active: false, queue: [] };
     this.slots.set(key, slot);
-    if (slot.active) {
+    if (slot.active || slot.drain !== undefined) {
       slot.queue.push(work);
       return { status: 'queued' };
     }
@@ -81,6 +81,10 @@ export class ActiveTurnRegistry<T = unknown> {
       }
     })().finally(() => {
       delete slot.drain;
+      if (slot.queue.length > 0) {
+        this.scheduleDrain(key, slot);
+        return;
+      }
       if (!slot.active && slot.queue.length === 0) this.slots.delete(key);
     });
   }
