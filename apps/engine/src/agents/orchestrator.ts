@@ -7,6 +7,7 @@ import { ZodError, z } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  TeamResultEnvelopeSchemaV1,
   type ChannelKindV1,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
@@ -29,6 +30,7 @@ const orchestratorInstructions = [
   'For internal Plus One ledger work, your next action must be delegateTeam with team accounting; do not answer directly first.',
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
   'Do not ask the user to confirm transaction capture directly; delegateTeam accounting must ask any needed clarification.',
+  'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
   'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
@@ -36,13 +38,12 @@ const orchestratorInstructions = [
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
-  'Return the requested OrchestratorFinalResponseV1 object.',
+  'Return the requested OrchestratorResponseDraft object.',
 ].join('\n');
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
 const MAX_ORCHESTRATOR_STEPS = 2;
-const SECOND_DELEGATION_ERROR = 'Only one specialist delegation is allowed per orchestrator turn.';
 
 const citationDraftSchema = z.object({
   label: z.string().min(1).max(512),
@@ -64,6 +65,23 @@ const OrchestratorResponseDraftSchema = z.object({
 
 type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>;
 
+function parseOrchestratorModelOutput(value: unknown): OrchestratorResponseDraft {
+  const final = OrchestratorFinalResponseSchemaV1.safeParse(value);
+  if (final.success) {
+    return {
+      body: final.data.body,
+      policyBoundary: final.data.policyBoundary,
+      citations: final.data.citations,
+      assumptions: final.data.assumptions,
+      freshness: final.data.freshness,
+      disclaimer: final.data.disclaimer,
+      unsupportedCapabilities: final.data.unsupportedCapabilities,
+      recommendationActions: final.data.recommendationActions,
+    };
+  }
+  return OrchestratorResponseDraftSchema.parse(value);
+}
+
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
   | { kind: 'ask-user'; response: OrchestratorFinalResponseV1 };
@@ -75,6 +93,7 @@ export class OrchestratorAgent {
     signal: AbortSignal;
     teamResults: TeamResultEnvelopeV1[];
     delegationCount: number;
+    delegationFailed: boolean;
     channelEvents?: ChannelEventSink;
   }>();
   readonly agent: Agent<string, ToolsInput, unknown>;
@@ -94,31 +113,53 @@ export class OrchestratorAgent {
       runTeamLead: async (input) => {
         const active = this.activeInvocation.getStore();
         const startedAt = Date.now();
+        const logger = getLogger('runtime.orchestrator');
         await emitChannelEvent(active?.channelEvents, {
           kind: 'tool.started',
           target: targetFromInboundMessage(input.message),
           toolName: 'delegateTeam',
           preview: `Delegating to ${input.team.team}`,
-        });
+        }, active?.signal);
         try {
-          const result = await dependencies.teamRuntime.runTeamLead(input);
+          if (active?.signal.aborted) {
+            throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
+          }
+          const result = TeamResultEnvelopeSchemaV1.parse(
+            await abortable(dependencies.teamRuntime.runTeamLead(input), active?.signal),
+          );
+          if (active?.signal.aborted) {
+            throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
+          }
           active?.teamResults.push(result);
+          logger.info('orchestrator.delegate.completed', {
+            fields: {
+              team: input.team.team,
+              status: result.status,
+              durationMs: Date.now() - startedAt,
+            },
+          });
           await emitChannelEvent(active?.channelEvents, {
             kind: 'tool.finished',
             target: targetFromInboundMessage(input.message),
             toolName: 'delegateTeam',
             ok: true,
             durationMs: Date.now() - startedAt,
-          });
+          }, active?.signal);
           return result;
         } catch (error) {
+          logger.warn('orchestrator.delegate.failed', {
+            fields: {
+              team: input.team.team,
+              durationMs: Date.now() - startedAt,
+            },
+          });
           await emitChannelEvent(active?.channelEvents, {
             kind: 'tool.finished',
             target: targetFromInboundMessage(input.message),
             toolName: 'delegateTeam',
             ok: false,
             durationMs: Date.now() - startedAt,
-          });
+          }, active?.signal);
           throw error;
         }
       },
@@ -136,6 +177,7 @@ export class OrchestratorAgent {
       description: 'The single entrypoint agent that responds to users and delegates specialized work to team leads.',
       instructions: orchestratorInstructions,
       model: toMastraModel(dependencies.model),
+      maxRetries: 0,
       tools: this.agentTools,
       inputProcessors: [new TokenLimiter({ limit: ORCHESTRATOR_INPUT_TOKEN_LIMIT, trimMode: 'best-fit' })],
     });
@@ -159,6 +201,7 @@ export class OrchestratorAgent {
       signal,
       teamResults: [] as TeamResultEnvelopeV1[],
       delegationCount: 0,
+      delegationFailed: false,
       ...(this.dependencies.channelEvents === undefined ? {} : { channelEvents: this.dependencies.channelEvents }),
     };
     const logger = getLogger('runtime.orchestrator');
@@ -171,7 +214,8 @@ export class OrchestratorAgent {
       try {
         const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
           const contextStartedAt = Date.now();
-          const prompt = await this.orchestratorInput(message);
+          if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+          const prompt = await abortable(this.orchestratorInput(message), signal);
           logger.info('turn.context.prepared', {
             fields: {
               durationMs: Date.now() - contextStartedAt,
@@ -180,47 +224,51 @@ export class OrchestratorAgent {
           });
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
-          try {
-            const result = await this.agent.generate(prompt, {
-              ...this.orchestratorGenerateOptions(message),
-              maxSteps: MAX_ORCHESTRATOR_STEPS,
-              abortSignal: signal,
-              onStepFinish: (step) => {
-                const usage = step.usage ?? {};
-                logger.info('orchestrator.step.completed', {
-                  fields: {
-                    step: ++stepOrdinal,
-                    durationMs: Date.now() - stepStartedAt,
-                    inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
-                    outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
-                    toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
-                  },
-                });
-                stepStartedAt = Date.now();
-              },
-              structuredOutput: {
-                schema: OrchestratorResponseDraftSchema,
-                jsonPromptInjection: true,
-              },
-            });
-            if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-              return turnFromTeamResults(message, invocation.teamResults);
-            }
-            const draft = OrchestratorResponseDraftSchema.parse(result.object ?? parseJsonObject(result.text));
-            return {
-              kind: 'final',
-              response: responseFromDraft(message, draft, invocation.teamResults),
-            };
-          } catch (error) {
-            if (error instanceof Error && error.message === SECOND_DELEGATION_ERROR) throw error;
-            if (invocation.teamResults.length > 0) return turnFromTeamResults(message, invocation.teamResults);
-            throw error;
+          if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+          const result = await abortable(this.agent.generate(prompt, {
+            ...this.orchestratorGenerateOptions(message),
+            maxSteps: MAX_ORCHESTRATOR_STEPS,
+            abortSignal: signal,
+            onStepFinish: (step) => {
+              const usage = step.usage ?? {};
+              logger.info('orchestrator.step.completed', {
+                fields: {
+                  step: ++stepOrdinal,
+                  durationMs: Date.now() - stepStartedAt,
+                  inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
+                  outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
+                  toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
+                },
+              });
+              stepStartedAt = Date.now();
+            },
+            structuredOutput: {
+              schema: OrchestratorResponseDraftSchema,
+              jsonPromptInjection: true,
+            },
+          }), signal);
+          if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+          if (invocation.delegationFailed) {
+            throw new Error('Delegated team work failed before producing a checked result.');
           }
+          if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
+            throw new Error('Delegated team did not return a checked result.');
+          }
+          const draft = parseOrchestratorModelOutput(result.object ?? parseJsonObject(result.text));
+          if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
+            return turnFromTeamResults(message, invocation.teamResults);
+          }
+          return {
+            kind: 'final',
+            response: responseFromDraft(message, draft, invocation.teamResults),
+          };
         });
-        await this.dependencies.sessionMemory?.persistTurn({
+        if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+        const persistence = this.dependencies.sessionMemory?.persistTurn({
           message,
           assistantText: turn.response.body,
         });
+        if (persistence !== undefined) await abortable(persistence, signal);
         logger.info('turn.completed', {
           fields: { status: turn.kind, durationMs: Date.now() - startedAt },
         });
@@ -260,9 +308,11 @@ export class OrchestratorAgent {
 async function emitChannelEvent(
   sink: ChannelEventSink | undefined,
   event: Parameters<ChannelEventSink['emit']>[0],
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
-    await sink?.emit(event);
+    if (signal?.aborted) return;
+    if (sink !== undefined) await abortable(sink.emit(event), signal);
   } catch {
     return;
   }
@@ -305,6 +355,7 @@ function responseFromTeamResults(
   const teamResult = selectTeamResult(teamResults);
   if (teamResult === undefined) throw new Error('Missing team result for fallback response');
   const body = responseBody(teamResult);
+  assertUserSafeResponseBody(body);
   return OrchestratorFinalResponseSchemaV1.parse({
     schemaName: 'orchestrator-final-response',
     schemaVersion: 1,
@@ -347,6 +398,7 @@ function responseFromDraft(
   teamResults: readonly TeamResultEnvelopeV1[] = [],
 ): OrchestratorFinalResponseV1 {
   const body = draft.body;
+  assertUserSafeResponseBody(body);
   return OrchestratorFinalResponseSchemaV1.parse({
     schemaName: 'orchestrator-final-response',
     schemaVersion: 1,
@@ -355,9 +407,9 @@ function responseFromDraft(
     conversationId: message.conversationId,
     body,
     policyBoundary: draft.policyBoundary,
-    citations: citationsFromDraftOrTeamResults(draft.citations, teamResults),
+    citations: citationsFromDraftOrTeamResults(teamResults),
     assumptions: draft.assumptions,
-    freshness: draft.freshness.length === 0 ? ['current invocation only'] : draft.freshness,
+    freshness: freshnessFromDraftOrTeamResults(draft.freshness, teamResults),
     disclaimer: draft.disclaimer,
     unsupportedCapabilities: draft.unsupportedCapabilities,
     recommendationActions: draft.recommendationActions,
@@ -371,16 +423,19 @@ function responseFromDraft(
   });
 }
 
-function citationsFromDraftOrTeamResults(
-  draftCitations: OrchestratorResponseDraft['citations'],
-  teamResults: readonly TeamResultEnvelopeV1[],
-) {
-  if (draftCitations.length > 0 && !isPolicyOnlyCitationSet(draftCitations)) {
-    return draftCitations;
-  }
+function citationsFromDraftOrTeamResults(teamResults: readonly TeamResultEnvelopeV1[]) {
   const teamResult = selectTeamResult(teamResults);
   if (teamResult !== undefined) return citationsFor(teamResult);
   return [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }];
+}
+
+function freshnessFromDraftOrTeamResults(
+  draftFreshness: OrchestratorResponseDraft['freshness'],
+  teamResults: readonly TeamResultEnvelopeV1[],
+): string[] {
+  const teamResult = selectTeamResult(teamResults);
+  if (teamResult !== undefined) return teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness;
+  return draftFreshness.length === 0 ? ['current invocation only'] : draftFreshness;
 }
 
 function selectTeamResult(teamResults: readonly TeamResultEnvelopeV1[]): TeamResultEnvelopeV1 | undefined {
@@ -396,17 +451,18 @@ function statusRank(status: TeamResultEnvelopeV1['status']): number {
   return 4;
 }
 
-function isPolicyOnlyCitationSet(citations: OrchestratorResponseDraft['citations']): boolean {
-  return citations.every((citation) =>
-    citation.artifactId === undefined
-    && citation.sourceRef === 'runtime-instructions'
-    && citation.label === 'orchestrator-policy');
-}
-
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
   const heading = `${labelForTeam(teamResult.team)} status: ${teamResult.status}`;
   const details = [teamResult.completionReason, ...teamResult.outstanding].filter((value) => value.length > 0);
   return details.length === 0 ? heading : `${heading}\n\n${details.join('\n')}`;
+}
+
+function assertUserSafeResponseBody(body: string): void {
+  if (/\b(?:household|book|account)\s*(?:id|identifier)\b/i.test(body)
+    || /\b(?:hh|household|book|acct|account)_[a-z0-9_-]+\b/i.test(body)
+    || /\b[hb]\d{3,}\b/i.test(body)) {
+    throw new Error('Final response contains an internal identifier request.');
+  }
 }
 
 function citationsFor(teamResult: TeamResultEnvelopeV1) {
@@ -427,8 +483,28 @@ function labelForTeam(team: string): string {
 
 function turnFailureCategory(error: unknown): string {
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
+  if (error instanceof DOMException && error.name === 'AbortError') return 'cancelled';
   if (error instanceof ZodError) return 'schema_validation';
   return 'runtime_failure';
+}
+
+async function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function destinationFor(channel: ChannelKindV1, destination: unknown): Record<string, unknown> {

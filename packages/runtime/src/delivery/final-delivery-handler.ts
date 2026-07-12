@@ -20,6 +20,11 @@ export interface TransportSendInput {
   body: string;
   destination: Record<string, unknown>;
   format: 'plain_text' | 'mrkdwn';
+  signal?: AbortSignal;
+}
+
+export interface DeliveryOptions {
+  signal?: AbortSignal;
 }
 
 export interface TransportAdapter {
@@ -91,15 +96,24 @@ export class FinalDeliveryHandler {
     processors?: readonly OutputProcessor[];
   }) {}
 
-  async deliver(response: OrchestratorFinalResponseV1): Promise<DeliveryResult> {
+  async deliver(response: OrchestratorFinalResponseV1, options: DeliveryOptions = {}): Promise<DeliveryResult> {
     const logger = getLogger('runtime.delivery');
     const startedAt = Date.now();
     const channel = response.delivery.channel;
+    throwIfAborted(options.signal);
     logger.info('delivery.started', { fields: { channel } });
+    const processingStartedAt = Date.now();
     const processed = runOutputProcessors(
       response,
       this.dependencies.processors ?? [mandatoryPolicyProcessor, channelFormatProcessor],
     );
+    logger.info('delivery.processed', {
+      fields: {
+        channel,
+        status: processed.status,
+        durationMs: Date.now() - processingStartedAt,
+      },
+    });
     if (processed.status === 'blocked') {
       logger.info('delivery.completed', {
         fields: {
@@ -113,19 +127,28 @@ export class FinalDeliveryHandler {
       return { status: 'blocked', processorResult: processed };
     }
 
-    const delivery = await this.dependencies.repository.reserveDelivery({
-      deliveryId: this.dependencies.ids.nextDeliveryId(),
-      idempotencyKey: createDeliveryKey(response),
-      response,
-    });
-    logger.info('delivery.reserved', {
-      fields: { channel, status: delivery.status },
-    });
+    throwIfAborted(options.signal);
+    const delivery = await abortable(
+      this.dependencies.repository.reserveDelivery({
+        deliveryId: this.dependencies.ids.nextDeliveryId(),
+        idempotencyKey: createDeliveryKey(response),
+        response,
+      }),
+      options.signal,
+    );
     return withLogContext({
       deliveryId: delivery.deliveryId,
       householdId: response.householdId,
       conversationId: response.conversationId,
     }, async () => {
+      throwIfAborted(options.signal);
+      logger.info('delivery.reserved', {
+        fields: {
+          channel,
+          status: delivery.status,
+          durationMs: Date.now() - startedAt,
+        },
+      });
       if (delivery.status === 'delivered') {
         logger.info('delivery.completed', {
           fields: {
@@ -150,22 +173,28 @@ export class FinalDeliveryHandler {
         return { status: delivery.status, delivery, sent: false };
       }
 
+      let sendAttempted = false;
       try {
-        const sent = await this.dependencies.transports[channel].send({
+        throwIfAborted(options.signal);
+        const sendStartedAt = Date.now();
+        sendAttempted = true;
+        const sent = await abortable(this.dependencies.transports[channel].send({
           body: response.body,
           destination: response.delivery.destination,
           format: response.delivery.format,
-        });
-        const delivered = await this.dependencies.repository.markDelivered(
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        }), options.signal);
+        throwIfAborted(options.signal);
+        const delivered = await abortable(this.dependencies.repository.markDelivered(
           response.householdId,
           delivery.deliveryId,
           sent.platformMessageId,
-        );
+        ), options.signal);
         logger.info('delivery.sent', {
           fields: {
             channel,
             sent: true,
-            durationMs: Date.now() - startedAt,
+            durationMs: Date.now() - sendStartedAt,
           },
         });
         logger.info('delivery.completed', {
@@ -178,6 +207,21 @@ export class FinalDeliveryHandler {
         });
         return { status: 'delivered', sent: true, delivery: delivered };
       } catch (error) {
+        if (options.signal?.aborted) {
+          if (sendAttempted) {
+            try {
+              await this.dependencies.repository.markDeliveryFailed(
+                response.householdId,
+                delivery.deliveryId,
+                'ambiguous',
+                'timeout',
+              );
+            } catch {
+              throw abortReason(options.signal);
+            }
+          }
+          throw abortReason(options.signal);
+        }
         const failure = error instanceof TransportSendError
           ? error.failure
           : transportFailureFromUnknown(error);
@@ -203,4 +247,31 @@ export class FinalDeliveryHandler {
       }
     });
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('Delivery aborted.', 'AbortError');
+}
+
+async function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) throw abortReason(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }

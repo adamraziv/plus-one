@@ -94,4 +94,19 @@ describe('TelegramChannelEventSink', () => {
       format: 'plain_text',
     });
   });
+
+  it('replaces a status when Telegram cannot delete it', async () => {
+    const sendOrUpdateStatus = vi.fn(async () => ({ platformMessageId: '501' }));
+    const deleteMessage = vi.fn(async () => { throw new Error('delete failed'); });
+    const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendOrUpdateStatus, deleteMessage } });
+
+    await sink.emit({ kind: 'tool.started', target, toolName: 'delegateTeam' });
+    await expect(sink.emit({ kind: 'final.delivered', target, platformMessageId: '700' })).resolves.toBeUndefined();
+
+    expect(sendOrUpdateStatus).toHaveBeenNthCalledWith(2, {
+      destination: target.destination,
+      body: 'Reply sent.',
+      statusMessageId: '501',
+    });
+  });
 });

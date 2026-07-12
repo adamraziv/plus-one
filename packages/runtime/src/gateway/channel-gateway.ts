@@ -7,7 +7,7 @@ import {
   type OrchestratorFinalResponseV1,
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
-import type { DeliveryResult } from '../delivery/final-delivery-handler.js';
+import type { DeliveryOptions, DeliveryResult } from '../delivery/final-delivery-handler.js';
 import { createRequestId, getLogger, withLogContext } from '../logging/index.js';
 import { ActiveTurnRegistry } from './active-turn-registry.js';
 import {
@@ -35,7 +35,7 @@ export class ChannelGateway {
     orchestrator: {
       run(input: { message: InboundChannelMessageV1; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
     };
-    delivery: { deliver(response: OrchestratorFinalResponseV1): Promise<DeliveryResult> };
+    delivery: { deliver(response: OrchestratorFinalResponseV1, options?: DeliveryOptions): Promise<DeliveryResult> };
     commands?: { handle(message: InboundChannelMessageV1): Promise<ChannelCommandResultV1 | undefined> };
     sink?: ChannelEventSink;
     turns?: ActiveTurnRegistry<ChannelGatewayResult>;
@@ -74,7 +74,12 @@ export class ChannelGateway {
     }
     this.logger.info('gateway.inbound.accepted', { fields: { channel: message.channel } });
 
-    const submitted = await this.turns.submit(message.conversationId, async () => this.runRecordedTurn(message));
+    const turnStartedAt = Date.now();
+    const signal = AbortSignal.timeout(this.dependencies.turnDeadlineMs ?? 60_000);
+    const submitted = await this.turns.submit(
+      message.conversationId,
+      async () => this.runRecordedTurn(message, signal, turnStartedAt),
+    );
     if (submitted.status === 'started') return submitted.result;
     if (submitted.status === 'queued') {
       this.logger.info('gateway.inbound.queued', { fields: { channel: message.channel } });
@@ -86,28 +91,32 @@ export class ChannelGateway {
     await this.turns.shutdown();
   }
 
-  private async runRecordedTurn(message: InboundChannelMessageV1): Promise<ChannelGatewayResult> {
+  private async runRecordedTurn(
+    message: InboundChannelMessageV1,
+    signal: AbortSignal,
+    startedAt: number,
+  ): Promise<ChannelGatewayResult> {
     const sink = this.dependencies.sink ?? noopChannelEventSink;
     const target = targetFromInboundMessage(message);
-    const signal = AbortSignal.timeout(this.dependencies.turnDeadlineMs ?? 60_000);
-    const startedAt = Date.now();
     const heartbeat = startGatewayHeartbeat({
       sink,
       target,
       typingEveryMs: this.dependencies.heartbeat?.typingEveryMs ?? 2_000,
+      signal,
     });
     try {
       let response: OrchestratorFinalResponseV1;
       try {
+        if (signal.aborted) throw signal.reason ?? new DOMException('Channel turn aborted.', 'AbortError');
         response = OrchestratorFinalResponseSchemaV1.parse(
-          await this.dependencies.orchestrator.run({ message, signal }),
+          await abortable(this.dependencies.orchestrator.run({ message, signal }), signal),
         );
       } catch {
         if (signal.aborted) {
           this.logger.warn('gateway.turn.timed_out', {
             fields: { channel: message.channel, durationMs: Date.now() - startedAt },
           });
-          await emitGatewayEvent(sink, {
+          void emitGatewayEvent(sink, {
             kind: 'final.failed',
             target,
             status: 'failed',
@@ -115,23 +124,74 @@ export class ChannelGateway {
           });
           return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
         }
-        await emitGatewayEvent(sink, {
+        void emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
           status: 'failed',
           reason: 'orchestrator_failed',
-        });
+        }, signal);
         return { status: 'failed', error: 'orchestrator_failed', sent: false };
       }
-      await emitGatewayEvent(sink, { kind: 'final.delivery-started', target });
-      const delivery = await this.dependencies.delivery.deliver(response);
+      if (signal.aborted) {
+        this.logger.warn('gateway.turn.timed_out', {
+          fields: { channel: message.channel, durationMs: Date.now() - startedAt },
+        });
+        void emitGatewayEvent(sink, {
+          kind: 'final.failed',
+          target,
+          status: 'failed',
+          reason: 'orchestrator_timed_out',
+        });
+        return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
+      }
+      await emitGatewayEvent(sink, { kind: 'final.delivery-started', target }, signal);
+      let delivery: DeliveryResult;
+      try {
+        if (signal.aborted) throw signal.reason ?? new DOMException('Channel turn aborted.', 'AbortError');
+        delivery = await abortable(
+          this.dependencies.delivery.deliver(response, { signal }),
+          signal,
+        );
+      } catch (error) {
+        if (signal.aborted) {
+          this.logger.warn('gateway.turn.timed_out', {
+            fields: { channel: message.channel, durationMs: Date.now() - startedAt },
+          });
+          void emitGatewayEvent(sink, {
+            kind: 'final.failed',
+            target,
+            status: 'failed',
+            reason: 'orchestrator_timed_out',
+          });
+          return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
+        }
+        void emitGatewayEvent(sink, {
+          kind: 'final.failed',
+          target,
+          status: 'failed',
+          reason: 'delivery_failed',
+        }, signal);
+        throw error;
+      }
+      if (signal.aborted && delivery.status !== 'delivered') {
+        this.logger.warn('gateway.turn.timed_out', {
+          fields: { channel: message.channel, durationMs: Date.now() - startedAt },
+        });
+        void emitGatewayEvent(sink, {
+          kind: 'final.failed',
+          target,
+          status: 'failed',
+          reason: 'orchestrator_timed_out',
+        });
+        return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
+      }
       if (delivery.status === 'blocked') {
         await emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
           status: 'blocked',
           reason: delivery.processorResult.reason,
-        });
+        }, signal);
         return { status: 'blocked', processorResult: delivery.processorResult };
       }
       if (delivery.status === 'delivered') {
@@ -141,14 +201,14 @@ export class ChannelGateway {
           ...(delivery.delivery.platformMessageId === undefined
             ? {}
             : { platformMessageId: delivery.delivery.platformMessageId }),
-        });
+        }, signal.aborted ? undefined : signal);
       } else {
         await emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
           status: delivery.status,
           reason: delivery.delivery.failureCategory ?? delivery.status,
-        });
+        }, signal);
       }
       return { status: delivery.status, delivery, sent: delivery.sent };
     } finally {
@@ -157,12 +217,33 @@ export class ChannelGateway {
   }
 }
 
+async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) throw signal.reason ?? new DOMException('Channel turn aborted.', 'AbortError');
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('Channel turn aborted.', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 async function emitGatewayEvent(
   sink: ChannelEventSink,
   event: Parameters<ChannelEventSink['emit']>[0],
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
-    await sink.emit(event);
+    if (signal?.aborted) return;
+    await abortable(sink.emit(event), signal);
   } catch {
     return;
   }

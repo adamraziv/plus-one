@@ -66,6 +66,23 @@ describe('orchestrator workflow loop', () => {
     await expect(runOrchestratorLoop({ workflow, message, signal: controller.signal })).rejects.toThrow();
     expect(cancel).toHaveBeenCalledOnce();
   });
+
+  it('does not start a workflow run when the channel signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException('Timed out', 'TimeoutError'));
+    const cancel = vi.fn(async () => undefined);
+    const start = vi.fn(async () => ({ status: 'success', result: {} }));
+    const createRun = vi.fn(async () => ({ start, resume: vi.fn(), cancel }));
+    const workflow = {
+      listWorkflowRuns: vi.fn(async () => ({ runs: [] })),
+      createRun,
+    } as never;
+
+    await expect(runOrchestratorLoop({ workflow, message, signal: controller.signal })).rejects.toThrow('Timed out');
+    expect(createRun).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
 });
 
 function workflowWithRun(run: {

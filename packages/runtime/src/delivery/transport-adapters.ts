@@ -20,13 +20,22 @@ export class TelegramTransportAdapter implements TransportAdapter {
           chatId,
           text: toTelegramMarkdownV2(input.body),
           parseMode: 'MarkdownV2',
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
       } catch (error) {
         if (!(error instanceof TransportSendError) || error.failure.category !== 'bad_format') throw error;
-        return this.sendMessage({ chatId, text: input.body });
+        return this.sendMessage({
+          chatId,
+          text: input.body,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
       }
     }
-    return this.sendMessage({ chatId, text: input.body });
+    return this.sendMessage({
+      chatId,
+      text: input.body,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
   }
 
   async sendTyping(input: { destination: Record<string, unknown> }): Promise<void> {
@@ -99,13 +108,14 @@ export class TelegramTransportAdapter implements TransportAdapter {
     text: string;
     parseMode?: 'MarkdownV2';
     replyToMessageId?: string;
+    signal?: AbortSignal;
   }): Promise<{ platformMessageId: string }> {
     const payload = await this.request('sendMessage', {
       chat_id: input.chatId,
       text: input.text,
       ...(input.parseMode === undefined ? {} : { parse_mode: input.parseMode }),
       ...(input.replyToMessageId === undefined ? {} : { reply_to_message_id: input.replyToMessageId }),
-    });
+    }, input.signal);
     const messageId = payload.result?.message_id;
     if (messageId === undefined) {
       throw new TransportSendError({
@@ -121,12 +131,14 @@ export class TelegramTransportAdapter implements TransportAdapter {
   private async request(
     method: string,
     body: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<{ result?: { message_id?: number | string } }> {
     const apiBaseUrl = this.options.apiBaseUrl ?? 'https://api.telegram.org';
     const response = await this.fetchFn(`${apiBaseUrl}/bot${this.token}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      ...(signal === undefined ? {} : { signal }),
     });
     const payload = await response.json() as {
       ok?: boolean;
@@ -162,6 +174,7 @@ export class SlackTransportAdapter implements TransportAdapter {
         text: input.body,
         mrkdwn: input.format === 'mrkdwn',
       }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     const payload = await response.json() as { ok?: boolean; ts?: string };
     if (!response.ok || payload.ok !== true || payload.ts === undefined) {

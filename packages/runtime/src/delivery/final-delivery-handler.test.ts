@@ -146,8 +146,10 @@ describe('FinalDeliveryHandler', () => {
     const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
     expect(result).toMatchObject({ status: 'delivered', sent: true });
     expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.processed');
     expect(log).toContain('delivery.reserved');
     expect(log).toContain('delivery.sent');
+    expect(log).toMatch(/delivery\.reserved[^\n]*durationMs=/);
     expect(log).toContain('delivery.completed');
     expect(log).toContain('status=delivered');
     expect(log).toContain('sent=true');
@@ -238,6 +240,41 @@ describe('FinalDeliveryHandler', () => {
       'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       'ambiguous',
       'ambiguous',
+    );
+  });
+
+  it('marks a transport aborted after send start as ambiguous', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const repository = {
+      reserveDelivery: vi.fn(async () => record('pending')),
+      markDelivered: vi.fn(),
+      markDeliveryFailed: vi.fn(async () => record('ambiguous')),
+    };
+    const send = vi.fn(async ({ signal }: { signal?: AbortSignal }): Promise<{ platformMessageId: string }> => {
+      started();
+      await new Promise<never>((_, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      return { platformMessageId: 'unreachable' };
+    });
+    const handler = new FinalDeliveryHandler({
+      repository,
+      transports: { telegram: { send }, slack: { send } },
+      ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+
+    const delivery = handler.deliver(response, { signal: controller.signal });
+    await startedPromise;
+    controller.abort(new DOMException('Timed out', 'TimeoutError'));
+
+    await expect(delivery).rejects.toThrow('Timed out');
+    expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
+      response.householdId,
+      'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      'ambiguous',
+      'timeout',
     );
   });
 });

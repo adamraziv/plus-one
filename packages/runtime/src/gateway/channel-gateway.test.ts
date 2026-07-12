@@ -232,6 +232,19 @@ describe('ChannelGateway', () => {
     }
   });
 
+  it('returns a timeout when orchestration ignores the cancellation signal', async () => {
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn(() => new Promise<never>(() => undefined)) },
+      delivery: { deliver: vi.fn() },
+      turnDeadlineMs: 10,
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toEqual({
+      status: 'failed', error: 'orchestrator_timed_out', sent: false,
+    });
+  });
+
   it('propagates delivery persistence failures and stops typing', async () => {
     const persistenceError = new Error('operations database unavailable');
     const sink = { emit: vi.fn(async () => undefined) };
@@ -245,7 +258,82 @@ describe('ChannelGateway', () => {
 
     await expect(gateway.handleInbound(message)).rejects.toBe(persistenceError);
     expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivery-started', target: expect.any(Object) });
+    expect(sink.emit).toHaveBeenCalledWith({
+      kind: 'final.failed',
+      target: expect.any(Object),
+      status: 'failed',
+      reason: 'delivery_failed',
+    });
     expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+  });
+
+  it('starts the turn deadline before a queued turn begins work', async () => {
+    const run = vi.fn(async () => response);
+    let workStarted = false;
+    const turns = {
+      submit: vi.fn(async (_key: string, work: () => Promise<unknown>) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        workStarted = true;
+        return { status: 'started' as const, result: await work() };
+      }),
+    };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run },
+      delivery: { deliver: vi.fn() },
+      turns: turns as never,
+      turnDeadlineMs: 1,
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toMatchObject({
+      status: 'failed', error: 'orchestrator_timed_out', sent: false,
+    });
+    expect(workStarted).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('does not deliver a response returned after the deadline aborts', async () => {
+    const deliver = vi.fn();
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: {
+        run: vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return response;
+        }),
+      },
+      delivery: { deliver },
+      turnDeadlineMs: 1,
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toEqual({
+      status: 'failed', error: 'orchestrator_timed_out', sent: false,
+    });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('returns a timeout instead of waiting for delivery after the deadline aborts', async () => {
+    const sink = { emit: vi.fn(async () => undefined) };
+    const deliver = vi.fn(() => new Promise<never>(() => undefined));
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn(async () => response) },
+      delivery: { deliver },
+      sink,
+      heartbeat: { typingEveryMs: 60_000 },
+      turnDeadlineMs: 10,
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toEqual({
+      status: 'failed', error: 'orchestrator_timed_out', sent: false,
+    });
+    expect(deliver).toHaveBeenCalledWith(response, { signal: expect.any(AbortSignal) });
+    expect(sink.emit).toHaveBeenCalledWith({
+      kind: 'final.failed',
+      target: expect.any(Object),
+      status: 'failed',
+      reason: 'orchestrator_timed_out',
+    });
   });
 
   it('does not let final lifecycle event failures change delivered results', async () => {

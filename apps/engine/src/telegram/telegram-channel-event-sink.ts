@@ -21,7 +21,7 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
     if (event.kind === 'final.delivered') {
-      await this.clearStatus(event.target);
+      await this.clearStatus(event.target, 'Reply sent.');
       return;
     }
     if (event.kind === 'assistant.commentary') {
@@ -33,12 +33,13 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
     if (event.kind === 'final.failed') {
-      await this.clearStatus(event.target);
+      const body = event.reason === 'orchestrator_timed_out'
+        ? 'This is taking longer than expected. Please try again.'
+        : 'I hit an internal error before I could send the final reply. Please try again.';
+      await this.clearStatus(event.target, body);
       await this.input.transport.sendInterim?.({
         destination: event.target.destination,
-        body: event.reason === 'orchestrator_timed_out'
-          ? 'This is taking longer than expected. Please try again.'
-          : 'I hit an internal error before I could send the final reply. Please try again.',
+        body,
         format: 'plain_text',
       });
     }
@@ -69,15 +70,32 @@ export class TelegramChannelEventSink implements ChannelEventSink {
     this.statusMessages.set(key, result.platformMessageId);
   }
 
-  private async clearStatus(target: ChannelEventTarget): Promise<void> {
+  private async clearStatus(target: ChannelEventTarget, replacementBody: string): Promise<void> {
     const key = statusKey(target, 'turn');
     const statusMessageId = this.statusMessages.get(key);
     this.statusMessages.delete(key);
     if (statusMessageId === undefined) return;
-    await this.input.transport.deleteMessage?.({
-      destination: target.destination,
-      platformMessageId: statusMessageId,
-    });
+    if (this.input.transport.deleteMessage !== undefined) {
+      try {
+        await this.input.transport.deleteMessage({
+          destination: target.destination,
+          platformMessageId: statusMessageId,
+        });
+        return;
+      } catch {
+        // Fall through to an in-place terminal status when deletion fails.
+      }
+    }
+    if (this.input.transport.sendOrUpdateStatus === undefined) return;
+    try {
+      await this.input.transport.sendOrUpdateStatus({
+        destination: target.destination,
+        body: replacementBody,
+        statusMessageId,
+      });
+    } catch {
+      return;
+    }
   }
 }
 

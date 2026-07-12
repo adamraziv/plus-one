@@ -29,6 +29,7 @@ export function createDelegateTeamTool(input: {
     message: InboundChannelMessageV1;
     signal: AbortSignal;
     delegationCount: number;
+    delegationFailed: boolean;
   } | undefined;
 }) {
   const teamIds = [...input.teams.keys()];
@@ -46,22 +47,34 @@ export function createDelegateTeamTool(input: {
     inputSchema: DelegateTeamToolInputSchema,
     outputSchema: TeamResultEnvelopeSchemaV1,
     execute: async (inputData) => {
-      const context = parseDelegateTeamToolInput(inputData);
       const active = input.getActiveInvocation();
       if (active === undefined) throw new Error('No active orchestrator invocation.');
+      if (active.signal.aborted) {
+        throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
+      }
       if (active.delegationCount !== 0) {
+        active.delegationFailed = true;
         throw new Error('Only one specialist delegation is allowed per orchestrator turn.');
       }
+      const context = parseDelegateTeamToolInput(inputData);
       active.delegationCount += 1;
       const team = input.teams.get(context.team);
       if (team === undefined) throw new Error(`Unknown team: ${context.team}`);
-      const result = TeamResultEnvelopeSchemaV1.parse(await input.teamRuntime.runTeamLead({
-        message: InboundChannelMessageSchemaV1.parse(active.message),
-        team,
-        request: requestForRuntime(context.request),
-        signal: active.signal,
-      }));
-      return result;
+      if (active.signal.aborted) {
+        throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
+      }
+      try {
+        const result = TeamResultEnvelopeSchemaV1.parse(await input.teamRuntime.runTeamLead({
+          message: InboundChannelMessageSchemaV1.parse(active.message),
+          team,
+          request: requestForRuntime(context.request),
+          signal: active.signal,
+        }));
+        return result;
+      } catch (error) {
+        active.delegationFailed = true;
+        throw error;
+      }
     },
   });
 }

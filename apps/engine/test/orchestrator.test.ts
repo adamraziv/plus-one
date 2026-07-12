@@ -237,12 +237,17 @@ describe('OrchestratorAgent', () => {
   });
 
   it('limits model construction to the top-level orchestrator agent', () => {
-    const configs: Array<{ id: string | undefined; inputProcessors: unknown; tools: unknown }> = [];
+    const configs: Array<{ id: string | undefined; inputProcessors: unknown; tools: unknown; maxRetries: number | undefined }> = [];
 
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => {
-        configs.push({ id: config.id, inputProcessors: config.inputProcessors, tools: config.tools });
+        configs.push({
+          id: config.id,
+          inputProcessors: config.inputProcessors,
+          tools: config.tools,
+          maxRetries: config.maxRetries,
+        });
         return { ...config, generate: vi.fn() } as never;
       },
       teams: [queryTeam],
@@ -250,6 +255,7 @@ describe('OrchestratorAgent', () => {
     });
 
     expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
+    expect(configs[0]).toMatchObject({ maxRetries: 0 });
     expect(configs[0]?.tools).toEqual(expect.objectContaining({ delegateTeam: expect.anything() }));
     const processors = configs[0]?.inputProcessors;
     expect(Array.isArray(processors)).toBe(true);
@@ -345,6 +351,30 @@ describe('OrchestratorAgent', () => {
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
   });
 
+  it('logs specialist completion timing without response content', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
+    const logging = configureLogging({ homeDirectory });
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { object: directDraft('Private checked answer body.') };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    try {
+      await orchestrator.run({ message: message('List our accounts.') });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('orchestrator.delegate.completed');
+      expect(agentLog).toContain('durationMs=');
+      expect(agentLog).not.toContain('Private checked answer body.');
+    } finally {
+      logging.close();
+    }
+  });
+
   it('rejects a second delegateTeam call in one orchestrator turn', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
@@ -357,6 +387,91 @@ describe('OrchestratorAgent', () => {
     await expect(orchestrator.run({ message: message('List our accounts.') }))
       .rejects.toThrow('Only one specialist delegation is allowed per orchestrator turn.');
     expect(runTeamLead).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not accept a direct draft after delegated work fails', async () => {
+    const runTeamLead = vi.fn(async () => { throw new Error('team unavailable'); });
+    const generate = vi.fn(async () => {
+      try {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'query',
+          request: queryDraft('List our accounts.'),
+        });
+      } catch {
+        return { object: directDraft('Unchecked fallback') };
+      }
+      return { object: directDraft('unreachable') };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .rejects.toThrow('Delegated team');
+  });
+
+  it('does not recover to a direct draft after a second delegation is rejected', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      try {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'query',
+          request: queryDraft('List our accounts.'),
+        });
+      } catch {
+        return { object: directDraft('Unchecked fallback') };
+      }
+      return { object: directDraft('unreachable') };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .rejects.toThrow('Delegated team work failed');
+  });
+
+  it('does not fall back to a checked result after the orchestrator signal aborts', async () => {
+    const controller = new AbortController();
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      entered();
+      await new Promise<never>((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+      });
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const turn = orchestrator.run({ message: message('List our accounts.'), signal: controller.signal });
+    await enteredPromise;
+    controller.abort(new DOMException('Timed out', 'TimeoutError'));
+
+    await expect(turn).rejects.toThrow();
+    expect(runTeamLead).toHaveBeenCalledOnce();
+  });
+
+  it('does not start delegated work after the orchestrator signal aborts', async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException('Timed out', 'TimeoutError'));
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { object: directDraft('unreachable') };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.'), signal: controller.signal }))
+      .rejects.toThrow('Timed out');
+    expect(runTeamLead).not.toHaveBeenCalled();
   });
 
   it('does not let progress event failures fail delegated turns', async () => {
@@ -445,6 +560,30 @@ describe('OrchestratorAgent', () => {
     });
   });
 
+  it('fails clearly when a non-verified delegated turn has no valid typed final draft', async () => {
+    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: 'transaction_capture',
+          request: {
+            schemaName: 'transaction-capture-request-draft',
+            schemaVersion: 1,
+            instruction: 'add $10 of buying a burger',
+            known: { amount: '10.00', currency: 'USD' },
+          },
+        },
+      });
+      return { text: 'not a typed final response' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
+
+    await expect(orchestrator.run({ message: message('add $10 of buying a burger') })).rejects.toThrow();
+  });
+
   it('uses checked team results instead of a direct answer when delegation is not verified', async () => {
     const runTeamLead = vi.fn(async () => failedTeamResult());
     const generate = vi.fn(async () => {
@@ -462,6 +601,20 @@ describe('OrchestratorAgent', () => {
     expect(response.body).toContain('grain mismatch');
     expect(response.body).not.toContain('verified transactions');
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
+  });
+
+  it('fails clearly when a delegated turn has no valid typed final draft', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { text: 'not a typed final response' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') })).rejects.toThrow();
   });
 
   it('uses checked team citations when the orchestrator draft contains only policy citations', async () => {
@@ -515,6 +668,15 @@ describe('OrchestratorAgent', () => {
     await expect(execute({ team: 'Query Team', request: 'test' }, {})).resolves.toMatchObject({ error: true });
     await expect(execute({ team: 'query', request: '"test"' }, {})).resolves.toMatchObject({ error: true });
     expect(runTeamLead).not.toHaveBeenCalled();
+  });
+
+  it('rejects a final draft that asks the user for internal identifiers', async () => {
+    const runTeamLead = vi.fn();
+    const generate = vi.fn(async () => ({ object: directDraft('Please send your Household ID and Book ID.') }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('Can you help?') }))
+      .rejects.toThrow('internal identifier request');
   });
 });
 
