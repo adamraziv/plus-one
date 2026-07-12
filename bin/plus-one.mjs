@@ -2,6 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import process from 'node:process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';

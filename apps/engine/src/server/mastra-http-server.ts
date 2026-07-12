@@ -29,8 +29,7 @@ export async function startMastraHttpServer(
 
   await (dependencies.initializeMastra ?? initializeMastra)(app, input.mastra);
   const listen = dependencies.listen ?? serve;
-  let nodeServer!: ServerType;
-  nodeServer = await new Promise<ServerType>((resolve, reject) => {
+  const nodeServer = await new Promise<ServerType>((resolve, reject) => {
     const server = listen({
       fetch: app.fetch,
       hostname: input.host,

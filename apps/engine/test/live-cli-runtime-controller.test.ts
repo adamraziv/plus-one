@@ -136,7 +136,7 @@ describe('live runtime controller', () => {
     const controller = new LiveRuntimeController({
       cwd: '/repo',
       now: () => new Date('2026-07-02T00:00:00.000Z'),
-      spawnProcess: vi.fn((command, args) => {
+      spawnProcess: vi.fn((command) => {
         if (command === 'plus-one') return child as never;
         const commandChild = new FakeChild();
         queueMicrotask(() => commandChild.emit('exit', 0, null));
