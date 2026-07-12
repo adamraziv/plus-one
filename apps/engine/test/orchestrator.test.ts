@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { TokenLimiter } from '@mastra/core/processors';
 import {
@@ -8,7 +11,7 @@ import {
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
-import type { TeamDefinition } from '@plus-one/runtime';
+import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
 import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
@@ -164,6 +167,60 @@ function memoryMessage(role: 'user' | 'assistant', body: string) {
 }
 
 describe('OrchestratorAgent', () => {
+  it('logs turn lifecycle metadata while preserving inherited request context', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
+    const logging = configureLogging({ homeDirectory });
+    const inbound = message('What did we spend this month?');
+    const final = finalResponse('Private final response body');
+    const generate = vi.fn(async () => ({ object: final }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate } as never),
+      teams: [],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    try {
+      await withLogContext({ requestId: 'req_inherited' }, () => orchestrator.run({ message: inbound }));
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('turn.started');
+      expect(agentLog).toContain('turn.completed');
+      expect(agentLog).toContain('requestId=req_inherited');
+      expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).not.toContain('What did we spend this month?');
+      expect(agentLog).not.toContain('Private final response body');
+    } finally {
+      logging.close();
+    }
+  });
+
+  it('logs a sanitized failed turn without serializing the thrown message', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
+    const logging = configureLogging({ homeDirectory });
+    const inbound = message('What did we spend this month?');
+    const generate = vi.fn(async () => {
+      throw new Error('Private model response should not be logged');
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate } as never),
+      teams: [],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    try {
+      await expect(orchestrator.run({ message: inbound })).rejects.toThrow('Private model response should not be logged');
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('turn.failed');
+      expect(agentLog).toContain('failureCategory=runtime_failure');
+      expect(agentLog).not.toContain('Private model response should not be logged');
+      expect(agentLog).not.toContain('What did we spend this month?');
+    } finally {
+      logging.close();
+    }
+  });
+
   it('limits only the top-level orchestrator input context', () => {
     const configs: Array<{ id?: string; inputProcessors?: unknown }> = [];
 

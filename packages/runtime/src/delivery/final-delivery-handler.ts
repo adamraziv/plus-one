@@ -8,6 +8,7 @@ import {
 } from '@plus-one/contracts';
 import { ulid } from 'ulid';
 import { TransportSendError, transportFailureFromUnknown } from '../gateway/send-result.js';
+import { getLogger, withLogContext } from '../logging/index.js';
 import {
   mandatoryPolicyProcessor,
   channelFormatProcessor,
@@ -87,54 +88,105 @@ export class FinalDeliveryHandler {
   }) {}
 
   async deliver(response: OrchestratorFinalResponseV1): Promise<DeliveryResult> {
+    const logger = getLogger('runtime.delivery');
+    const startedAt = Date.now();
+    const channel = response.delivery.channel;
+    logger.info('delivery.started', { fields: { channel } });
     const processed = runOutputProcessors(
       response,
       this.dependencies.processors ?? [mandatoryPolicyProcessor, channelFormatProcessor],
     );
-    if (processed.status === 'blocked') return { status: 'blocked', processorResult: processed };
+    if (processed.status === 'blocked') {
+      logger.info('delivery.completed', {
+        fields: {
+          channel,
+          status: 'blocked',
+          failureCategory: 'processor_blocked',
+          sent: false,
+          durationMs: Date.now() - startedAt,
+        },
+      });
+      return { status: 'blocked', processorResult: processed };
+    }
 
     const delivery = await this.dependencies.repository.reserveDelivery({
       deliveryId: this.dependencies.ids.nextDeliveryId(),
       idempotencyKey: createDeliveryKey(response),
       response,
     });
-    if (delivery.status === 'delivered') return { status: 'delivered', delivery, sent: false };
-    if (delivery.status === 'failed' || delivery.status === 'ambiguous') {
-      return { status: delivery.status, delivery, sent: false };
-    }
+    return withLogContext({
+      deliveryId: delivery.deliveryId,
+      householdId: response.householdId,
+      conversationId: response.conversationId,
+    }, async () => {
+      if (delivery.status === 'delivered') {
+        logger.info('delivery.completed', {
+          fields: {
+            channel,
+            status: 'delivered',
+            sent: false,
+            durationMs: Date.now() - startedAt,
+          },
+        });
+        return { status: 'delivered', delivery, sent: false };
+      }
+      if (delivery.status === 'failed' || delivery.status === 'ambiguous') {
+        logger.warn('delivery.failed', {
+          fields: {
+            channel,
+            status: delivery.status,
+            failureCategory: delivery.failureCategory,
+            sent: false,
+            durationMs: Date.now() - startedAt,
+          },
+        });
+        return { status: delivery.status, delivery, sent: false };
+      }
 
-    try {
-      const sent = await this.dependencies.transports[response.delivery.channel].send({
-        body: response.body,
-        destination: response.delivery.destination,
-        format: response.delivery.format,
-      });
-      return {
-        status: 'delivered',
-        sent: true,
-        delivery: await this.dependencies.repository.markDelivered(
+      try {
+        const sent = await this.dependencies.transports[channel].send({
+          body: response.body,
+          destination: response.delivery.destination,
+          format: response.delivery.format,
+        });
+        const delivered = await this.dependencies.repository.markDelivered(
           response.householdId,
           delivery.deliveryId,
           sent.platformMessageId,
-        ),
-      };
-    } catch (error) {
-      const failure = error instanceof TransportSendError
-        ? error.failure
-        : transportFailureFromUnknown(error);
-      const status = failure.receiptLookupRequired || failure.category === 'ambiguous'
-        ? 'ambiguous'
-        : 'failed';
-      return {
-        status,
-        sent: true,
-        delivery: await this.dependencies.repository.markDeliveryFailed(
+        );
+        logger.info('delivery.completed', {
+          fields: {
+            channel,
+            status: 'delivered',
+            sent: true,
+            durationMs: Date.now() - startedAt,
+          },
+        });
+        return { status: 'delivered', sent: true, delivery: delivered };
+      } catch (error) {
+        const failure = error instanceof TransportSendError
+          ? error.failure
+          : transportFailureFromUnknown(error);
+        const status = failure.receiptLookupRequired || failure.category === 'ambiguous'
+          ? 'ambiguous'
+          : 'failed';
+        const failed = await this.dependencies.repository.markDeliveryFailed(
           response.householdId,
           delivery.deliveryId,
           status,
           failure.category,
-        ),
-      };
-    }
+        );
+        logger.warn('delivery.failed', {
+          fields: {
+            channel,
+            status,
+            failureCategory: failure.category,
+            sent: true,
+            durationMs: Date.now() - startedAt,
+          },
+        });
+        return { status, sent: true, delivery: failed };
+      }
+    });
   }
 }

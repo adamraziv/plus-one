@@ -65,11 +65,17 @@ describe('Plus One CLI', () => {
       operations: { query },
     } as never;
     const closePools = vi.fn(async () => {});
+    const configureLogging = vi.fn(() => ({
+      logDirectory: '/tmp/plus-one-test-logs',
+      flush: vi.fn(),
+      close: vi.fn(),
+    }));
 
     await expect(runPlusOneCli(['telegram', 'pairing', 'list-pending'], {
       environment,
       createPools: vi.fn(() => pools),
       closePools,
+      configureLogging,
       stdout: { write },
       stderr: { write: vi.fn() },
     })).resolves.toBe(0);
@@ -96,6 +102,26 @@ describe('Plus One CLI', () => {
     })).resolves.toBe(0);
 
     expect(runGateway).toHaveBeenCalledWith(expect.objectContaining({ stdout, stderr }));
+    expect(runLiveCli).not.toHaveBeenCalled();
+  });
+
+  it('dispatches the logs command without starting application resources', async () => {
+    const runLogs = vi.fn(async () => 0);
+    const runGateway = vi.fn(async () => 0);
+    const runLiveCli = vi.fn(async () => 0);
+
+    await expect(runPlusOneCli(['logs', 'gateway'], {
+      runLogs,
+      runGateway,
+      runLiveCli,
+      stdout: { write: vi.fn() },
+      stderr: { write: vi.fn() },
+    })).resolves.toBe(0);
+
+    expect(runLogs).toHaveBeenCalledWith(['gateway'], expect.objectContaining({
+      stdout: expect.any(Object), stderr: expect.any(Object),
+    }));
+    expect(runGateway).not.toHaveBeenCalled();
     expect(runLiveCli).not.toHaveBeenCalled();
   });
 

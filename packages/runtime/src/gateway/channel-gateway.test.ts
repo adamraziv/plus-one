@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ChannelCommandResultSchemaV1,
   DeliveryRecordSchemaV1,
@@ -6,6 +9,7 @@ import {
 } from '@plus-one/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import { ChannelGateway } from './channel-gateway.js';
+import { configureLogging } from '../logging/index.js';
 
 const message = InboundChannelMessageSchemaV1.parse({
   schemaName: 'inbound-channel-message',
@@ -86,6 +90,8 @@ describe('ChannelGateway', () => {
   });
 
   it('returns duplicate without starting typing or orchestrator work', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-gateway-'));
+    const logging = configureLogging({ homeDirectory });
     const sink = { emit: vi.fn(async () => undefined) };
     const gateway = new ChannelGateway({
       inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: false })) },
@@ -94,11 +100,22 @@ describe('ChannelGateway', () => {
       sink,
     });
 
-    await expect(gateway.handleInbound(message)).resolves.toEqual({ status: 'duplicate' });
-    expect(sink.emit).not.toHaveBeenCalled();
+    try {
+      await expect(gateway.handleInbound(message)).resolves.toEqual({ status: 'duplicate' });
+      expect(sink.emit).not.toHaveBeenCalled();
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('gateway.inbound.duplicate');
+      expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).not.toContain('What did we spend this month?');
+    } finally {
+      logging.close();
+    }
   });
 
   it('emits typing/status, runs orchestrator, delivers final, and stops typing', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-gateway-'));
+    const logging = configureLogging({ homeDirectory });
     const sink = { emit: vi.fn(async () => undefined) };
     const gateway = new ChannelGateway({
       inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
@@ -108,11 +125,20 @@ describe('ChannelGateway', () => {
       heartbeat: { typingEveryMs: 60_000, statusEveryMs: 60_000, statuses: ['Checking records...'] },
     });
 
-    await expect(gateway.handleInbound(message)).resolves.toMatchObject({ status: 'delivered' });
-    expect(sink.emit).toHaveBeenCalledWith({ kind: 'typing.start', target: expect.any(Object) });
-    expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivery-started', target: expect.any(Object) });
-    expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivered', target: expect.any(Object), platformMessageId: '200' });
-    expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+    try {
+      await expect(gateway.handleInbound(message)).resolves.toMatchObject({ status: 'delivered' });
+      expect(sink.emit).toHaveBeenCalledWith({ kind: 'typing.start', target: expect.any(Object) });
+      expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivery-started', target: expect.any(Object) });
+      expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivered', target: expect.any(Object), platformMessageId: '200' });
+      expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('gateway.inbound.accepted');
+      expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).not.toContain('What did we spend this month?');
+    } finally {
+      logging.close();
+    }
   });
 
   it('returns a failed gateway result and stops typing when orchestration throws', async () => {

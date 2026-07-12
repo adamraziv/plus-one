@@ -58,6 +58,33 @@ After setup, start the local agent server with:
 pnpm dev:mastra
 ```
 
+## Logging
+
+The runtime writes human-readable, rotating diagnostic logs under `~/.plus-one/logs`:
+
+```text
+~/.plus-one/logs/agent.log
+~/.plus-one/logs/errors.log
+~/.plus-one/logs/gateway.log
+```
+
+Configure the location and rotation with:
+
+- `PLUS_ONE_HOME`: Plus One home directory; logs are written in its `logs/` subdirectory
+- `PLUS_ONE_LOG_LEVEL`: `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default `INFO`)
+- `PLUS_ONE_LOG_MAX_SIZE_MB`: rotating `agent.log` and `gateway.log` size (default `5`)
+- `PLUS_ONE_LOG_BACKUP_COUNT`: rotating backup count for `agent.log` and `gateway.log` (default `3`)
+
+Inspect logs from the CLI:
+
+```bash
+pnpm plus-one logs
+pnpm plus-one logs gateway --follow
+pnpm plus-one logs --conversation conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K
+```
+
+Diagnostics contain lifecycle metadata and correlation IDs, not message bodies, prompts, model responses, financial payloads, tool arguments, or transport destinations. PostgreSQL transcript, audit, and operational records remain separate authoritative stores.
+
 This uses the workspace-installed Mastra CLI and starts the local development server. By default, Mastra serves Studio at `http://localhost:4111`.
 
 Mastra's built-in API surface stays under `http://localhost:4111/api`, but the Plus One custom inbound route is registered directly and is not `/api`-prefixed.

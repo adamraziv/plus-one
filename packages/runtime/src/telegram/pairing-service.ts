@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { getLogger, withLogContext } from '../logging/index.js';
 
 export type PairableChannel = 'telegram' | 'slack';
 
@@ -89,6 +90,8 @@ const MAX_PENDING = 3;
 const MAX_FAILED_ATTEMPTS = 5;
 
 export class TelegramPairingService {
+  private readonly logger = getLogger('runtime.pairing');
+
   constructor(private readonly dependencies: {
     repository: ChannelPairingRepositoryPort;
     codeGenerator?: () => string;
@@ -162,6 +165,9 @@ export class TelegramPairingService {
           approvedBy: input.approvedBy,
           approvedAt: now.toISOString(),
         });
+        await withLogContext({ householdId: input.householdId }, async () => {
+          this.logger.info('pairing.approved', { fields: { channel: 'telegram' } });
+        });
         return { status: 'approved', principal };
       }
     }
@@ -193,6 +199,7 @@ export class TelegramPairingService {
       externalUserId: input.externalUserId,
       revokedAt: this.now().toISOString(),
     });
+    this.logger.info('pairing.revoked', { fields: { channel: 'telegram' } });
   }
 
   async listPending(): Promise<PendingChannelPairingRecord[]> {

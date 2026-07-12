@@ -1,9 +1,13 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TelegramPairingService,
   type ChannelPairingRepositoryPort,
   type PendingChannelPairingRecord,
 } from './pairing-service.js';
+import { configureLogging } from '../logging/index.js';
 
 const now = new Date('2026-07-01T00:00:00.000Z');
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -104,26 +108,39 @@ describe('TelegramPairingService', () => {
   });
 
   it('approves a matching code for a household', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-pairing-'));
+    const logging = configureLogging({ homeDirectory });
     const repository = fakeRepository();
     const pairing = service(repository);
 
-    await pairing.createPairingRequest({
-      externalUserId: '1234567890123',
-      externalChatId: '9876543210987',
-      metadata: {},
-    });
-
-    await expect(pairing.approveCode({
-      code: 'ABCDEFGH',
-      householdId,
-      approvedBy: 'cli:test',
-    })).resolves.toMatchObject({
-      status: 'approved',
-      principal: {
+    try {
+      await pairing.createPairingRequest({
         externalUserId: '1234567890123',
+        externalChatId: '9876543210987',
+        metadata: {},
+      });
+
+      await expect(pairing.approveCode({
+        code: 'ABCDEFGH',
         householdId,
-      },
-    });
+        approvedBy: 'cli:test',
+      })).resolves.toMatchObject({
+        status: 'approved',
+        principal: {
+          externalUserId: '1234567890123',
+          householdId,
+        },
+      });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('pairing.approved');
+      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('channel=telegram');
+      expect(agentLog).not.toContain('ABCDEFGH');
+      expect(agentLog).not.toContain('1234567890123');
+      expect(agentLog).not.toContain('9876543210987');
+    } finally {
+      logging.close();
+    }
   });
 
   it('rate limits repeated code creation for the same Telegram user', async () => {
@@ -166,31 +183,39 @@ describe('TelegramPairingService', () => {
   });
 
   it('records failed attempts and locks a request after five misses', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-pairing-'));
+    const logging = configureLogging({ homeDirectory });
     const repository = fakeRepository();
     const pairing = service(repository);
 
-    await pairing.createPairingRequest({
-      externalUserId: '1234567890123',
-      externalChatId: '9876543210987',
-      metadata: {},
-    });
+    try {
+      await pairing.createPairingRequest({
+        externalUserId: '1234567890123',
+        externalChatId: '9876543210987',
+        metadata: {},
+      });
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await expect(pairing.approveCode({
+          code: 'ZZZZZZZZ',
+          householdId,
+          approvedBy: 'cli:test',
+        })).resolves.toEqual({ status: 'invalid-code' });
+      }
+
       await expect(pairing.approveCode({
         code: 'ZZZZZZZZ',
         householdId,
         approvedBy: 'cli:test',
-      })).resolves.toEqual({ status: 'invalid-code' });
+      })).resolves.toEqual({
+        status: 'locked',
+        lockedUntil: '2026-07-01T01:00:00.000Z',
+      });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8').catch(() => '');
+      expect(agentLog).not.toContain('pairing.approved');
+    } finally {
+      logging.close();
     }
-
-    await expect(pairing.approveCode({
-      code: 'ZZZZZZZZ',
-      householdId,
-      approvedBy: 'cli:test',
-    })).resolves.toEqual({
-      status: 'locked',
-      lockedUntil: '2026-07-01T01:00:00.000Z',
-    });
   });
 
   it('still approves a valid code when an unrelated pending request is locked', async () => {
@@ -234,22 +259,32 @@ describe('TelegramPairingService', () => {
   });
 
   it('delegates principal lookup and revocation to the repository', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-pairing-'));
+    const logging = configureLogging({ homeDirectory });
     const repository = fakeRepository();
     const findActivePrincipal = vi.spyOn(repository, 'findActivePrincipal');
     const revokePrincipal = vi.spyOn(repository, 'revokePrincipal');
     const pairing = service(repository);
 
-    await pairing.findPrincipal('1234567890123');
-    await pairing.revoke({ externalUserId: '1234567890123' });
+    try {
+      await pairing.findPrincipal('1234567890123');
+      await pairing.revoke({ externalUserId: '1234567890123' });
 
-    expect(findActivePrincipal).toHaveBeenCalledWith({
-      channel: 'telegram',
-      externalUserId: '1234567890123',
-    });
-    expect(revokePrincipal).toHaveBeenCalledWith({
-      channel: 'telegram',
-      externalUserId: '1234567890123',
-      revokedAt: '2026-07-01T00:00:00.000Z',
-    });
+      expect(findActivePrincipal).toHaveBeenCalledWith({
+        channel: 'telegram',
+        externalUserId: '1234567890123',
+      });
+      expect(revokePrincipal).toHaveBeenCalledWith({
+        channel: 'telegram',
+        externalUserId: '1234567890123',
+        revokedAt: '2026-07-01T00:00:00.000Z',
+      });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('pairing.revoked');
+      expect(agentLog).toContain('channel=telegram');
+      expect(agentLog).not.toContain('1234567890123');
+    } finally {
+      logging.close();
+    }
   });
 });

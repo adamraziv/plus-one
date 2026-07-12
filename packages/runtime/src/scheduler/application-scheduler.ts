@@ -9,6 +9,7 @@ import {
 } from '@plus-one/contracts';
 import { ZodError } from 'zod';
 import type { DeliveryResult } from '../delivery/final-delivery-handler.js';
+import { getLogger, withLogContext } from '../logging/index.js';
 
 export interface SchedulerClaim extends ScheduledRunV1 {
   target: { kind: 'orchestrator' } | { kind: 'team_lead'; team: string };
@@ -53,44 +54,89 @@ export class ApplicationScheduler {
   }
 
   private async dispatchClaim(claim: SchedulerClaim, now: string): Promise<ScheduledRunV1> {
-    if (claim.missedRunPolicy === 'skip'
-      && new Date(claim.scheduledFor).getTime() < new Date(now).getTime()) {
-      return this.dependencies.repository.completeRun({
-        householdId: claim.householdId,
-        occurrenceId: claim.occurrenceId,
-        status: 'skipped',
-      });
-    }
+    const logger = getLogger('runtime.scheduler');
+    const startedAt = Date.now();
+    const fields = {
+      jobId: claim.jobId,
+      occurrenceId: claim.occurrenceId,
+      targetKind: claim.target.kind,
+      ...(claim.target.kind === 'team_lead' ? { team: claim.target.team } : {}),
+      retryCount: claim.attemptCount,
+    };
+    const logContext = claim.taskId === undefined
+      ? { householdId: claim.householdId }
+      : { householdId: claim.householdId, taskId: claim.taskId };
+    return withLogContext(logContext, async () => {
+      logger.info('scheduler.run.started', { fields });
+      const logCompleted = (
+        status: 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'skipped',
+        failureCategory?: string,
+      ): void => {
+        const options = {
+          fields: {
+            ...fields,
+            status,
+            ...(failureCategory === undefined ? {} : { failureCategory }),
+            durationMs: Date.now() - startedAt,
+          },
+        };
+        if (status === 'succeeded' || status === 'skipped') {
+          logger.info('scheduler.run.completed', options);
+        } else {
+          logger.warn('scheduler.run.completed', options);
+        }
+      };
 
-    try {
-      const response = await this.runWithRetries(claim);
-      const delivered = await this.dependencies.delivery.deliver(response);
-      if (delivered.status !== 'delivered') {
-        return this.dependencies.repository.completeRun({
+      if (claim.missedRunPolicy === 'skip'
+        && new Date(claim.scheduledFor).getTime() < new Date(now).getTime()) {
+        const completed = await this.dependencies.repository.completeRun({
           householdId: claim.householdId,
           occurrenceId: claim.occurrenceId,
-          status: 'failed',
-          failureCategory: delivered.status === 'blocked' ? 'processor_blocked' : `delivery_${delivered.status}`,
+          status: 'skipped',
         });
+        logCompleted('skipped');
+        return completed;
       }
-      return this.dependencies.repository.completeRun({
-        householdId: claim.householdId,
-        occurrenceId: claim.occurrenceId,
-        status: 'succeeded',
-        deliveryId: delivered.delivery.deliveryId,
-      });
-    } catch (error) {
-      const timedOut = error instanceof DOMException && error.name === 'TimeoutError';
-      const schemaFailed = error instanceof ZodError;
-      return this.dependencies.repository.completeRun({
-        householdId: claim.householdId,
-        occurrenceId: claim.occurrenceId,
-        status: timedOut ? 'timed_out' : 'failed',
-        failureCategory: timedOut ? 'timeout'
+
+      try {
+        const response = await this.runWithRetries(claim);
+        const delivered = await this.dependencies.delivery.deliver(response);
+        if (delivered.status !== 'delivered') {
+          const failureCategory = delivered.status === 'blocked' ? 'processor_blocked' : `delivery_${delivered.status}`;
+          const completed = await this.dependencies.repository.completeRun({
+            householdId: claim.householdId,
+            occurrenceId: claim.occurrenceId,
+            status: 'failed',
+            failureCategory,
+          });
+          logCompleted('failed', failureCategory);
+          return completed;
+        }
+        const completed = await this.dependencies.repository.completeRun({
+          householdId: claim.householdId,
+          occurrenceId: claim.occurrenceId,
+          status: 'succeeded',
+          deliveryId: delivered.delivery.deliveryId,
+        });
+        logCompleted('succeeded');
+        return completed;
+      } catch (error) {
+        const timedOut = error instanceof DOMException && error.name === 'TimeoutError';
+        const schemaFailed = error instanceof ZodError;
+        const status = timedOut ? 'timed_out' : 'failed';
+        const failureCategory = timedOut ? 'timeout'
           : schemaFailed ? 'target_schema_validation'
-          : 'runtime_failure',
-      });
-    }
+          : 'runtime_failure';
+        const completed = await this.dependencies.repository.completeRun({
+          householdId: claim.householdId,
+          occurrenceId: claim.occurrenceId,
+          status,
+          failureCategory,
+        });
+        logCompleted(status, failureCategory);
+        return completed;
+      }
+    });
   }
 
   private async runWithRetries(claim: SchedulerClaim): Promise<OrchestratorFinalResponseV1> {

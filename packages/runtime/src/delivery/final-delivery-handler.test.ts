@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FinalDeliveryHandler, createDeliveryKey } from './final-delivery-handler.js';
 import { TransportSendError } from '../gateway/send-result.js';
@@ -7,6 +10,7 @@ import {
   type DeliveryRecordV1,
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
+import { configureLogging } from '../logging/index.js';
 
 const response = OrchestratorFinalResponseSchemaV1.parse({
   schemaName: 'orchestrator-final-response',
@@ -57,6 +61,18 @@ function record(status: DeliveryRecordV1['status'], platformMessageId?: string):
   });
 }
 
+async function captureDeliveryLog<T>(action: () => Promise<T>): Promise<{ result: T; log: string }> {
+  const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-delivery-'));
+  const logging = configureLogging({ homeDirectory });
+  try {
+    const result = await action();
+    const log = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+    return { result, log };
+  } finally {
+    logging.close();
+  }
+}
+
 describe('FinalDeliveryHandler', () => {
   it('blocks before reserving delivery or sending transport output', async () => {
     const repository = {
@@ -72,7 +88,15 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    await expect(handler.deliver(response)).resolves.toMatchObject({ status: 'blocked' });
+    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    expect(result).toMatchObject({ status: 'blocked' });
+    expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.completed');
+    expect(log).toContain('status=blocked');
+    expect(log).toContain('failureCategory=processor_blocked');
+    expect(log).toContain('sent=false');
+    expect(log).not.toContain(response.body);
+    expect(log).not.toContain('telegram-chat-42');
     expect(repository.reserveDelivery).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
@@ -90,11 +114,19 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    await expect(handler.deliver(response)).resolves.toMatchObject({
+    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    expect(result).toMatchObject({
       status: 'delivered',
       sent: false,
       delivery: { platformMessageId: 'telegram-platform-123' },
     });
+    expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.completed');
+    expect(log).toContain('status=delivered');
+    expect(log).toContain('sent=false');
+    expect(log).toContain('deliveryId=delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+    expect(log).not.toContain(response.body);
+    expect(log).not.toContain('telegram-chat-42');
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -111,7 +143,15 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    await expect(handler.deliver(response)).resolves.toMatchObject({ status: 'delivered', sent: true });
+    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    expect(result).toMatchObject({ status: 'delivered', sent: true });
+    expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.completed');
+    expect(log).toContain('status=delivered');
+    expect(log).toContain('sent=true');
+    expect(log).toContain('durationMs=');
+    expect(log).not.toContain(response.body);
+    expect(log).not.toContain('telegram-chat-42');
     expect(repository.reserveDelivery).toHaveBeenCalledWith({
       deliveryId: 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       idempotencyKey: createDeliveryKey(response),
@@ -145,7 +185,15 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    await expect(handler.deliver(response)).resolves.toMatchObject({ status: 'failed', sent: true });
+    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    expect(result).toMatchObject({ status: 'failed', sent: true });
+    expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.failed');
+    expect(log).toContain('status=failed');
+    expect(log).toContain('failureCategory=forbidden');
+    expect(log).toContain('sent=true');
+    expect(log).not.toContain(response.body);
+    expect(log).not.toContain('telegram-chat-42');
     expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
       response.householdId,
       'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -174,7 +222,15 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    await expect(handler.deliver(response)).resolves.toMatchObject({ status: 'ambiguous', sent: true });
+    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    expect(result).toMatchObject({ status: 'ambiguous', sent: true });
+    expect(log).toContain('delivery.started');
+    expect(log).toContain('delivery.failed');
+    expect(log).toContain('status=ambiguous');
+    expect(log).toContain('failureCategory=ambiguous');
+    expect(log).toContain('sent=true');
+    expect(log).not.toContain(response.body);
+    expect(log).not.toContain('telegram-chat-42');
     expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
       response.householdId,
       'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
