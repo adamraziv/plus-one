@@ -16,6 +16,24 @@ describe('live CLI menu model', () => {
     expect(snapshot.items.map((item) => item.label.toLowerCase()).join(' ')).not.toContain('stack');
   });
 
+  it('keeps every menu action operational or pairing-only', () => {
+    const main = snapshotLiveCliState(createInitialLiveCliState({ runtimeStatus: 'stopped' }));
+    const socials = snapshotLiveCliState(
+      handleLiveCliKey(createInitialLiveCliState({ runtimeStatus: 'stopped' }), { name: '3' }).state,
+    );
+    const telegram = snapshotLiveCliState(
+      handleLiveCliKey(
+        handleLiveCliKey(createInitialLiveCliState({ runtimeStatus: 'stopped' }), { name: '3' }).state,
+        { name: 'enter' },
+      ).state,
+    );
+    const actions = [...main.items, ...socials.items, ...telegram.items].map((item) => item.action.type);
+    const labels = [...main.items, ...socials.items, ...telegram.items].map((item) => item.label).join(' ');
+
+    expect(actions).not.toContain('chat');
+    expect(labels.toLowerCase()).not.toMatch(/chat|send message|prompt/);
+  });
+
   it('opens socials and telegram screens with drill-down navigation', () => {
     const main = createInitialLiveCliState({ runtimeStatus: 'stopped' });
     const socials = handleLiveCliKey(main, { name: '3' }).state;

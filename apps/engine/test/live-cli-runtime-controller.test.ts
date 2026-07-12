@@ -22,7 +22,7 @@ describe('live runtime controller', () => {
     const child = new FakeChild();
     const spawnProcess = vi.fn((command, args, options) => {
       calls.push([command, ...args].join(' '));
-      if (args[0] === 'dev:mastra') {
+      if (command === 'plus-one') {
         calls.push(`engine detached ${String(options.detached)}`);
         return child as never;
       }
@@ -47,7 +47,7 @@ describe('live runtime controller', () => {
 
     await expect(controller.start()).resolves.toEqual({ status: 'running-attached' });
 
-    expect(calls).toEqual(['pnpm db:up', 'verifyDatabase', 'pnpm dev:mastra', 'engine detached true']);
+    expect(calls).toEqual(['pnpm db:up', 'verifyDatabase', 'plus-one', 'engine detached true']);
     expect(calls).not.toContain('pnpm db:migrate');
   });
 
@@ -59,7 +59,7 @@ describe('live runtime controller', () => {
       now: () => new Date('2026-07-02T00:00:00.000Z'),
       spawnProcess: vi.fn((command, args) => {
         calls.push([command, ...args].join(' '));
-        if (args[0] === 'dev:mastra') return child as never;
+        if (command === 'plus-one') return child as never;
         const commandChild = new FakeChild();
         queueMicrotask(() => commandChild.emit('exit', 0, null));
         return commandChild as never;
@@ -83,7 +83,7 @@ describe('live runtime controller', () => {
     await expect(controller.stop()).resolves.toEqual({ status: 'stopped' });
 
     expect(child.killed).toBe(false);
-    expect(calls).toEqual(['pnpm db:up', 'pnpm dev:mastra', 'kill -1234 SIGTERM', 'clearState', 'pnpm db:down']);
+    expect(calls).toEqual(['pnpm db:up', 'plus-one', 'kill -1234 SIGTERM', 'clearState', 'pnpm db:down']);
   });
 
   it('stops a hidden background engine recorded in the state file', async () => {
@@ -103,7 +103,7 @@ describe('live runtime controller', () => {
           schemaVersion: 1 as const,
           enginePid: 4321,
           startedAt: '2026-07-02T00:00:00.000Z',
-          command: ['pnpm', 'dev:mastra'],
+          command: ['plus-one'],
           cwd: '/repo',
         })),
         save: vi.fn(async () => undefined),
@@ -137,7 +137,7 @@ describe('live runtime controller', () => {
       cwd: '/repo',
       now: () => new Date('2026-07-02T00:00:00.000Z'),
       spawnProcess: vi.fn((command, args) => {
-        if (args[0] === 'dev:mastra') return child as never;
+        if (command === 'plus-one') return child as never;
         const commandChild = new FakeChild();
         queueMicrotask(() => commandChild.emit('exit', 0, null));
         return commandChild as never;
@@ -159,7 +159,7 @@ describe('live runtime controller', () => {
       schemaVersion: 1,
       enginePid: 1234,
       startedAt: '2026-07-02T00:00:00.000Z',
-      command: ['pnpm', 'dev:mastra'],
+        command: ['plus-one'],
       cwd: '/repo',
     });
   });

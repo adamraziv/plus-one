@@ -115,6 +115,20 @@ describe('Plus One CLI', () => {
     expect(stderr.write).toHaveBeenCalledWith('Storage is unavailable\n');
   });
 
+  it('rejects chat as a CLI command', async () => {
+    const runGateway = vi.fn(async () => 0);
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['chat', 'hello'], {
+      runGateway,
+      stdout: { write: vi.fn() },
+      stderr,
+    })).resolves.toBe(1);
+
+    expect(runGateway).not.toHaveBeenCalled();
+    expect(stderr.write).toHaveBeenCalledWith(expect.stringContaining('Usage: plus-one'));
+  });
+
   it('opens the live CLI through the explicit live command', async () => {
     const runGateway = vi.fn(async () => 0);
     const runLiveCli = vi.fn(async () => 0);
