@@ -62,7 +62,16 @@ cd /tmp
 plus-one
 ```
 
-With no arguments, `plus-one` runs the production gateway. It starts the Mastra HTTP server, waits for HTTP listen readiness, then activates the configured Telegram receiver. It reports:
+With no arguments, `plus-one` starts the production gateway in the background. It prints a starting state, waits for the Mastra HTTP server and configured Telegram receiver to become ready, prints the listening state, and returns the shell prompt. Detached gateway output is written to the Plus One state directory.
+
+```bash
+plus-one status
+plus-one stop
+```
+
+`status` reports whether the gateway is stopped, starting, or listening. `stop` terminates the recorded gateway process without stopping PostgreSQL. The internal `--foreground` mode is used by `plus-one live` and is not a chat interface.
+
+The production gateway reports:
 
 ```text
 GET /health/live
@@ -135,6 +144,8 @@ pnpm smoke:orchestrator
 pnpm dev:mastra
 pnpm install:cli
 plus-one
+plus-one status
+plus-one stop
 plus-one live
 ```
 

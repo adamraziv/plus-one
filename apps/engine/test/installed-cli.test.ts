@@ -32,10 +32,21 @@ describe('installed plus-one command', () => {
       expect(invocation.code).toBe(1);
       expect(invocation.stderr).toContain('Usage: plus-one');
       expect(invocation.stdout).toBe('');
+
+      const status = await runProcess(link, ['status'], {
+        cwd: outsideDirectory,
+        env: {
+          ...process.env,
+          NODE_ENV: 'test',
+          PLUS_ONE_LIVE_CLI_STATE_FILE: join(temporaryRoot, 'state', 'live-cli.json'),
+        },
+      });
+      expect(status.code).toBe(0);
+      expect(status.stdout).toContain('Plus One is stopped.');
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it('refuses to replace a regular file', async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), 'plus-one-installed-cli-'));
