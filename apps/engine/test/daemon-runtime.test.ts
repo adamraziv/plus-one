@@ -99,4 +99,23 @@ describe('gateway daemon runtime', () => {
     expect(state.store.save).not.toHaveBeenCalled();
     expect(state.store.clear).not.toHaveBeenCalled();
   });
+
+  it('cleans up a detached child when state persistence fails', async () => {
+    const child = new FakeChild();
+    const killProcess = vi.fn();
+    const state = stateStore(undefined);
+    state.store.save.mockRejectedValueOnce(new Error('state unavailable'));
+
+    await expect(startGatewayDaemon({
+      state: state.store,
+      spawnProcess: () => child,
+      fetch: async () => new Response(JSON.stringify({ status: 'ready' }), { status: 200 }),
+      isProcessAlive: () => true,
+      killProcess,
+      sleep: async () => undefined,
+    })).rejects.toThrow('state unavailable');
+
+    expect(child.unref).toHaveBeenCalledOnce();
+    expect(killProcess).toHaveBeenCalledWith(-4321, 'SIGTERM');
+  });
 });

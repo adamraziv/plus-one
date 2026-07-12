@@ -66,6 +66,8 @@ export async function startGatewayDaemon(input: DaemonRuntimeDependencies = {}):
     logFilePath,
   });
   if (child.pid === undefined) throw new Error('Plus One gateway process did not expose a PID.');
+  const killProcess = input.killProcess ?? process.kill;
+  child.unref?.();
 
   const ready = await waitForGatewayReady({
     address,
@@ -77,22 +79,30 @@ export async function startGatewayDaemon(input: DaemonRuntimeDependencies = {}):
   });
   if (!ready) {
     try {
-      (input.killProcess ?? process.kill)(-child.pid, 'SIGTERM');
+      killProcess(-child.pid, 'SIGTERM');
     } catch {
-      return Promise.reject(new Error(`Plus One gateway did not become ready at ${address.url}.`));
+      // The process may have exited while readiness was being checked.
     }
     throw new Error(`Plus One gateway did not become ready at ${address.url}.`);
   }
 
-  await state.save({
-    schemaVersion: 1,
-    enginePid: child.pid,
-    startedAt: (input.now ?? (() => new Date()))().toISOString(),
-    command: ['plus-one', '--foreground'],
-    cwd: installationRoot,
-    logFilePath,
-  });
-  child.unref?.();
+  try {
+    await state.save({
+      schemaVersion: 1,
+      enginePid: child.pid,
+      startedAt: (input.now ?? (() => new Date()))().toISOString(),
+      command: ['plus-one', '--foreground'],
+      cwd: installationRoot,
+      logFilePath,
+    });
+  } catch (error) {
+    try {
+      killProcess(-child.pid, 'SIGTERM');
+    } catch {
+      // The process may have exited while state was being persisted.
+    }
+    throw error;
+  }
   stdout.write(`Plus One gateway listening on ${address.display}.\n`);
   return 0;
 }
