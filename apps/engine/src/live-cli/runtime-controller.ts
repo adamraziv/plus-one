@@ -58,7 +58,7 @@ export class LiveRuntimeController {
     try {
       await this.runCommand('pnpm', ['db:up']);
       await (this.dependencies.verifyDatabase ?? (() => verifyDatabase(this.dependencies.environment)))();
-      this.engine = this.spawn('plus-one', [], { detached: true });
+      this.engine = this.spawn('plus-one', ['--foreground'], { detached: true });
       this.status = 'running-attached';
       return { status: this.status };
     } catch (error) {
@@ -96,7 +96,7 @@ export class LiveRuntimeController {
       schemaVersion: 1,
       enginePid: this.engine.pid,
       startedAt: (this.dependencies.now ?? (() => new Date()))().toISOString(),
-      command: ['plus-one'],
+      command: ['plus-one', '--foreground'],
       cwd: this.dependencies.cwd,
     });
     this.status = 'running-background';

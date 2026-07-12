@@ -47,7 +47,7 @@ describe('live runtime controller', () => {
 
     await expect(controller.start()).resolves.toEqual({ status: 'running-attached' });
 
-    expect(calls).toEqual(['pnpm db:up', 'verifyDatabase', 'plus-one', 'engine detached true']);
+    expect(calls).toEqual(['pnpm db:up', 'verifyDatabase', 'plus-one --foreground', 'engine detached true']);
     expect(calls).not.toContain('pnpm db:migrate');
   });
 
@@ -83,7 +83,7 @@ describe('live runtime controller', () => {
     await expect(controller.stop()).resolves.toEqual({ status: 'stopped' });
 
     expect(child.killed).toBe(false);
-    expect(calls).toEqual(['pnpm db:up', 'plus-one', 'kill -1234 SIGTERM', 'clearState', 'pnpm db:down']);
+    expect(calls).toEqual(['pnpm db:up', 'plus-one --foreground', 'kill -1234 SIGTERM', 'clearState', 'pnpm db:down']);
   });
 
   it('stops a hidden background engine recorded in the state file', async () => {
@@ -103,7 +103,7 @@ describe('live runtime controller', () => {
           schemaVersion: 1 as const,
           enginePid: 4321,
           startedAt: '2026-07-02T00:00:00.000Z',
-          command: ['plus-one'],
+          command: ['plus-one', '--foreground'],
           cwd: '/repo',
         })),
         save: vi.fn(async () => undefined),
@@ -159,7 +159,7 @@ describe('live runtime controller', () => {
       schemaVersion: 1,
       enginePid: 1234,
       startedAt: '2026-07-02T00:00:00.000Z',
-        command: ['plus-one'],
+        command: ['plus-one', '--foreground'],
       cwd: '/repo',
     });
   });
