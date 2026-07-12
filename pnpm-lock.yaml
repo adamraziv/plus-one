@@ -26,6 +26,9 @@ importers:
       '@mastra/pg':
         specifier: 1.14.0
         version: 1.14.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+      tsx:
+        specifier: 4.20.6
+        version: 4.20.6
     devDependencies:
       '@eslint/js':
         specifier: 9.39.1
@@ -51,9 +54,6 @@ importers:
       pg:
         specifier: 8.16.3
         version: 8.16.3
-      tsx:
-        specifier: 4.20.6
-        version: 4.20.6
       typescript:
         specifier: 5.9.3
         version: 5.9.3
