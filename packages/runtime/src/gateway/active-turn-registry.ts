@@ -2,38 +2,29 @@ type Work<T> = () => Promise<T>;
 
 type Slot<T> = {
   active: boolean;
+  queue: Work<T>[];
   activeDone?: Promise<void>;
-  pending?: Work<T>;
   drain?: Promise<void>;
 };
 
 export class ActiveTurnRegistry<T = unknown> {
   private readonly slots = new Map<string, Slot<T>>();
-  private shuttingDown = false;
+  private accepting = true;
 
   async submit(
     key: string,
     work: Work<T>,
   ): Promise<{ status: 'started'; result: T } | { status: 'queued' } | { status: 'closed' }> {
-    if (this.shuttingDown) return { status: 'closed' };
-    const slot = this.slots.get(key) ?? { active: false };
+    if (!this.accepting) return { status: 'closed' };
+    const slot = this.slots.get(key) ?? { active: false, queue: [] };
     this.slots.set(key, slot);
     if (slot.active) {
-      slot.pending = work;
+      slot.queue.push(work);
       return { status: 'queued' };
     }
-    slot.active = true;
-    let finishActive!: () => void;
-    slot.activeDone = new Promise<void>((resolve) => { finishActive = resolve; });
-    try {
-      const result = await work();
-      return { status: 'started', result };
-    } finally {
-      slot.active = false;
-      finishActive();
-      delete slot.activeDone;
+    return this.run(key, slot, work).finally(() => {
       this.scheduleDrain(key, slot);
-    }
+    });
   }
 
   activeCount(): number {
@@ -51,24 +42,46 @@ export class ActiveTurnRegistry<T = unknown> {
   }
 
   async shutdown(): Promise<void> {
-    this.shuttingDown = true;
-    for (const slot of this.slots.values()) delete slot.pending;
+    this.accepting = false;
     await this.drainIdle();
   }
 
+  private async run(
+    key: string,
+    slot: Slot<T>,
+    work: Work<T>,
+  ): Promise<{ status: 'started'; result: T }> {
+    slot.active = true;
+    let finishActive!: () => void;
+    slot.activeDone = new Promise<void>((resolve) => { finishActive = resolve; });
+    try {
+      const result = await work();
+      return { status: 'started', result };
+    } finally {
+      slot.active = false;
+      finishActive();
+      delete slot.activeDone;
+    }
+  }
+
   private scheduleDrain(key: string, slot: Slot<T>): void {
-    const pending = slot.pending;
-    delete slot.pending;
-    if (pending === undefined || this.shuttingDown) {
-      if (!slot.active) this.slots.delete(key);
+    if (slot.active || slot.drain !== undefined || slot.queue.length === 0) {
+      if (!slot.active && slot.drain === undefined && slot.queue.length === 0) this.slots.delete(key);
       return;
     }
     slot.drain = (async () => {
-      try {
-        await this.submit(key, pending);
-      } catch {
-        return;
+      while (slot.queue.length > 0) {
+        const next = slot.queue.shift();
+        if (next === undefined) return;
+        try {
+          await this.run(key, slot, next);
+        } catch {
+          continue;
+        }
       }
-    })();
+    })().finally(() => {
+      delete slot.drain;
+      if (!slot.active && slot.queue.length === 0) this.slots.delete(key);
+    });
   }
 }
