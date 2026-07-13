@@ -77,7 +77,6 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
       config.models.checker.id,
       config.models.research.id,
     ],
-    orchestratorModel: config.models.orchestrator,
   });
   const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
   const queryTools = dependencies.queryTools ?? createDefaultQueryTools(pools);

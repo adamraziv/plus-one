@@ -62,47 +62,26 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   const body = asRecord(await readJson(request));
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const toolMessage = [...messages].reverse()
-    .find((message) => asRecord(message).role === 'tool');
-  const receipt = findReceipt(toolMessage);
-  const capabilityProbeRequested = JSON.stringify(messages)
-    .includes('call capabilityProbe exactly once');
-  if (capabilityProbeRequested && receipt === undefined) {
+  const submitResult = findFunctionTool(body, 'submitResult');
+  if (submitResult !== undefined) {
     sendCompletion(response, {
       role: 'assistant',
       content: null,
       tool_calls: [{
-        id: 'capability-probe-call',
+        id: 'submit-result-call',
         type: 'function',
         function: {
-          name: 'capabilityProbe',
-          arguments: JSON.stringify({ nonce: 'plus-one-orchestrator-capability-probe' }),
+          name: 'submitResult',
+          arguments: JSON.stringify(exampleForSchema(asRecord(submitResult.parameters))),
         },
       }],
     }, 'tool_calls');
     return;
   }
 
-  const properties = responseSchemaProperties(body);
-  const output = 'body' in properties
-    ? {
-        body: 'Test orchestrator reply.',
-        policyBoundary: 'operational',
-        citations: [],
-        assumptions: [],
-        freshness: ['current invocation only'],
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-      }
-    : {
-        status: 'ok',
-        evidence: receipt ?? 'direct',
-      };
   sendCompletion(response, {
     role: 'assistant',
-    content: JSON.stringify(output),
+    content: 'Test model reply.',
   }, 'stop');
 }
 
@@ -114,35 +93,39 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 
-function responseSchemaProperties(body: Record<string, unknown>): Record<string, unknown> {
-  const responseFormat = asRecord(body.response_format);
-  const jsonSchema = asRecord(responseFormat.json_schema);
-  const schema = asRecord(jsonSchema.schema);
-  return asRecord(schema.properties);
-}
-
-function findReceipt(value: unknown): string | undefined {
-  if (typeof value === 'string') {
-    try {
-      return findReceipt(JSON.parse(value) as unknown);
-    } catch {
-      return undefined;
-    }
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const receipt = findReceipt(item);
-      if (receipt !== undefined) return receipt;
-    }
-    return undefined;
-  }
-  const record = asRecord(value);
-  if (typeof record.receipt === 'string') return record.receipt;
-  for (const item of Object.values(record)) {
-    const receipt = findReceipt(item);
-    if (receipt !== undefined) return receipt;
+function findFunctionTool(body: Record<string, unknown>, name: string): Record<string, unknown> | undefined {
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  for (const candidate of tools) {
+    const tool = asRecord(candidate);
+    const definition = asRecord(tool.function);
+    if (definition.name === name) return definition;
   }
   return undefined;
+}
+
+function exampleForSchema(schema: Record<string, unknown>): unknown {
+  if ('const' in schema) return schema.const;
+  if (Array.isArray(schema.enum) && schema.enum.length !== 0) return schema.enum[0];
+  if ('default' in schema) return schema.default;
+
+  if (schema.type === 'object' || 'properties' in schema) {
+    const properties = asRecord(schema.properties);
+    const required = new Set(Array.isArray(schema.required)
+      ? schema.required.filter((key): key is string => typeof key === 'string')
+      : Object.keys(properties));
+    return Object.fromEntries(Object.entries(properties)
+      .filter(([key]) => required.has(key))
+      .map(([key, value]) => [key, exampleForSchema(asRecord(value))]));
+  }
+  if (schema.type === 'array') {
+    const minimum = typeof schema.minItems === 'number' ? schema.minItems : 0;
+    return Array.from({ length: minimum }, () => exampleForSchema(asRecord(schema.items)));
+  }
+  if (schema.type === 'integer' || schema.type === 'number') {
+    return typeof schema.minimum === 'number' ? schema.minimum : 0;
+  }
+  if (schema.type === 'boolean') return false;
+  return 'test';
 }
 
 function sendCompletion(

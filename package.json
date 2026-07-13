@@ -7,9 +7,6 @@
     "overrides": {
       "dockerode>uuid": "11.1.1",
       "esbuild": "0.28.1"
-    },
-    "patchedDependencies": {
-      "@mastra/core@1.47.0": "patches/@mastra__core@1.47.0.patch"
     }
   },
   "engines": {

@@ -399,11 +399,6 @@ describe('engine scaffold', () => {
         'openai/gpt-5',
         'openai/gpt-5',
       ],
-      orchestratorModel: {
-        id: 'openai/gpt-5',
-        endpoint: 'https://api.openai.com/v1',
-        apiKey: 'test-api-key',
-      },
     });
   });
 });

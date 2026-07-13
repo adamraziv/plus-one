@@ -8,24 +8,19 @@ overrides:
   dockerode>uuid: 11.1.1
   esbuild: 0.28.1
 
-patchedDependencies:
-  '@mastra/core@1.47.0':
-    hash: 88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1
-    path: patches/@mastra__core@1.47.0.patch
-
 importers:
 
   .:
     dependencies:
       '@mastra/core':
         specifier: 1.47.0
-        version: 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+        version: 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       '@mastra/memory':
         specifier: 1.21.2
-        version: 1.21.2(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
+        version: 1.21.2(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
       '@mastra/pg':
         specifier: 1.14.0
-        version: 1.14.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+        version: 1.14.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
       tsx:
         specifier: 4.20.6
         version: 4.20.6
@@ -50,7 +45,7 @@ importers:
         version: 4.3.0
       mastra:
         specifier: 1.16.0
-        version: 1.16.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12)
+        version: 1.16.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12)
       pg:
         specifier: 8.16.3
         version: 8.16.3
@@ -74,16 +69,16 @@ importers:
         version: 1.19.14(hono@4.12.25)
       '@mastra/core':
         specifier: 1.47.0
-        version: 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+        version: 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       '@mastra/hono':
         specifier: 1.5.2
-        version: 1.5.2(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(hono@4.12.25)(zod@4.1.12)
+        version: 1.5.2(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(hono@4.12.25)(zod@4.1.12)
       '@mastra/memory':
         specifier: 1.21.2
-        version: 1.21.2(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
+        version: 1.21.2(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
       '@mastra/pg':
         specifier: 1.14.0
-        version: 1.14.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+        version: 1.14.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
       '@plus-one/accounting':
         specifier: workspace:*
         version: link:../../packages/accounting
@@ -119,7 +114,7 @@ importers:
     dependencies:
       '@mastra/core':
         specifier: 1.47.0
-        version: 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+        version: 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       '@plus-one/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -155,10 +150,10 @@ importers:
     dependencies:
       '@mastra/core':
         specifier: 1.47.0
-        version: 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+        version: 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       '@mastra/pg':
         specifier: 1.14.0
-        version: 1.14.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+        version: 1.14.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
       '@plus-one/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -318,10 +313,10 @@ importers:
     dependencies:
       '@mastra/core':
         specifier: 1.47.0
-        version: 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+        version: 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       '@mastra/docker':
         specifier: 0.4.0
-        version: 0.4.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+        version: 0.4.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
       '@plus-one/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -4046,7 +4041,7 @@ snapshots:
     dependencies:
       '@lukeed/csprng': 1.1.0
 
-  '@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)':
+  '@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)':
     dependencies:
       '@a2a-js/sdk': 0.3.13(@grpc/grpc-js@1.14.4)(express@5.2.1)
       '@ai-sdk/provider-utils-v5': '@ai-sdk/provider-utils@3.0.25(zod@4.1.12)'
@@ -4092,14 +4087,14 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@mastra/deployer@1.47.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12)':
+  '@mastra/deployer@1.47.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12)':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/preset-typescript': 7.29.7(@babel/core@7.29.7)
       '@babel/traverse': 7.29.7
       '@hono/node-ws': 1.3.1(@hono/node-server@1.19.14(hono@4.12.25))(hono@4.12.25)
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
-      '@mastra/server': 1.47.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/server': 1.47.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
       '@optimize-lodash/rollup-plugin': 5.1.0(rollup@4.62.2)
       '@rollup/plugin-alias': 6.0.0(rollup@4.62.2)
       '@rollup/plugin-commonjs': 29.0.2(rollup@4.62.2)
@@ -4130,18 +4125,18 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@mastra/docker@0.4.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))':
+  '@mastra/docker@0.4.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))':
     dependencies:
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       dockerode: 4.0.12
     transitivePeerDependencies:
       - supports-color
 
-  '@mastra/hono@1.5.2(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(hono@4.12.25)(zod@4.1.12)':
+  '@mastra/hono@1.5.2(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(hono@4.12.25)(zod@4.1.12)':
     dependencies:
       '@hono/node-ws': 1.3.1(@hono/node-server@1.19.14(hono@4.12.25))(hono@4.12.25)
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
-      '@mastra/server': 1.47.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/server': 1.47.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)
       fetch-to-node: 2.1.0
       hono: 4.12.25
       ws: 8.21.0
@@ -4151,15 +4146,15 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@mastra/loggers@1.2.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))':
+  '@mastra/loggers@1.2.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))':
     dependencies:
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       pino: 10.3.1
       pino-pretty: 13.1.3
 
-  '@mastra/memory@1.21.2(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)':
+  '@mastra/memory@1.21.2(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)':
     dependencies:
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       '@mastra/schema-compat': 1.3.1(zod@4.1.12)
       async-mutex: 0.5.0
       diff: 8.0.4
@@ -4173,9 +4168,9 @@ snapshots:
       - supports-color
       - zod
 
-  '@mastra/pg@1.14.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))':
+  '@mastra/pg@1.14.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))':
     dependencies:
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       async-mutex: 0.5.0
       pg: 8.22.0
       pg-connection-string: 2.14.0
@@ -4191,9 +4186,9 @@ snapshots:
       zod-from-json-schema-v3: zod-from-json-schema@0.0.5
       zod-to-json-schema: 3.25.2(zod@4.1.12)
 
-  '@mastra/server@1.47.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)':
+  '@mastra/server@1.47.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(zod@4.1.12)':
     dependencies:
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
       hono: 4.12.25
       zod: 4.1.12
 
@@ -5679,15 +5674,15 @@ snapshots:
 
   markdown-table@3.0.4: {}
 
-  mastra@1.16.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12):
+  mastra@1.16.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12):
     dependencies:
       '@babel/parser': 7.29.7
       '@babel/types': 7.29.7
       '@clack/prompts': 1.6.0
       '@expo/devcert': 1.2.1
-      '@mastra/core': 1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
-      '@mastra/deployer': 1.47.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12)
-      '@mastra/loggers': 1.2.0(@mastra/core@1.47.0(patch_hash=88546dd67332d6ed6c35d8b4c406bc001d7116d1a51035894de9957680cd21d1)(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
+      '@mastra/core': 1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12)
+      '@mastra/deployer': 1.47.0(@hono/node-server@1.19.14(hono@4.12.25))(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))(typescript@5.9.3)(zod@4.1.12)
+      '@mastra/loggers': 1.2.0(@mastra/core@1.47.0(@grpc/grpc-js@1.14.4)(express@5.2.1)(zod@4.1.12))
       archiver: 8.0.0
       commander: 14.0.3
       dotenv: 17.4.2
