@@ -16,6 +16,9 @@ import {
 import {
   createTransientModelRetryProcessor,
   getLogger,
+  modelResultEndedOnRetry,
+  ModelTemporarilyUnavailableError,
+  stopAfterSemanticModelSteps,
   targetFromInboundMessage,
   type ChannelEventSink,
   type TeamDefinition,
@@ -196,12 +199,15 @@ export class OrchestratorAgent {
           try {
             result = await abortable(this.agent.generate(prompt, {
               ...this.orchestratorGenerateOptions(message),
-              maxSteps: MAX_ORCHESTRATOR_STEPS,
+              stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
               errorProcessors: [createTransientModelRetryProcessor({
                 maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
               })],
               maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
               toolChoice: 'auto',
+              prepareStep: async () => invocation.delegationCount === 0
+                ? { activeTools: ['delegateTeam'], toolChoice: 'auto' as const }
+                : { activeTools: [], toolChoice: 'none' as const },
               abortSignal: signal,
               onStepFinish: (step) => {
                 const usage = step.usage ?? {};
@@ -228,6 +234,12 @@ export class OrchestratorAgent {
             throw error;
           }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+          if (modelResultEndedOnRetry(result)) {
+            if (!invocation.delegationFailed && invocation.teamResults.length !== 0) {
+              return turnFromTeamResults(message, invocation.teamResults);
+            }
+            throw new ModelTemporarilyUnavailableError();
+          }
           if (invocation.delegationFailed) {
             throw new Error('Delegated team work failed before producing a checked result.');
           }

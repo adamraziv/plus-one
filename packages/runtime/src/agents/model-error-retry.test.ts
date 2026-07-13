@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   createTransientModelRetryProcessor,
+  ModelTemporarilyUnavailableError,
   isTransientModelError,
+  stopAfterSemanticModelSteps,
 } from '../index.js';
 
 describe('isTransientModelError', () => {
@@ -16,6 +18,7 @@ describe('isTransientModelError', () => {
       cause: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }),
     },
     Object.assign(new Error('provider rejected the request'), { isRetryable: true }),
+    new ModelTemporarilyUnavailableError(),
   ])('classifies a transient provider failure', (error) => {
     expect(isTransientModelError(error)).toBe(true);
   });
@@ -28,6 +31,24 @@ describe('isTransientModelError', () => {
     null,
   ])('does not classify a permanent or application failure as transient', (error) => {
     expect(isTransientModelError(error)).toBe(false);
+  });
+});
+
+describe('stopAfterSemanticModelSteps', () => {
+  it('does not spend the semantic step budget on API-error retry iterations', () => {
+    const stopAfterTwo = stopAfterSemanticModelSteps(2);
+
+    expect(stopAfterTwo({ steps: [{ finishReason: 'retry' }] } as never)).toBe(false);
+    expect(stopAfterTwo({
+      steps: [{ finishReason: 'retry' }, { finishReason: 'tool-calls' }],
+    } as never)).toBe(false);
+    expect(stopAfterTwo({
+      steps: [
+        { finishReason: 'retry' },
+        { finishReason: 'tool-calls' },
+        { finishReason: 'stop' },
+      ],
+    } as never)).toBe(true);
   });
 });
 

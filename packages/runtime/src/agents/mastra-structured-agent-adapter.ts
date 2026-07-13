@@ -3,13 +3,19 @@ import { z } from 'zod';
 import { PlusOneError } from '@plus-one/contracts';
 import { assertProviderToolId } from '../tools/tool-permission-registry.js';
 import type { AgentRegistry } from './agent-registry.js';
-import { createTransientModelRetryProcessor } from './model-error-retry.js';
+import {
+  createTransientModelRetryProcessor,
+  modelResultEndedOnRetry,
+  ModelTemporarilyUnavailableError,
+  stopAfterSemanticModelSteps,
+} from './model-error-retry.js';
 import type { StructuredAgentCall, StructuredAgentPort } from './structured-agent-port.js';
 
 const SubmitResultToolId = 'submitResult';
 const SubmissionAcknowledgementSchema = z.object({ accepted: z.literal(true) }).strict();
 
 interface MastraGenerationResult {
+  finishReason?: unknown;
   toolResults?: unknown;
   steps?: unknown;
 }
@@ -84,7 +90,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     const result = await agent.generate([...call.messages], {
       instructions: contractualInstructions(call, hasDomainTools),
       activeTools: [...call.activeTools],
-      maxSteps: requiredSteps,
+      stopWhen: stopAfterSemanticModelSteps(requiredSteps),
       maxRetries: 0,
       errorProcessors,
       maxProcessorRetries: Math.max(call.maxProcessorRetries, call.maxRetries),
@@ -108,6 +114,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       telemetry: { isEnabled: false },
     });
 
+    if (modelResultEndedOnRetry(result)) throw new ModelTemporarilyUnavailableError();
     assertExecutedActiveTool(call, result);
     if (submissions.length === 0) {
       throw new PlusOneError({

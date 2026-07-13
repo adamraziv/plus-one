@@ -18,11 +18,11 @@ interface PreparedStep {
 interface GenerationOptions {
   instructions: string;
   activeTools: string[];
-  maxSteps: number;
   maxRetries: number;
   maxProcessorRetries: number;
   errorProcessors: unknown[];
   toolChoice: unknown;
+  stopWhen(input: { steps: Array<{ finishReason?: string }> }): boolean | Promise<boolean>;
   prepareStep(input: { stepNumber: number; steps: unknown[] }): PreparedStep | Promise<PreparedStep>;
 }
 
@@ -54,12 +54,14 @@ describe('MastraStructuredAgentAdapter', () => {
       expect(options).not.toHaveProperty('structuredOutput');
       expect(options).toMatchObject({
         activeTools: [],
-        maxSteps: 1,
         maxRetries: 0,
         maxProcessorRetries: 1,
         errorProcessors: [expect.anything()],
         toolChoice: 'auto',
       });
+      expect(options).not.toHaveProperty('maxSteps');
+      expect(await options.stopWhen({ steps: [{ finishReason: 'retry' }] })).toBe(false);
+      expect(await options.stopWhen({ steps: [{ finishReason: 'stop' }] })).toBe(true);
       expect(options.instructions).toContain('submitResult');
       const prepared = await options.prepareStep({ stepNumber: 0, steps: [] });
       expect(prepared.activeTools).toEqual(['submitResult']);
@@ -79,9 +81,15 @@ describe('MastraStructuredAgentAdapter', () => {
       expect(options).not.toHaveProperty('structuredOutput');
       expect(options).toMatchObject({
         activeTools: ['query_balance'],
-        maxSteps: 2,
         toolChoice: 'auto',
       });
+      expect(options).not.toHaveProperty('maxSteps');
+      expect(await options.stopWhen({
+        steps: [{ finishReason: 'retry' }, { finishReason: 'tool-calls' }],
+      })).toBe(false);
+      expect(await options.stopWhen({
+        steps: [{ finishReason: 'tool-calls' }, { finishReason: 'stop' }],
+      })).toBe(true);
       const domainPhase = await options.prepareStep({ stepNumber: 0, steps: [] });
       expect(domainPhase).toMatchObject({ activeTools: ['query_balance'], toolChoice: 'auto' });
       expect(domainPhase.tools).toBeUndefined();
@@ -122,6 +130,13 @@ describe('MastraStructuredAgentAdapter', () => {
 
     await expect(adapterWith(generate).generate(call()))
       .rejects.toMatchObject({ code: 'structured_result_not_submitted' });
+  });
+
+  it('preserves an exhausted Mastra API retry result as transient provider unavailability', async () => {
+    const generate = vi.fn().mockResolvedValue({ text: '', finishReason: 'retry' });
+
+    await expect(adapterWith(generate).generate(call()))
+      .rejects.toMatchObject({ code: 'model_temporarily_unavailable', isRetryable: true });
   });
 
   it('rejects duplicate result submissions', async () => {

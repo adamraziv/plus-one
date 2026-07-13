@@ -11,6 +11,30 @@ const TRANSIENT_CODES = new Set([
 ]);
 const TRANSIENT_MESSAGE = /capacity queue is full|upstream request failed|rate.?limit|overload|temporar(?:y|ily) unavailable|service unavailable|timed? out|timeout|connection reset|socket hang up/i;
 
+export class ModelTemporarilyUnavailableError extends Error {
+  readonly code = 'model_temporarily_unavailable';
+  readonly isRetryable = true;
+
+  constructor() {
+    super('The model provider remained temporarily unavailable after bounded retries.');
+    this.name = 'ModelTemporarilyUnavailableError';
+  }
+}
+
+export function stopAfterSemanticModelSteps(maxSemanticSteps: number) {
+  if (!Number.isInteger(maxSemanticSteps) || maxSemanticSteps < 1) {
+    throw new RangeError('maxSemanticSteps must be a positive integer.');
+  }
+  return ({ steps }: { steps: readonly unknown[] }): boolean =>
+    steps.filter((step) => finishReasonOf(step) !== 'retry').length >= maxSemanticSteps;
+}
+
+export function modelResultEndedOnRetry(result: unknown): boolean {
+  if (finishReasonOf(result) === 'retry') return true;
+  const steps = asRecord(result).steps;
+  return Array.isArray(steps) && steps.length > 0 && finishReasonOf(steps.at(-1)) === 'retry';
+}
+
 export function isTransientModelError(error: unknown): boolean {
   for (const candidate of errorChain(error)) {
     const record = asRecord(candidate);
@@ -71,4 +95,8 @@ function numericProperty(record: Record<string, unknown>, key: string): number |
   if (typeof value === 'number' && Number.isInteger(value)) return value;
   if (typeof value === 'string' && /^\d{3}$/.test(value)) return Number(value);
   return undefined;
+}
+
+function finishReasonOf(value: unknown): unknown {
+  return asRecord(value).finishReason;
 }

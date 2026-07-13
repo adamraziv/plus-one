@@ -313,7 +313,7 @@ describe('OrchestratorAgent', () => {
     expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      maxSteps: 2,
+      stopWhen: expect.any(Function),
       maxProcessorRetries: 2,
       errorProcessors: [expect.anything()],
       toolChoice: 'auto',
@@ -322,6 +322,12 @@ describe('OrchestratorAgent', () => {
     const [, options] = generate.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
     expect(options).not.toHaveProperty('structuredOutput');
     expect(options).not.toHaveProperty('maxRetries');
+    expect(options).not.toHaveProperty('maxSteps');
+    const stopWhen = options.stopWhen as (input: {
+      steps: Array<{ finishReason?: string }>;
+    }) => boolean;
+    expect(stopWhen({ steps: [{ finishReason: 'retry' }, { finishReason: 'tool-calls' }] })).toBe(false);
+    expect(stopWhen({ steps: [{ finishReason: 'tool-calls' }, { finishReason: 'stop' }] })).toBe(true);
   });
 
   it('lets the single orchestrator generation delegate once and return checked reply text', async () => {
@@ -346,6 +352,32 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledTimes(1);
     expect(runTeamLead).toHaveBeenCalledTimes(1);
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+  });
+
+  it('removes delegateTeam after the first delegation so finalization can only return text', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {
+        prepareStep(): Promise<{ activeTools: string[]; toolChoice: string }> | { activeTools: string[]; toolChoice: string };
+      };
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
+      });
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: [],
+        toolChoice: 'none',
+      });
+      return { text: 'The checked evidence includes one account row.' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
   });
 
   it('logs specialist completion timing without response content', async () => {
@@ -660,6 +692,24 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead).toHaveBeenCalledOnce();
   });
 
+  it('renders a checked result when post-delegation API retries exhaust as a Mastra result', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { text: '', finishReason: 'retry' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({
+        body: expect.stringContaining('The checked evidence includes one account row.'),
+        citations: [{ label: 'query:accounts-listed', artifactId }],
+      });
+  });
+
   it('uses checked team citations for delegated reply text', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
@@ -709,6 +759,14 @@ describe('OrchestratorAgent', () => {
 
     await expect(orchestrator.run({ message: message('hello') }))
       .rejects.toThrow('empty response');
+  });
+
+  it('classifies an exhausted direct Mastra API retry result as transient', async () => {
+    const generate = vi.fn(async () => ({ text: '', finishReason: 'retry' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('hello') }))
+      .rejects.toMatchObject({ code: 'model_temporarily_unavailable', isRetryable: true });
   });
 
   it('rejects non-canonical delegate tool input before team execution', async () => {
