@@ -10,6 +10,7 @@ import {
   type AccountingJournalMutationProposalV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -45,7 +46,7 @@ export function createTransactionCaptureCheckerAgent(input: AccountingRoleAgentI
       ? undefined
       : verdictForClarification(task) ?? verdictForDeterministicProposal(task);
     if (verdict === undefined) return fallbackGenerate(messages, options);
-    return { object: verdict };
+    return submitContractResult(options, verdict);
   }) as typeof fallback.generate;
   return fallback;
 }

@@ -4,6 +4,7 @@ import {
   JournalWorkRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -36,7 +37,7 @@ export function createJournalMakerAgent(input: AccountingRoleAgentInput): Accoun
     const invocation = parseMakerInvocation(messages as readonly { role: string; content: string }[]);
     const artifact = invocation === undefined ? undefined : clarificationArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
-    return { object: artifact };
+    return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
   return fallback;
 }

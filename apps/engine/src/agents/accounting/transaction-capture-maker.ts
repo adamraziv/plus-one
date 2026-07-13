@@ -5,6 +5,7 @@ import {
   TransactionCaptureRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -42,7 +43,7 @@ export function createTransactionCaptureMakerAgent(input: AccountingRoleAgentInp
       ? undefined
       : clarificationArtifact(invocation) ?? deterministicProposalArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
-    return { object: artifact };
+    return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
   return fallback;
 }

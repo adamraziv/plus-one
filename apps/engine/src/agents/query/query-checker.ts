@@ -7,6 +7,7 @@ import {
 } from '@plus-one/contracts';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -44,14 +45,12 @@ export function createQueryCheckerAgent(input: QueryRoleAgentInput): QueryRoleAg
     if (maker.outputSchema.schemaName !== 'query-result') return fallbackGenerate(messages, options);
     const result = QueryResultSchemaV1.parse(maker.output);
     const findings = queryFindings(task, result);
-    return {
-      object: CheckerVerdictSchemaV1.parse({
+    return submitContractResult(options, CheckerVerdictSchemaV1.parse({
         verdict: findings.length === 0 ? 'accepted' : 'revision_requested',
         coveredArtifactId: task.makerArtifact.artifactId,
         coveredArtifactHash: task.makerArtifact.artifactHash,
         findings,
-      }),
-    };
+      }));
   }) as typeof fallback.generate;
   return fallback;
 }

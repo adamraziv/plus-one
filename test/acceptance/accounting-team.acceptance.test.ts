@@ -20,7 +20,6 @@ import {
   ArtifactEnvelopeSchemaV1,
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
-  OrchestratorFinalResponseSchemaV1,
   TeamLeadPlanSchemaV1,
   TeamResultEnvelopeSchemaV1,
   type ArtifactEnvelopeV1,
@@ -46,6 +45,7 @@ import {
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
+import { submitContractResult } from '../helpers/contract-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const bookId = 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -237,10 +237,10 @@ async function runAccountingScenario(input: {
   const makerOutputs = [...input.makerOutputs];
   const checkerVerdicts = [...input.checkerVerdicts];
   const fakeAgent = (agentId: string) => ({
-    generate: vi.fn(async (messages: readonly { content: string }[]) => {
+    generate: vi.fn(async (messages: readonly { content: string }[], options: unknown) => {
       calls.push(agentId);
       if (agentId === 'accounting-lead') {
-        return { object: TeamLeadPlanSchemaV1.parse({
+        return submitContractResult(options, TeamLeadPlanSchemaV1.parse({
           schemaName: 'team-lead-plan',
           schemaVersion: 1,
           recommendedStrategyName: 'single-maker-checker',
@@ -248,19 +248,19 @@ async function runAccountingScenario(input: {
             missingPaymentAccount: input.missingPaymentAccount === true,
           }) }],
           stopCondition: { code: 'accounting-result', description: 'Return one checked accounting result.' },
-        }) };
+        }));
       }
-      if (agentId.endsWith('-maker')) return { object: makerOutputs.shift()! };
+      if (agentId.endsWith('-maker')) return submitContractResult(options, makerOutputs.shift()!);
       const verificationTask = JSON.parse(messages[0]!.content) as {
         makerArtifact: { artifactId: string; artifactHash: string };
       };
       const verdict = checkerVerdicts.shift()!;
-      return { object: CheckerVerdictSchemaV1.parse({
+      return submitContractResult(options, CheckerVerdictSchemaV1.parse({
         verdict,
         coveredArtifactId: verificationTask.makerArtifact.artifactId,
         coveredArtifactHash: verificationTask.makerArtifact.artifactHash,
         findings: verdict === 'accepted' ? [] : [{ code: 'needs-attention', message: 'Checker did not accept.' }],
-      }) };
+      }));
     }),
   } as never);
   const system = createAgentSystem({
@@ -373,30 +373,10 @@ async function runAccountingScenario(input: {
           : { householdId, bookId },
       },
     });
-    return { object: OrchestratorFinalResponseSchemaV1.parse({
-      schemaName: 'orchestrator-final-response',
-      schemaVersion: 1,
-      responseId: 'response-2026-06-23-001',
-      householdId,
-      conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-      body: 'Accounting team status: ' + teamResult.status
+    return {
+      text: 'Accounting team status: ' + teamResult.status
         + (input.workCellId === 'chart-of-accounts' ? '; external confirmation required before commit.' : ''),
-      policyBoundary: 'personalized_finance',
-      citations: teamResult.claims.length === 0
-        ? [{ label: 'accounting:team-result', sourceRef: 'team-result:' + teamResult.status }]
-        : teamResult.claims.map((claim) => ({
-          label: 'accounting:' + claim.claimId,
-          artifactId: claim.checkedMakerArtifactIds[0]!,
-        })),
-      assumptions: [],
-      freshness: teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
-      disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-      unsupportedCapabilities: [],
-      recommendationActions: [],
-      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-      responseHash: 'c'.repeat(64),
-      createdAt: now,
-    }) };
+    };
   });
   const orchestrator = new OrchestratorAgent({
     model: models.orchestrator,
