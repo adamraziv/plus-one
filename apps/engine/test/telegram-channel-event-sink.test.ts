@@ -78,6 +78,24 @@ describe('TelegramChannelEventSink', () => {
     });
   });
 
+  it('explains exhausted transient model failures as retryable provider load', async () => {
+    const sendInterim = vi.fn(async () => ({ platformMessageId: '601' }));
+    const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendInterim } });
+
+    await sink.emit({
+      kind: 'final.failed',
+      target,
+      status: 'failed',
+      reason: 'model_temporarily_unavailable',
+    });
+
+    expect(sendInterim).toHaveBeenCalledWith({
+      destination: target.destination,
+      body: 'The model provider is temporarily busy. Please try again in a moment.',
+      format: 'plain_text',
+    });
+  });
+
   it('clears delegated status and explains a timeout separately', async () => {
     const sendOrUpdateStatus = vi.fn(async () => ({ platformMessageId: '501' }));
     const deleteMessage = vi.fn(async () => undefined);

@@ -7,6 +7,7 @@ import {
   type OrchestratorFinalResponseV1,
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
+import { isTransientModelError } from '../agents/model-error-retry.js';
 import type { DeliveryOptions, DeliveryResult } from '../delivery/final-delivery-handler.js';
 import { createRequestId, getLogger, withLogContext } from '../logging/index.js';
 import { ActiveTurnRegistry } from './active-turn-registry.js';
@@ -111,7 +112,7 @@ export class ChannelGateway {
         response = OrchestratorFinalResponseSchemaV1.parse(
           await abortable(this.dependencies.orchestrator.run({ message, signal }), signal),
         );
-      } catch {
+      } catch (error) {
         if (signal.aborted) {
           this.logger.warn('gateway.turn.timed_out', {
             fields: { channel: message.channel, durationMs: Date.now() - startedAt },
@@ -124,13 +125,19 @@ export class ChannelGateway {
           });
           return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
         }
+        const reason = isTransientModelError(error)
+          ? 'model_temporarily_unavailable'
+          : 'orchestrator_failed';
+        this.logger.warn(`gateway.turn.${reason}`, {
+          fields: { channel: message.channel, durationMs: Date.now() - startedAt },
+        });
         void emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
           status: 'failed',
-          reason: 'orchestrator_failed',
+          reason,
         }, signal);
-        return { status: 'failed', error: 'orchestrator_failed', sent: false };
+        return { status: 'failed', error: reason, sent: false };
       }
       if (signal.aborted) {
         this.logger.warn('gateway.turn.timed_out', {

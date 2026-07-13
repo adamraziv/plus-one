@@ -33,9 +33,7 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
     if (event.kind === 'final.failed') {
-      const body = event.reason === 'orchestrator_timed_out'
-        ? 'This is taking longer than expected. Please try again.'
-        : 'I hit an internal error before I could send the final reply. Please try again.';
+      const body = failureMessage(event.reason);
       await this.clearStatus(event.target, body);
       await this.input.transport.sendInterim?.({
         destination: event.target.destination,
@@ -97,6 +95,16 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
   }
+}
+
+function failureMessage(reason: string): string {
+  if (reason === 'orchestrator_timed_out') {
+    return 'This is taking longer than expected. Please try again.';
+  }
+  if (reason === 'model_temporarily_unavailable') {
+    return 'The model provider is temporarily busy. Please try again in a moment.';
+  }
+  return 'I hit an internal error before I could send the final reply. Please try again.';
 }
 
 function statusKey(target: ChannelEventTarget, key: string): string {
