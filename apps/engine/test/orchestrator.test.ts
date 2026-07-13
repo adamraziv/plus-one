@@ -145,19 +145,6 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
   };
 }
 
-function directDraft(body: string) {
-  return {
-    body,
-    policyBoundary: 'informational_only' as const,
-    citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-    assumptions: [],
-    freshness: ['current invocation only'],
-    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-    unsupportedCapabilities: [],
-    recommendationActions: [],
-  };
-}
-
 function memoryMessage(role: 'user' | 'assistant', body: string) {
   return {
     id: `${role}-${body}`,
@@ -189,7 +176,7 @@ describe('OrchestratorAgent', () => {
     const inbound = message('What did we spend this month?');
     const generate = vi.fn(async (_prompt: unknown, options: { onStepFinish?: (step: unknown) => void }) => {
       options.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 8 }, toolCalls: [] });
-      return { object: directDraft('Private final response body') };
+      return { text: 'Private final response body' };
     });
     const orchestrator = singleLoopOrchestrator({
       generate: generate as (...args: unknown[]) => Promise<unknown>,
@@ -284,7 +271,7 @@ describe('OrchestratorAgent', () => {
         expect.objectContaining({ role: 'assistant' }),
         expect.objectContaining({ role: 'user' }),
       ]);
-      return { object: directDraft('Final clean answer.') };
+      return { text: 'Final clean answer.' };
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -305,9 +292,9 @@ describe('OrchestratorAgent', () => {
     });
   });
 
-  it('answers a direct message with one structured two-step-bounded orchestrator generation', async () => {
+  it('answers a direct message as text with one two-step-bounded orchestrator generation', async () => {
     const generate = vi.fn(async () => ({
-      object: directDraft('Plus One can help with household finance questions.'),
+      text: 'Plus One can help with household finance questions.',
     }));
     const configs: Array<{ id?: string; tools?: unknown }> = [];
     const orchestrator = new OrchestratorAgent({
@@ -327,16 +314,17 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       maxSteps: 2,
+      maxProcessorRetries: 2,
+      errorProcessors: [expect.anything()],
+      toolChoice: 'auto',
       abortSignal: signal,
     }));
-    const [, options] = generate.mock.calls[0] as unknown as [unknown, {
-      structuredOutput?: { schema?: unknown; jsonPromptInjection?: boolean };
-    }];
-    expect(options.structuredOutput?.schema).toBeDefined();
-    expect(options.structuredOutput).not.toHaveProperty('jsonPromptInjection');
+    const [, options] = generate.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(options).not.toHaveProperty('structuredOutput');
+    expect(options).not.toHaveProperty('maxRetries');
   });
 
-  it('lets the single orchestrator generation delegate once and return a checked structured reply', async () => {
+  it('lets the single orchestrator generation delegate once and return checked reply text', async () => {
     const runTeamLead = vi.fn(async (input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
       void input;
       return teamResult();
@@ -349,7 +337,7 @@ describe('OrchestratorAgent', () => {
           coverage: ['account list'],
         }),
       });
-      return { object: directDraft('The checked evidence includes one account row.') };
+      return { text: 'The checked evidence includes one account row.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -369,7 +357,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('List our accounts.'),
       });
-      return { object: directDraft('Private checked answer body.') };
+      return { text: 'Private checked answer body.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -389,7 +377,7 @@ describe('OrchestratorAgent', () => {
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
       await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -407,9 +395,9 @@ describe('OrchestratorAgent', () => {
           request: queryDraft('List our accounts.'),
         });
       } catch {
-        return { object: directDraft('Unchecked fallback') };
+        return { text: 'Unchecked fallback' };
       }
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -430,9 +418,9 @@ describe('OrchestratorAgent', () => {
           request: queryDraft('List our accounts.'),
         });
       } catch {
-        return { object: directDraft('Unchecked fallback') };
+        return { text: 'Unchecked fallback' };
       }
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -474,7 +462,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('List our accounts.'),
       });
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -491,7 +479,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('List our accounts.', { desiredGrain: ['household', 'account'], coverage: ['account list'] }),
       });
-      return { object: directDraft('The checked evidence includes one account row.') };
+      return { text: 'The checked evidence includes one account row.' };
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -529,7 +517,7 @@ describe('OrchestratorAgent', () => {
         request: queryDraft(body),
       });
       if (body === 'second') secondDelegated();
-      return { object: directDraft(`${body} checked reply`) };
+      return { text: `${body} checked reply` };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -559,7 +547,7 @@ describe('OrchestratorAgent', () => {
           },
         },
       });
-      return { object: directDraft('The accounting team needs clarification before posting.') };
+      return { text: 'The accounting team needs clarification before posting.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
@@ -569,7 +557,7 @@ describe('OrchestratorAgent', () => {
     });
   });
 
-  it('fails clearly when a non-verified delegated turn has no valid typed final draft', async () => {
+  it('uses checked clarification instead of unrelated post-delegation text', async () => {
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -590,7 +578,11 @@ describe('OrchestratorAgent', () => {
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
-    await expect(orchestrator.run({ message: message('add $10 of buying a burger') })).rejects.toThrow();
+    await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') }))
+      .resolves.toMatchObject({
+        kind: 'ask-user',
+        response: { body: expect.stringContaining('Which internal payment account should this use?') },
+      });
   });
 
   it('uses checked team results instead of a direct answer when delegation is not verified', async () => {
@@ -600,7 +592,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('Show our transactions.'),
       });
-      return { object: directDraft('The query returned verified transactions.') };
+      return { text: 'The query returned verified transactions.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -612,7 +604,7 @@ describe('OrchestratorAgent', () => {
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
   });
 
-  it('fails clearly when a delegated turn has no valid typed final draft', async () => {
+  it('accepts delegated reply text and attaches checked team metadata', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -623,17 +615,59 @@ describe('OrchestratorAgent', () => {
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
-    await expect(orchestrator.run({ message: message('List our accounts.') })).rejects.toThrow();
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({
+        body: 'not a typed final response',
+        policyBoundary: 'personalized_finance',
+        citations: [{ label: 'query:accounts-listed', artifactId }],
+      });
   });
 
-  it('uses checked team citations when the orchestrator draft contains only policy citations', async () => {
+  it('renders a checked result when post-delegation text is empty', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { text: '   ' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toContain('The checked evidence includes one account row.');
+    expect(response.body).toContain('Ready for orchestrator reconciliation.');
+    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+  });
+
+  it('renders a checked result when post-delegation model finalization fails', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      throw new Error('Inference capacity queue is full');
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({
+        body: expect.stringContaining('The checked evidence includes one account row.'),
+        citations: [{ label: 'query:accounts-listed', artifactId }],
+      });
+    expect(runTeamLead).toHaveBeenCalledOnce();
+  });
+
+  it('uses checked team citations for delegated reply text', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('List our accounts.', { desiredGrain: ['household', 'account'], coverage: ['account list'] }),
       });
-      return { object: directDraft('The Query team found one account.') };
+      return { text: 'The Query team found one account.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -643,9 +677,9 @@ describe('OrchestratorAgent', () => {
     expect(response.delivery.format).toBe('mrkdwn');
   });
 
-  it('does not delegate when the orchestrator returns a direct structured response', async () => {
+  it('does not delegate when the orchestrator returns direct text', async () => {
     const runTeamLead = vi.fn();
-    const generate = vi.fn(async () => ({ object: directDraft('I can answer directly without a team.') }));
+    const generate = vi.fn(async () => ({ text: 'I can answer directly without a team.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
     const response = await orchestrator.run({ message: message('What can you do?') });
@@ -656,12 +690,25 @@ describe('OrchestratorAgent', () => {
     expect(response.delivery.format).toBe('mrkdwn');
   });
 
-  it('fails instead of wrapping invalid no-team model output as plain text', async () => {
+  it('accepts ordinary no-team model text as a direct answer', async () => {
     const generate = vi.fn(async () => ({ text: 'I recorded it.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
 
-    await expect(orchestrator.run({ message: message('What can you do?') })).rejects.toThrow();
+    await expect(orchestrator.run({ message: message('What can you do?') }))
+      .resolves.toMatchObject({
+        body: 'I recorded it.',
+        policyBoundary: 'informational_only',
+        citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+      });
     expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an empty direct model response', async () => {
+    const generate = vi.fn(async () => ({ text: '   ' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('hello') }))
+      .rejects.toThrow('empty response');
   });
 
   it('rejects non-canonical delegate tool input before team execution', async () => {
@@ -679,9 +726,9 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead).not.toHaveBeenCalled();
   });
 
-  it('rejects a final draft that asks the user for internal identifiers', async () => {
+  it('rejects final text that asks the user for internal identifiers', async () => {
     const runTeamLead = vi.fn();
-    const generate = vi.fn(async () => ({ object: directDraft('Please send your Household ID and Book ID.') }));
+    const generate = vi.fn(async () => ({ text: 'Please send your Household ID and Book ID.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('Can you help?') }))

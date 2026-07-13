@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
-import { ZodError, z } from 'zod';
+import { ZodError } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -13,7 +13,14 @@ import {
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
-import { getLogger, targetFromInboundMessage, type ChannelEventSink, type TeamDefinition, withLogContext } from '@plus-one/runtime';
+import {
+  createTransientModelRetryProcessor,
+  getLogger,
+  targetFromInboundMessage,
+  type ChannelEventSink,
+  type TeamDefinition,
+  withLogContext,
+} from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
 import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
@@ -22,65 +29,25 @@ const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
   'You are the only user-facing entrypoint.',
   'Answer only from verified context or checked team results.',
-  'When calling delegateTeam, use exact team ids, never display names: query, accounting, budgeting, cash-flow, investments-retirement, records-reporting.',
+  'Answer ordinary conversation directly when no checked specialist work is needed.',
+  'When checked specialist work is needed, call delegateTeam once using an exact registered team id from its team catalog.',
   'delegateTeam input must always be strict JSON, and request must be a JSON object, never a quoted JSON string.',
-  'Delegate financial read questions to team id query.',
-  'Delegate transaction capture, journal, chart-of-accounts, ingestion, and reconciliation requests to team id accounting.',
-  'A request to add, record, capture, import, reconcile, or change accounting data is accounting, not query.',
-  'For internal Plus One ledger work, your next action must be delegateTeam with team accounting; do not answer directly first.',
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
-  'Do not ask the user to confirm transaction capture directly; delegateTeam accounting must ask any needed clarification.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
-  'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
   'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
-  'Return the requested OrchestratorResponseDraft object.',
+  'After delegateTeam returns, explain the checked result to the user in concise natural language.',
+  'Return only the user-facing reply text when you are not calling a tool.',
 ].join('\n');
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
 const MAX_ORCHESTRATOR_STEPS = 2;
-
-const citationDraftSchema = z.object({
-  label: z.string().min(1).max(512),
-  artifactId: z.string().regex(/^artifact_[0-9A-HJKMNP-TV-Z]{26}$/).optional(),
-  sourceRef: z.string().min(1).max(512).optional(),
-}).strict();
-
-const OrchestratorResponseDraftSchema = z.object({
-  body: z.string().min(1).max(32_000),
-  policyBoundary: z.enum(['personalized_finance', 'informational_only', 'unsupported_capability', 'operational']),
-  citations: z.array(citationDraftSchema).default([]),
-  assumptions: z.array(z.string().min(1).max(2_000)).default([]),
-  freshness: z.array(z.string().min(1).max(2_000)).default(['current invocation only']),
-  disclaimer: z.string().min(1).max(2_000)
-    .default('Plus One is an AI assistant, not a licensed financial professional.'),
-  unsupportedCapabilities: z.array(z.enum(['tax', 'insurance'])).default([]),
-  recommendationActions: z.array(z.string().min(1).max(2_000)).default([]),
-}).strict();
-
-type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>;
-
-function parseOrchestratorModelOutput(value: unknown): OrchestratorResponseDraft {
-  const final = OrchestratorFinalResponseSchemaV1.safeParse(value);
-  if (final.success) {
-    return {
-      body: final.data.body,
-      policyBoundary: final.data.policyBoundary,
-      citations: final.data.citations,
-      assumptions: final.data.assumptions,
-      freshness: final.data.freshness,
-      disclaimer: final.data.disclaimer,
-      unsupportedCapabilities: final.data.unsupportedCapabilities,
-      recommendationActions: final.data.recommendationActions,
-    };
-  }
-  return OrchestratorResponseDraftSchema.parse(value);
-}
+const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
 
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
@@ -225,27 +192,41 @@ export class OrchestratorAgent {
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          const result = await abortable(this.agent.generate(prompt, {
-            ...this.orchestratorGenerateOptions(message),
-            maxSteps: MAX_ORCHESTRATOR_STEPS,
-            abortSignal: signal,
-            onStepFinish: (step) => {
-              const usage = step.usage ?? {};
-              logger.info('orchestrator.step.completed', {
-                fields: {
-                  step: ++stepOrdinal,
-                  durationMs: Date.now() - stepStartedAt,
-                  inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
-                  outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
-                  toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
-                },
-              });
-              stepStartedAt = Date.now();
-            },
-            structuredOutput: {
-              schema: OrchestratorResponseDraftSchema,
-            },
-          }), signal);
+          let result: Awaited<ReturnType<typeof this.agent.generate>>;
+          try {
+            result = await abortable(this.agent.generate(prompt, {
+              ...this.orchestratorGenerateOptions(message),
+              maxSteps: MAX_ORCHESTRATOR_STEPS,
+              errorProcessors: [createTransientModelRetryProcessor({
+                maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+              })],
+              maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+              toolChoice: 'auto',
+              abortSignal: signal,
+              onStepFinish: (step) => {
+                const usage = step.usage ?? {};
+                logger.info('orchestrator.step.completed', {
+                  fields: {
+                    step: ++stepOrdinal,
+                    durationMs: Date.now() - stepStartedAt,
+                    inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
+                    outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
+                    toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
+                  },
+                });
+                stepStartedAt = Date.now();
+              },
+            }), signal);
+          } catch (error) {
+            if (
+              !signal.aborted
+              && !invocation.delegationFailed
+              && invocation.teamResults.length !== 0
+            ) {
+              return turnFromTeamResults(message, invocation.teamResults);
+            }
+            throw error;
+          }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
           if (invocation.delegationFailed) {
             throw new Error('Delegated team work failed before producing a checked result.');
@@ -253,13 +234,19 @@ export class OrchestratorAgent {
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
             throw new Error('Delegated team did not return a checked result.');
           }
-          const draft = parseOrchestratorModelOutput(result.object ?? parseJsonObject(result.text));
           if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
             return turnFromTeamResults(message, invocation.teamResults);
           }
+          const body = nonEmptyResponseText(result.text);
+          if (body === undefined) {
+            if (invocation.teamResults.length !== 0) {
+              return turnFromTeamResults(message, invocation.teamResults);
+            }
+            throw new Error('Orchestrator returned an empty response.');
+          }
           return {
             kind: 'final',
-            response: responseFromDraft(message, draft, invocation.teamResults),
+            response: responseFromText(message, body, invocation.teamResults),
           };
         });
         if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -331,15 +318,6 @@ function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cle
   };
 }
 
-function parseJsonObject(text: unknown): unknown {
-  if (typeof text !== 'string') return undefined;
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) return undefined;
-  return JSON.parse(trimmed.slice(start, end + 1));
-}
-
 function inboundContextPrompt(message: InboundChannelMessageV1): string {
   return [
     'InboundChannelMessageV1 context:',
@@ -354,29 +332,7 @@ function responseFromTeamResults(
   const teamResult = selectTeamResult(teamResults);
   if (teamResult === undefined) throw new Error('Missing team result for fallback response');
   const body = responseBody(teamResult);
-  assertUserSafeResponseBody(body);
-  return OrchestratorFinalResponseSchemaV1.parse({
-    schemaName: 'orchestrator-final-response',
-    schemaVersion: 1,
-    responseId: `response_${Date.now()}`,
-    householdId: message.householdId,
-    conversationId: message.conversationId,
-    body,
-    policyBoundary: 'personalized_finance',
-    citations: citationsFor(teamResult),
-    assumptions: teamResult.assumptions,
-    freshness: teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
-    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-    unsupportedCapabilities: [],
-    recommendationActions: [],
-    delivery: {
-      channel: message.channel,
-      destination: destinationFor(message.channel, message.metadata.destination),
-      format: FINAL_REPLY_FORMAT,
-    },
-    responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
-    createdAt: new Date().toISOString(),
-  });
+  return responseFromText(message, body, [teamResult]);
 }
 
 function turnFromTeamResults(
@@ -391,13 +347,13 @@ function turnFromTeamResults(
   return { kind: 'final', response };
 }
 
-function responseFromDraft(
+function responseFromText(
   message: InboundChannelMessageV1,
-  draft: OrchestratorResponseDraft,
+  body: string,
   teamResults: readonly TeamResultEnvelopeV1[] = [],
 ): OrchestratorFinalResponseV1 {
-  const body = draft.body;
   assertUserSafeResponseBody(body);
+  const teamResult = selectTeamResult(teamResults);
   return OrchestratorFinalResponseSchemaV1.parse({
     schemaName: 'orchestrator-final-response',
     schemaVersion: 1,
@@ -405,13 +361,17 @@ function responseFromDraft(
     householdId: message.householdId,
     conversationId: message.conversationId,
     body,
-    policyBoundary: draft.policyBoundary,
-    citations: citationsFromDraftOrTeamResults(teamResults),
-    assumptions: draft.assumptions,
-    freshness: freshnessFromDraftOrTeamResults(draft.freshness, teamResults),
-    disclaimer: draft.disclaimer,
-    unsupportedCapabilities: draft.unsupportedCapabilities,
-    recommendationActions: draft.recommendationActions,
+    policyBoundary: teamResult === undefined ? 'informational_only' : 'personalized_finance',
+    citations: teamResult === undefined
+      ? [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }]
+      : citationsFor(teamResult),
+    assumptions: teamResult?.assumptions ?? [],
+    freshness: teamResult === undefined
+      ? ['current invocation only']
+      : teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
+    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
+    unsupportedCapabilities: [],
+    recommendationActions: [],
     delivery: {
       channel: message.channel,
       destination: destinationFor(message.channel, message.metadata.destination),
@@ -422,19 +382,10 @@ function responseFromDraft(
   });
 }
 
-function citationsFromDraftOrTeamResults(teamResults: readonly TeamResultEnvelopeV1[]) {
-  const teamResult = selectTeamResult(teamResults);
-  if (teamResult !== undefined) return citationsFor(teamResult);
-  return [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }];
-}
-
-function freshnessFromDraftOrTeamResults(
-  draftFreshness: OrchestratorResponseDraft['freshness'],
-  teamResults: readonly TeamResultEnvelopeV1[],
-): string[] {
-  const teamResult = selectTeamResult(teamResults);
-  if (teamResult !== undefined) return teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness;
-  return draftFreshness.length === 0 ? ['current invocation only'] : draftFreshness;
+function nonEmptyResponseText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const body = value.trim();
+  return body.length === 0 ? undefined : body;
 }
 
 function selectTeamResult(teamResults: readonly TeamResultEnvelopeV1[]): TeamResultEnvelopeV1 | undefined {
@@ -452,8 +403,11 @@ function statusRank(status: TeamResultEnvelopeV1['status']): number {
 
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
   const heading = `${labelForTeam(teamResult.team)} status: ${teamResult.status}`;
-  const details = [teamResult.completionReason, ...teamResult.outstanding].filter((value) => value.length > 0);
-  return details.length === 0 ? heading : `${heading}\n\n${details.join('\n')}`;
+  const claims = teamResult.claims.map((claim) => claim.text);
+  const details = [...claims, teamResult.completionReason, ...teamResult.outstanding]
+    .filter((value) => value.length > 0);
+  if (teamResult.status === 'verified') return details.join('\n\n');
+  return details.length === 0 ? heading : `${heading}\n\n${details.join('\n\n')}`;
 }
 
 function assertUserSafeResponseBody(body: string): void {

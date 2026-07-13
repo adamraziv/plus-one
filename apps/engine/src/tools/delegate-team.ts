@@ -32,16 +32,16 @@ export function createDelegateTeamTool(input: {
     delegationFailed: boolean;
   } | undefined;
 }) {
-  const teamIds = [...input.teams.keys()];
+  const teamCatalog = [...input.teams.values()]
+    .map((team) => `${team.team}: ${team.charter}`)
+    .join(' | ');
   return createTool({
     id: 'delegateTeam',
     description: [
       'Delegate one checked task to a registered specialist team lead.',
-      `Registered team ids for this runtime are: ${teamIds.join(', ')}.`,
+      `Registered teams for this runtime are: ${teamCatalog}.`,
       'The team field must be an exact team id.',
       'The request field must be a JSON object matching the selected team schema.',
-      'Use query for checked finance reads.',
-      'Use accounting for explicit record, capture, import, reconcile, journal, or chart-of-accounts requests.',
       'Do not use this tool for payments, trades, tax filings, provider account changes, or external financial actions.',
     ].join(' '),
     inputSchema: DelegateTeamToolInputSchema,
