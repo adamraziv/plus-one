@@ -55,7 +55,6 @@ describe('query live routing acceptance', () => {
 
     const runtime = await bootstrap({
       queryTools,
-      createMastraInstance: (() => ({})) as never,
     });
     try {
       const liveTeamRuntime = createTeamRuntime({ pools: runtime.pools, agentSystem: runtime.agentSystem });
