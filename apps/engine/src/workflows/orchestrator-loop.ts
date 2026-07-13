@@ -48,9 +48,9 @@ export function createOrchestratorLoopWorkflow(
     outputSchema: OrchestratorFinalResponseSchemaV1,
     suspendSchema: OrchestratorFinalResponseSchemaV1,
     resumeSchema: InboundChannelMessageSchemaV1,
-    execute: async ({ inputData, resumeData, suspend }) => {
+    execute: async ({ inputData, resumeData, suspend, abortSignal }) => {
       const message = InboundChannelMessageSchemaV1.parse(resumeData ?? inputData);
-      const result = await orchestrator.runTurn({ message }) as OrchestratorTurnResult;
+      const result = await abortable(orchestrator.runTurn({ message, signal: abortSignal }), abortSignal) as OrchestratorTurnResult;
       if (result.kind === 'ask-user') return suspend(result.response);
       return result.response;
     },
@@ -66,26 +66,66 @@ export function createOrchestratorLoopWorkflow(
 export async function runOrchestratorLoop(input: {
   workflow: OrchestratorLoopWorkflow;
   message: InboundChannelMessageV1;
+  signal?: AbortSignal;
 }): Promise<OrchestratorFinalResponseV1> {
-  const suspendedRuns = await input.workflow.listWorkflowRuns({
+  throwIfAborted(input.signal);
+  const suspendedRuns = await abortable(input.workflow.listWorkflowRuns({
     resourceId: input.message.conversationId,
     status: 'suspended',
-  });
+  }), input.signal);
   const suspendedRun = [...suspendedRuns.runs]
     .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())[0];
-  const run = await input.workflow.createRun({
+  throwIfAborted(input.signal);
+  const run = await abortable(input.workflow.createRun({
     ...(suspendedRun === undefined ? {} : { runId: suspendedRun.runId }),
     resourceId: input.message.conversationId,
-  });
-  const result = suspendedRun === undefined
-    ? await run.start({ inputData: input.message })
-    : await run.resume({ step: ORCHESTRATOR_LOOP_STEP_ID, resumeData: input.message });
+  }), input.signal);
+  const onAbort = () => {
+    void run.cancel().catch(() => undefined);
+  };
+  if (input.signal?.aborted) {
+    await run.cancel();
+    throw input.signal.reason ?? new DOMException('Orchestrator workflow aborted.', 'AbortError');
+  } else {
+    input.signal?.addEventListener('abort', onAbort, { once: true });
+  }
 
-  if (isSuccess(result)) {
-    return OrchestratorFinalResponseSchemaV1.parse(result.result);
+  try {
+    const result = suspendedRun === undefined
+      ? await abortable(run.start({ inputData: input.message }), input.signal)
+      : await abortable(run.resume({ step: ORCHESTRATOR_LOOP_STEP_ID, resumeData: input.message }), input.signal);
+
+    if (isSuccess(result)) {
+      return OrchestratorFinalResponseSchemaV1.parse(result.result);
+    }
+    if (isSuspended(result)) {
+      return finalResponseFromPayload(result.suspendPayload);
+    }
+    throw new Error(`Unexpected orchestrator loop result: ${(result as { status?: string }).status ?? 'unknown'}`);
+  } finally {
+    input.signal?.removeEventListener('abort', onAbort);
   }
-  if (isSuspended(result)) {
-    return finalResponseFromPayload(result.suspendPayload);
-  }
-  throw new Error(`Unexpected orchestrator loop result: ${(result as { status?: string }).status ?? 'unknown'}`);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Orchestrator workflow aborted.', 'AbortError');
+}
+
+async function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator workflow aborted.', 'AbortError');
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('Orchestrator workflow aborted.', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }

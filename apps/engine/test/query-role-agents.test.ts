@@ -11,6 +11,7 @@ import {
 } from '@plus-one/contracts';
 import { analystSandboxToolId } from '@plus-one/runtime';
 import { createQueryRoleAgents, splitQueryRoleTools } from '../src/agents/query/index.js';
+import { captureContractSubmission } from '../../../test/helpers/contract-agent-test-double.js';
 
 const models = {
   lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -166,20 +167,20 @@ describe('Query Mastra role agents', () => {
       }),
     });
 
-    const result = await agents['query-maker']!.generate([...context.messages], {
+    const submission = captureContractSubmission({
       activeTools: context.activeTools,
-    } as never);
+    });
+    const result = await agents['query-maker']!.generate([...context.messages], submission.options as never);
 
     expect(tools.query_current_balances.execute).toHaveBeenCalledWith({
       householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     }, {});
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+      claims: [{ claimId: 'query-result-summary' }],
+    });
     expect(result).toMatchObject({
-      object: {
-        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
-        claims: [{
-          claimId: 'query-result-summary',
-        }],
-      },
+      text: '',
       toolResults: [{ payload: { toolName: 'query_current_balances' } }],
     });
   });
@@ -245,19 +246,24 @@ describe('Query Mastra role agents', () => {
       }),
     });
 
-    const result = await agents['query-maker']!.generate([...context.messages], {
+    const submission = captureContractSubmission({
       activeTools: context.activeTools,
-    } as never);
+    });
+    const result = await agents['query-maker']!.generate([...context.messages], submission.options as never);
 
     expect(tools.query_category_spend_monthly.execute).toHaveBeenCalledWith({
       householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     }, {});
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+    });
     expect(result).toMatchObject({
+      text: '',
       toolResults: [{ payload: { toolName: 'query_category_spend_monthly' } }],
     });
   });
 
-  it('checks a simple QueryResultV1 deterministically without calling the model', async () => {
+  it('accepts a scoped QueryResultV1 when household is the only grain beyond the requested account grain', async () => {
     const skill = createSkillRegistration({
       skillName: 'query-evidence',
       skillVersion: 1,
@@ -316,7 +322,7 @@ describe('Query Mastra role agents', () => {
         businessQuestion: 'List our accounts.',
         intendedUse: 'household_finance_answer',
         timeframe: { start: '2026-06-24', end: '2026-06-24' },
-        desiredGrain: ['household', 'account'],
+        desiredGrain: ['account'],
         filters: [],
         requiredFreshness: 'latest available reporting projection',
         requiredCalculations: [],
@@ -350,9 +356,12 @@ describe('Query Mastra role agents', () => {
       }) as never,
     });
 
-    const result = await agents['query-checker']!.generate([...context.messages], {} as never);
+    const submission = captureContractSubmission();
+    const result = await agents['query-checker']!
+      .generate([...context.messages], submission.options as never);
 
-    expect(CheckerVerdictSchemaV1.parse(result.object)).toEqual({
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(CheckerVerdictSchemaV1.parse(submission.submitted())).toEqual({
       verdict: 'accepted',
       coveredArtifactId: makerArtifact.artifactId,
       coveredArtifactHash: makerArtifact.artifactHash,

@@ -22,7 +22,7 @@ describe('live system smoke acceptance', () => {
 
     try {
       const informational = await orchestrator.run({
-        message: message('What can you help our household with?', 1),
+        message: message('hello', 1),
       });
       expect(informational.policyBoundary).toBe('informational_only');
       expect(informational.body.length).toBeGreaterThan(0);

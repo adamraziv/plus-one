@@ -36,7 +36,7 @@ describe('engine scaffold', () => {
       TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
     });
-    expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
+    expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111, turnDeadlineMs: 60_000 });
     expect(config.telegram).toEqual({
       botToken: 'telegram-token',
       receiver: {
@@ -389,5 +389,16 @@ describe('engine scaffold', () => {
     });
 
     expect(callOrder.slice(0, 2)).toEqual(['validate', 'pools']);
+    expect(validateModels).toHaveBeenCalledWith({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      modelIds: [
+        'openai/gpt-5',
+        'openai/gpt-5',
+        'openai/gpt-5-mini',
+        'openai/gpt-5',
+        'openai/gpt-5',
+      ],
+    });
   });
 });

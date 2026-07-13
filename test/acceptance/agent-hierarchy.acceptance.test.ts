@@ -4,7 +4,6 @@ import {
   EvidenceRequestSchemaV1,
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
-  OrchestratorFinalResponseSchemaV1,
   QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV1,
   TeamLeadPlanSchemaV1,
@@ -29,6 +28,7 @@ import {
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
+import { submitContractResult } from '../helpers/contract-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -138,20 +138,21 @@ describe('agent hierarchy acceptance', () => {
   it('runs inbound orchestrator delegation into checked Query maker/checker execution', async () => {
     const calls: string[] = [];
     const fakeAgent = (agentId: string) => ({
-      generate: vi.fn(async (messages: readonly { content: string }[]) => {
+      generate: vi.fn(async (messages: readonly { content: string }[], options: unknown) => {
         calls.push(agentId);
         if (agentId === 'query-lead') {
-          return { object: TeamLeadPlanSchemaV1.parse({
+          return submitContractResult(options, TeamLeadPlanSchemaV1.parse({
             schemaName: 'team-lead-plan',
             schemaVersion: 1,
             recommendedStrategyName: 'single-maker-checker',
             work: [{ workCellId: 'query-evidence', makerInput: evidenceRequest() }],
             stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-          }) };
+          }));
         }
         if (agentId === 'query-maker') {
-          return {
-            object: MakerArtifactSchemaV1.parse({
+          return submitContractResult(
+            options,
+            MakerArtifactSchemaV1.parse({
               schemaName: 'maker-artifact',
               schemaVersion: 1,
               outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
@@ -164,18 +165,18 @@ describe('agent hierarchy acceptance', () => {
               assumptions: [],
               uncertainty: [],
             }),
-            toolResults: [{ payload: { toolName: 'query_account_list', result: { ok: true } } }],
-          };
+            [{ payload: { toolName: 'query_account_list', result: { ok: true } } }],
+          );
         }
         const verificationTask = JSON.parse(messages[0]!.content) as {
           makerArtifact: { artifactId: string; artifactHash: string };
         };
-        return { object: CheckerVerdictSchemaV1.parse({
+        return submitContractResult(options, CheckerVerdictSchemaV1.parse({
           verdict: 'accepted',
           coveredArtifactId: verificationTask.makerArtifact.artifactId,
           coveredArtifactHash: verificationTask.makerArtifact.artifactHash,
           findings: [],
-        }) };
+        }));
       }),
     } as never);
     const system = createAgentSystem({
@@ -278,25 +279,7 @@ describe('agent hierarchy acceptance', () => {
           coverage: ['reporting.accounts'],
         },
       });
-      return { object: OrchestratorFinalResponseSchemaV1.parse({
-        schemaName: 'orchestrator-final-response',
-        schemaVersion: 1,
-        responseId: 'response-2026-06-23-001',
-        householdId,
-        conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-        body: result.claims[0]!.text
-          + '\n\nPlus One is an AI assistant, not a licensed financial professional.',
-        policyBoundary: 'personalized_finance',
-        citations: [{ label: 'query:accounts-listed', artifactId: result.claims[0]!.checkedMakerArtifactIds[0] }],
-        assumptions: [],
-        freshness: result.freshness,
-        disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-        unsupportedCapabilities: [],
-        recommendationActions: [],
-        delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-        responseHash: 'c'.repeat(64),
-        createdAt: now,
-      }) };
+      return { text: result.claims[0]!.text };
     });
     const orchestrator = new OrchestratorAgent({
       model: models.orchestrator,

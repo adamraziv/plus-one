@@ -80,6 +80,7 @@ describe('orchestrator durable loop acceptance', () => {
         nodeEnv: 'test',
         host: '127.0.0.1',
         port: 4111,
+        turnDeadlineMs: 60_000,
         database: { poolUrls: {} } as never,
         models: {
           orchestrator: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },

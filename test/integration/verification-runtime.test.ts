@@ -96,4 +96,94 @@ describe('durable VerificationRuntime', () => {
       await pool.end();
     }
   });
+
+  it('reuses an identical checker verdict after an unchanged revision without duplicating the ledger row', async () => {
+    context = await createPostgresTestContext('runtime_identical_revision');
+    const pool = new Pool({ connectionString: context.roleUrls.operations });
+
+    try {
+      await pool.query(
+        `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
+         VALUES ('hh_01JNZQ4A9B8C7D6E5F4G3H2J1K', 'USD', 'UTC')`,
+      );
+      const ledger = new PostgresVerificationLedgerRepository(pool);
+      const runtime = new VerificationRuntime({
+        ledger,
+        artifacts: new ArtifactStore(new PostgresArtifactRepository(pool)),
+        policies: new RuntimePolicyRegistry({
+          models: { 'provider/model-a': ['structured_output'] },
+          policies: [{
+            identity: { policyName: 'test', policyVersion: 1 },
+            requiredCapabilities: ['structured_output'],
+            primaryModel: 'provider/model-a',
+            fallbackModels: [],
+            maxModelSteps: 4,
+            maxToolConcurrency: 1,
+            maxAttempts: 2,
+            maxModelRequestRetries: 1,
+            maxProcessorRetries: 0,
+            maxSandboxReproductions: 0,
+            callDeadlineMs: 10_000,
+            teamDeadlineMs: 20_000,
+            endToEndDeadlineMs: 30_000,
+            maxOutputBytes: 65_536,
+          }],
+        }),
+      });
+      const ids = {
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      } as const;
+
+      await runtime.createTask({ ...ids, team: 'query', attemptLimit: 2 });
+      await runtime.selectContract({
+        ...ids,
+        skill: { skillName: 'lookup', skillVersion: 1, contentHash: 'a'.repeat(64) },
+        inputSchema: { schemaName: 'lookup-input', schemaVersion: 1 },
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
+        policy: { policyName: 'test', policyVersion: 1 },
+      });
+      await runtime.beginMaker(ids);
+      const firstMaker = await runtime.validateMaker({
+        ...ids,
+        artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        schema: { schemaName: 'lookup-output', schemaVersion: 1 },
+        payload: { result: 'unchanged' },
+      });
+      const repeatedVerdict = {
+        verdict: 'revision_requested' as const,
+        coveredArtifactId: firstMaker.artifactId,
+        coveredArtifactHash: firstMaker.artifactHash,
+        findings: [{ code: 'unchanged', message: 'The revision made no progress.' }],
+      };
+      await runtime.beginChecker(ids);
+      const firstChecker = await runtime.validateChecker({
+        ...ids,
+        checkerArtifactId: 'artifact_11JNZQ4A9B8C7D6E5F4G3H2J1K',
+        verdict: repeatedVerdict,
+      });
+      await runtime.requestRevision(ids);
+      await runtime.beginMaker(ids);
+      const secondMaker = await runtime.validateMaker({
+        ...ids,
+        artifactId: 'artifact_21JNZQ4A9B8C7D6E5F4G3H2J1K',
+        schema: { schemaName: 'lookup-output', schemaVersion: 1 },
+        payload: { result: 'unchanged' },
+      });
+      expect(secondMaker.artifactId).toBe(firstMaker.artifactId);
+      await runtime.beginChecker(ids);
+
+      await expect(runtime.validateChecker({
+        ...ids,
+        checkerArtifactId: 'artifact_31JNZQ4A9B8C7D6E5F4G3H2J1K',
+        verdict: repeatedVerdict,
+      })).resolves.toMatchObject({ artifactId: firstChecker.artifactId });
+      await expect(pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM operations.checker_verdicts WHERE task_id = $1`,
+        [ids.taskId],
+      )).resolves.toMatchObject({ rows: [{ count: '1' }] });
+    } finally {
+      await pool.end();
+    }
+  });
 });

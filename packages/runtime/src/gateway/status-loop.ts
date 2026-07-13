@@ -8,44 +8,35 @@ export function startGatewayHeartbeat(input: {
   sink: ChannelEventSink;
   target: ChannelEventTarget;
   typingEveryMs: number;
-  statusEveryMs: number;
-  statuses: readonly string[];
+  signal?: AbortSignal;
 }): GatewayHeartbeat {
   let closed = false;
-  let statusIndex = 0;
   const timers = new Set<NodeJS.Timeout>();
 
-  const emit = async (event: Parameters<ChannelEventSink['emit']>[0]) => {
+  const emit = async (
+    event: Parameters<ChannelEventSink['emit']>[0],
+    signal: AbortSignal | undefined = input.signal,
+  ) => {
     try {
-      await input.sink.emit(event);
+      if (signal?.aborted) return;
+      await abortable(input.sink.emit(event), signal);
     } catch {
       return;
     }
   };
 
-  const schedule = (fn: () => Promise<void>, ms: number) => {
+  const scheduleTyping = () => {
     const timer = setTimeout(async () => {
       timers.delete(timer);
       if (closed) return;
-      await fn();
-      if (!closed) schedule(fn, ms);
-    }, ms);
+      await emit({ kind: 'typing.start', target: input.target });
+      if (!closed) scheduleTyping();
+    }, input.typingEveryMs);
     timers.add(timer);
   };
 
   void emit({ kind: 'typing.start', target: input.target });
-  schedule(async () => {
-    await emit({ kind: 'typing.start', target: input.target });
-  }, input.typingEveryMs);
-  if (input.statuses.length > 0) {
-    schedule(async () => {
-      const body = input.statuses[Math.min(statusIndex, input.statuses.length - 1)];
-      statusIndex += 1;
-      if (body !== undefined) {
-        await emit({ kind: 'status.update', target: input.target, statusKey: 'turn', body });
-      }
-    }, input.statusEveryMs);
-  }
+  scheduleTyping();
 
   return {
     close: async () => {
@@ -53,7 +44,26 @@ export function startGatewayHeartbeat(input: {
       closed = true;
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
-      await emit({ kind: 'typing.stop', target: input.target });
+      void emit({ kind: 'typing.stop', target: input.target }, undefined);
     },
   };
+}
+
+async function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) throw signal.reason ?? new DOMException('Gateway heartbeat aborted.', 'AbortError');
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('Gateway heartbeat aborted.', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }

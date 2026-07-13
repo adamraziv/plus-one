@@ -21,7 +21,7 @@ import { createAgentSystem } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
 import type { RoleAgentTools } from './mastra/role-agent.js';
-import { validateConfiguredModels } from './model-catalog.js';
+import { validateRuntimeModels } from './model-runtime-validation.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
 import { createOrchestratorSessionMemory } from './memory/orchestrator-session-memory.js';
 import { createDefaultQueryTools } from './query-tools.js';
@@ -46,7 +46,7 @@ interface BootstrapDependencies {
   createPools?: typeof createDatabasePools;
   verifyPools?: typeof verifyDatabasePools;
   closePools?: typeof closeDatabasePools;
-  validateModels?: typeof validateConfiguredModels;
+  validateModels?: typeof validateRuntimeModels;
   createMastraInstance?: typeof createMastra;
   createAgentSystemInstance?: typeof createAgentSystem;
   queryTools?: RoleAgentTools;
@@ -67,7 +67,7 @@ export interface BootstrappedRuntime {
 
 export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const config = loadConfig(dependencies.environment ?? process.env);
-  await (dependencies.validateModels ?? validateConfiguredModels)({
+  await (dependencies.validateModels ?? validateRuntimeModels)({
     endpoint: config.models.orchestrator.endpoint,
     apiKey: config.models.orchestrator.apiKey,
     modelIds: [
@@ -152,13 +152,14 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
           inbound: deliveryRepository,
           commands: channelCommands,
           orchestrator: {
-            run: async (candidate) => {
+            run: async ({ message, signal }) => {
               const workflow = mastra.getWorkflow('orchestrator-loop');
-              return runOrchestratorLoop({ workflow, message: candidate.message });
+              return runOrchestratorLoop({ workflow, message, signal });
             },
           },
           delivery: telegramDelivery,
           sink: channelEvents,
+          turnDeadlineMs: config.turnDeadlineMs,
         });
         const telegramGatewayForProcessor = telegramGateway;
 

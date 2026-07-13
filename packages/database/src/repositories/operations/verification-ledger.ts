@@ -390,12 +390,13 @@ export class PostgresVerificationLedgerRepository {
         });
       }
 
-      await client.query(
+      const inserted = await client.query(
         `INSERT INTO operations.checker_verdicts
          (household_id, task_id, checker_artifact_id, covered_artifact_id, covered_artifact_hash, verdict)
          SELECT id, $1, $2, $3, $4, $5
          FROM operations.households
-         WHERE household_id = $6`,
+         WHERE household_id = $6
+         ON CONFLICT ON CONSTRAINT checker_verdicts_unique DO NOTHING`,
         [
           input.taskId,
           ArtifactIdSchema.parse(input.checkerArtifactId),
@@ -405,6 +406,35 @@ export class PostgresVerificationLedgerRepository {
           input.householdId,
         ],
       );
+      if (inserted.rowCount === 0) {
+        const existing = await client.query<{
+          covered_artifact_id: string;
+          covered_artifact_hash: string;
+          verdict: string;
+        }>(
+          `SELECT v.covered_artifact_id, v.covered_artifact_hash, v.verdict
+           FROM operations.checker_verdicts v
+           JOIN operations.households h ON h.id = v.household_id
+           WHERE h.household_id = $1
+             AND v.task_id = $2
+             AND v.checker_artifact_id = $3`,
+          [input.householdId, input.taskId, input.checkerArtifactId],
+        );
+        const row = existing.rows[0];
+        if (row === undefined
+          || row.covered_artifact_id !== verdict.coveredArtifactId
+          || row.covered_artifact_hash !== verdict.coveredArtifactHash
+          || row.verdict !== verdict.verdict) {
+          throw new PlusOneError({
+            category: 'constraint_violation',
+            code: 'checker_verdict_conflict',
+            message: 'Checker artifact is already linked to a different verdict.',
+            retry: 'never',
+            receiptLookupRequired: false,
+            details: { taskId: input.taskId, checkerArtifactId: input.checkerArtifactId },
+          });
+        }
+      }
 
       await client.query(
         `UPDATE operations.verification_tasks

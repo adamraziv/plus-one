@@ -6,6 +6,7 @@ import {
 } from '@plus-one/contracts';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -56,8 +57,7 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
       householdId: invocation.householdId,
     }, {}));
     const rowLabel = queryResult.rows.length === 1 ? 'row' : 'rows';
-    return {
-      object: MakerArtifactSchemaV1.parse({
+    const artifact = MakerArtifactSchemaV1.parse({
         schemaName: 'maker-artifact',
         schemaVersion: 1,
         outputSchema: invocation.outputSchema,
@@ -69,9 +69,12 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
         }],
         assumptions: [],
         uncertainty: [],
-      }),
-      toolResults: [{ payload: { toolName: toolId, result: queryResult } }],
-    };
+      });
+    return submitContractResult(
+      options,
+      artifact,
+      [{ payload: { toolName: toolId, result: queryResult } }],
+    );
   }) as typeof fallback.generate;
   return fallback;
 }

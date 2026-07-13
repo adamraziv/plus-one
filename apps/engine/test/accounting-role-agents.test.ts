@@ -18,6 +18,7 @@ import {
   createTransactionCaptureCheckerAgent,
   createTransactionCaptureMakerAgent,
 } from '../src/agents/accounting/index.js';
+import { captureContractSubmission } from '../../../test/helpers/contract-agent-test-double.js';
 
 const models = {
   lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -184,16 +185,19 @@ describe('Accounting Mastra role agents', () => {
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      object: {
-        verdict: 'accepted',
-        coveredArtifactId: makerArtifact.artifactId,
-        coveredArtifactHash: makerArtifact.artifactHash,
-        findings: [],
-      },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
     });
   });
 
@@ -231,16 +235,19 @@ describe('Accounting Mastra role agents', () => {
       stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      object: {
-        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
-        output: {
-          schemaName: 'accounting-clarification',
-          missingFields: ['payment_account', 'occurred_on', 'category'],
-        },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      output: {
+        schemaName: 'accounting-clarification',
+        missingFields: ['payment_account', 'occurred_on', 'category'],
       },
     });
   });
@@ -288,9 +295,13 @@ describe('Accounting Mastra role agents', () => {
       stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
 
-    const makerArtifact = MakerArtifactSchemaV1.parse(result.object);
+    const makerArtifact = MakerArtifactSchemaV1.parse(submission.submitted());
     expect(AccountingJournalMutationProposalSchemaV1.parse(makerArtifact.output)).toMatchObject({
       schemaName: 'accounting-journal-mutation-proposal',
       schemaVersion: 1,
@@ -301,45 +312,44 @@ describe('Accounting Mastra role agents', () => {
       },
     });
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      object: {
-        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
-        output: {
-          schemaName: 'accounting-journal-mutation-proposal',
-          schemaVersion: 1,
-          operation: 'post',
-          draft: {
-            draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-            version: 1,
-            journal: {
-              schemaName: 'post-journal-proposal',
-              schemaVersion: 1,
-              householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              transactionCurrency: 'USD',
-              occurredOn: '2026-06-27',
-              effectiveOn: '2026-06-27',
-              postings: [
-                {
-                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
-                  direction: 'debit',
-                  transactionAmount: '10.00',
-                  accountNativeAmount: '10.00',
-                  accountNativeCurrency: 'USD',
-                },
-                {
-                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
-                  direction: 'credit',
-                  transactionAmount: '10.00',
-                  accountNativeAmount: '10.00',
-                  accountNativeCurrency: 'USD',
-                },
-              ],
-            },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      output: {
+        schemaName: 'accounting-journal-mutation-proposal',
+        schemaVersion: 1,
+        operation: 'post',
+        draft: {
+          draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          version: 1,
+          journal: {
+            schemaName: 'post-journal-proposal',
+            schemaVersion: 1,
+            householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            transactionCurrency: 'USD',
+            occurredOn: '2026-06-27',
+            effectiveOn: '2026-06-27',
+            postings: [
+              {
+                accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+                direction: 'debit',
+                transactionAmount: '10.00',
+                accountNativeAmount: '10.00',
+                accountNativeCurrency: 'USD',
+              },
+              {
+                accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+                direction: 'credit',
+                transactionAmount: '10.00',
+                accountNativeAmount: '10.00',
+                accountNativeCurrency: 'USD',
+              },
+            ],
           },
         },
       },
@@ -450,16 +460,19 @@ describe('Accounting Mastra role agents', () => {
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      object: {
-        verdict: 'accepted',
-        coveredArtifactId: makerArtifact.artifactId,
-        coveredArtifactHash: makerArtifact.artifactHash,
-        findings: [],
-      },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
     });
   });
 
@@ -621,15 +634,18 @@ describe('Accounting Mastra role agents', () => {
       stopCondition: { code: 'checked-journal', description: 'Return one checked accounting result.' },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      object: {
-        output: {
-          schemaName: 'accounting-clarification',
-          missingFields: ['payment_account', 'occurred_on'],
-        },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      output: {
+        schemaName: 'accounting-clarification',
+        missingFields: ['payment_account', 'occurred_on'],
       },
     });
   });
@@ -696,16 +712,19 @@ describe('Accounting Mastra role agents', () => {
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      object: {
-        verdict: 'accepted',
-        coveredArtifactId: makerArtifact.artifactId,
-        coveredArtifactHash: makerArtifact.artifactHash,
-        findings: [],
-      },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
     });
   });
 });
