@@ -263,7 +263,7 @@ describe('Query Mastra role agents', () => {
     });
   });
 
-  it('checks a simple QueryResultV1 deterministically without calling the model', async () => {
+  it('accepts a scoped QueryResultV1 when household is the only grain beyond the requested account grain', async () => {
     const skill = createSkillRegistration({
       skillName: 'query-evidence',
       skillVersion: 1,
@@ -322,7 +322,7 @@ describe('Query Mastra role agents', () => {
         businessQuestion: 'List our accounts.',
         intendedUse: 'household_finance_answer',
         timeframe: { start: '2026-06-24', end: '2026-06-24' },
-        desiredGrain: ['household', 'account'],
+        desiredGrain: ['account'],
         filters: [],
         requiredFreshness: 'latest available reporting projection',
         requiredCalculations: [],

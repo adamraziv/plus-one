@@ -68,7 +68,7 @@ function queryFindings(
 ) {
   const findings: Array<{ code: string; message: string }> = [];
   const request = EvidenceRequestSchemaV1.safeParse(task.makerInput);
-  if (request.success && !sameStrings(result.grain, request.data.desiredGrain)) {
+  if (request.success && !satisfiesRequestedGrain(result.grain, request.data.desiredGrain)) {
     findings.push({ code: 'query_grain_mismatch', message: 'Query result grain does not match requested grain.' });
   }
   if (!result.sourceReferences.includes(`filter=household_id:eq:${task.householdId}`)) {
@@ -80,6 +80,8 @@ function queryFindings(
   return findings;
 }
 
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+function satisfiesRequestedGrain(actual: readonly string[], requested: readonly string[]): boolean {
+  const requestedGrain = new Set(requested);
+  return requested.every((value) => actual.includes(value))
+    && actual.every((value) => requestedGrain.has(value) || value === 'household');
 }
