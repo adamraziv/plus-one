@@ -1,5 +1,6 @@
 export * from './agents/agent-registry.js';
 export * from './agents/mastra-structured-agent-adapter.js';
+export * from './agents/model-error-retry.js';
 export * from './agents/structured-agent-port.js';
 export * from './canonical-json.js';
 export * from './artifacts/artifact-store.js';

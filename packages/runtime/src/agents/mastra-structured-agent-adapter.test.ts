@@ -51,8 +51,27 @@ describe('MastraStructuredAgentAdapter', () => {
         jsonPromptInjection: true,
         model: { id: 'provider/model-a', url: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       }), activeTools: ['query_balance'],
-        maxSteps: 4, maxRetries: 1, toolCallConcurrency: 1, maxProcessorRetries: 0,
+        maxSteps: 4, maxRetries: 0, toolCallConcurrency: 1, maxProcessorRetries: 1,
+        errorProcessors: [expect.anything()],
         runId: 'run_01JNZQ4A9B8C7D6E5F4G3H2J1K', instructions: 'maker' }));
+  });
+
+  it('does not add model-step retries when the runtime policy retry budgets are zero', async () => {
+    const generate = vi.fn().mockResolvedValue({ object: { answer: '42' } });
+    const registry = new AgentRegistry();
+    registry.register({ agentId: 'query-maker', modelId: 'provider/model-a',
+      roleKind: 'maker', memoryEnabled: false, agent: { generate } as never });
+
+    await expect(new MastraStructuredAgentAdapter(registry).generate(call({
+      maxRetries: 0,
+      maxProcessorRetries: 0,
+    }))).resolves.toEqual({ answer: '42' });
+
+    expect(generate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      maxRetries: 0,
+      maxProcessorRetries: 0,
+      errorProcessors: [],
+    }));
   });
 
   it('accepts tool results reported inside Mastra step metadata', async () => {

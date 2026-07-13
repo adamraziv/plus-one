@@ -1,6 +1,7 @@
 import { PlusOneError } from '@plus-one/contracts';
 import { assertProviderToolId } from '../tools/tool-permission-registry.js';
 import type { AgentRegistry } from './agent-registry.js';
+import { createTransientModelRetryProcessor } from './model-error-retry.js';
 import type { StructuredAgentCall, StructuredAgentPort } from './structured-agent-port.js';
 
 interface MastraGenerationResult {
@@ -43,14 +44,18 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
         options: Record<string, unknown>,
       ) => Promise<MastraGenerationResult>;
     };
+    const errorProcessors = call.maxRetries === 0
+      ? []
+      : [createTransientModelRetryProcessor({ maxRetries: call.maxRetries })];
     const options = {
       instructions: call.systemPrompt,
       structuredOutput,
       activeTools: [...call.activeTools],
       maxSteps: call.maxSteps,
-      maxRetries: call.maxRetries,
+      maxRetries: 0,
       toolCallConcurrency: call.maxToolConcurrency,
-      maxProcessorRetries: call.maxProcessorRetries,
+      errorProcessors,
+      maxProcessorRetries: Math.max(call.maxProcessorRetries, call.maxRetries),
       runId: call.runId,
       abortSignal: call.abortSignal,
       telemetry: { isEnabled: false },
