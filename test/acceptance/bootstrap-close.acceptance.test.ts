@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, expect, it } from 'vitest';
+import { startOpenAiCompatibleTestServer } from '../helpers/openai-compatible-test-server.js';
 
 const script = `
   import { bootstrap } from "./apps/engine/src/bootstrap.ts";
@@ -29,9 +30,10 @@ const script = `
 
 describe('bootstrap close acceptance', () => {
   it('exits after closing runtime resources', async () => {
+    const modelServer = await startOpenAiCompatibleTestServer();
     const child = spawn(process.execPath, ['--import', 'tsx', '--eval', script], {
       cwd: process.cwd(),
-      env: process.env,
+      env: { ...process.env, ...modelServer.environment },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -51,6 +53,8 @@ describe('bootstrap close acceptance', () => {
     } catch (error) {
       child.kill('SIGKILL');
       throw new Error(`bootstrap() process did not exit.\n${output}`, { cause: error });
+    } finally {
+      await modelServer.close();
     }
   }, 120_000);
 });

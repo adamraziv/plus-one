@@ -237,7 +237,12 @@ describe('OrchestratorAgent', () => {
   });
 
   it('limits model construction to the top-level orchestrator agent', () => {
-    const configs: Array<{ id: string | undefined; inputProcessors: unknown; tools: unknown; maxRetries: number | undefined }> = [];
+    const configs: Array<{
+      id: string | undefined;
+      inputProcessors: unknown;
+      tools: unknown;
+      maxRetries: number | undefined;
+    }> = [];
 
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -324,9 +329,9 @@ describe('OrchestratorAgent', () => {
       maxSteps: 2,
       abortSignal: signal,
     }));
-    const options = generate.mock.calls[0]?.[1] as {
+    const [, options] = generate.mock.calls[0] as unknown as [unknown, {
       structuredOutput?: { schema?: unknown; jsonPromptInjection?: boolean };
-    };
+    }];
     expect(options.structuredOutput?.schema).toBeDefined();
     expect(options.structuredOutput).not.toHaveProperty('jsonPromptInjection');
   });

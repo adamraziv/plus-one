@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Mastra } from '@mastra/core';
 import { Agent } from '@mastra/core/agent';
 import { createTool } from '@mastra/core/tools';
 import { PlusOneError } from '@plus-one/contracts';
@@ -18,6 +19,7 @@ type Capability = 'native_structured_output' | 'tool_then_structured_output';
 
 interface CapabilityValidatorDependencies {
   createAgent?: (options: ConstructorParameters<typeof Agent>[0]) => Agent;
+  createMastra?: (options: ConstructorParameters<typeof Mastra>[0]) => Mastra;
   createReceipt?: () => string;
 }
 
@@ -49,44 +51,49 @@ export async function validateOrchestratorModelCapabilities(
       'Return only the requested structured output.',
     ].join('\n'),
   });
-
-  await runProbe(input.model.id, 'native_structured_output', async () => {
-    const executionsBeforeProbe = toolExecutionCount;
-    const result = await agent.generate([
-      'Capability check: answer directly without calling any tool.',
-      `Return status "ok" and evidence "${DirectEvidence}".`,
-    ].join(' '), {
-      maxSteps: 1,
-      toolChoice: 'auto',
-      structuredOutput: { schema: ProbeResultSchema },
-    });
-    const parsed = ProbeResultSchema.parse(result.object);
-    if (parsed.evidence !== DirectEvidence || toolExecutionCount !== executionsBeforeProbe) {
-      throw new Error('Direct native structured-output probe did not follow its contract.');
-    }
+  const mastra = (dependencies.createMastra ?? ((options) => new Mastra(options)))({
+    agents: { orchestratorModelCapabilityProbe: agent },
+    logger: false,
   });
 
-  await runProbe(input.model.id, 'tool_then_structured_output', async () => {
-    const executionsBeforeProbe = toolExecutionCount;
-    const result = await agent.generate([
-      `Capability check: call capabilityProbe exactly once with nonce "${ProbeNonce}".`,
-      'After the tool returns, set status to "ok" and copy its receipt into evidence.',
-    ].join(' '), {
-      maxSteps: 2,
-      toolChoice: 'required',
-      prepareStep: ({ stepNumber }) => ({
-        toolChoice: stepNumber === 0 ? 'required' : 'none',
-      }),
-      structuredOutput: { schema: ProbeResultSchema },
+  try {
+    await runProbe(input.model.id, 'native_structured_output', async () => {
+      const executionsBeforeProbe = toolExecutionCount;
+      const result = await agent.generate([
+        'Capability check: answer directly without calling any tool.',
+        `Return status "ok" and evidence "${DirectEvidence}".`,
+      ].join(' '), {
+        maxSteps: 1,
+        toolChoice: 'auto',
+        structuredOutput: { schema: ProbeResultSchema },
+      });
+      const parsed = ProbeResultSchema.parse(result.object);
+      if (parsed.evidence !== DirectEvidence || toolExecutionCount !== executionsBeforeProbe) {
+        throw new Error('Direct native structured-output probe did not follow its contract.');
+      }
     });
-    const parsed = ProbeResultSchema.parse(result.object);
-    if (
-      toolExecutionCount !== executionsBeforeProbe + 1
-      || parsed.evidence !== receipt
-    ) {
-      throw new Error('Tool-to-structured-output probe did not follow its contract.');
-    }
-  });
+
+    await runProbe(input.model.id, 'tool_then_structured_output', async () => {
+      const executionsBeforeProbe = toolExecutionCount;
+      const result = await agent.generate([
+        `Capability check: call capabilityProbe exactly once with nonce "${ProbeNonce}".`,
+        'After the tool returns, set status to "ok" and copy its receipt into evidence.',
+      ].join(' '), {
+        maxSteps: 2,
+        toolChoice: 'auto',
+        structuredOutput: { schema: ProbeResultSchema },
+      });
+      const parsed = ProbeResultSchema.parse(result.object);
+      if (
+        toolExecutionCount !== executionsBeforeProbe + 1
+        || parsed.evidence !== receipt
+      ) {
+        throw new Error('Tool-to-structured-output probe did not follow its contract.');
+      }
+    });
+  } finally {
+    await mastra.shutdown();
+  }
 }
 
 async function runProbe(
@@ -96,7 +103,7 @@ async function runProbe(
 ): Promise<void> {
   try {
     await probe();
-  } catch (cause) {
+  } catch {
     throw new PlusOneError({
       category: 'validation_rejected',
       code: 'llm_orchestrator_capability_unsupported',
@@ -104,7 +111,7 @@ async function runProbe(
       retry: 'never',
       receiptLookupRequired: false,
       details: { modelId, capability },
-      cause,
+      cause: new Error('Orchestrator model capability probe failed.'),
     });
   }
 }
