@@ -244,7 +244,6 @@ export class OrchestratorAgent {
             },
             structuredOutput: {
               schema: OrchestratorResponseDraftSchema,
-              jsonPromptInjection: true,
             },
           }), signal);
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');

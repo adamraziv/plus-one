@@ -323,8 +323,12 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       maxSteps: 2,
       abortSignal: signal,
-      structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
     }));
+    const options = generate.mock.calls[0]?.[1] as {
+      structuredOutput?: { schema?: unknown; jsonPromptInjection?: boolean };
+    };
+    expect(options.structuredOutput?.schema).toBeDefined();
+    expect(options.structuredOutput).not.toHaveProperty('jsonPromptInjection');
   });
 
   it('lets the single orchestrator generation delegate once and return a checked structured reply', async () => {
