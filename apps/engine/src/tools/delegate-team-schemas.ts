@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import {
-  AccountingLeadRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
 } from '@plus-one/accounting';
 import {
@@ -39,22 +38,27 @@ export const TransactionCaptureRequestDraftSchemaV1 = z.object({
   }).strict().default({}),
 }).strict().describe('Semantic draft for an explicit transaction capture request.');
 
-export const AccountingDelegateRequestSchemaV1 = AccountingLeadRequestSchemaV1.extend({
+const TransactionCaptureDelegateRequestSchemaV1 = z.object({
+  schemaName: z.literal('accounting-lead-request'),
+  schemaVersion: z.literal(1),
+  intent: z.literal('transaction_capture'),
   request: z.union([
-    TransactionCaptureRequestSchemaV1,
     TransactionCaptureRequestDraftSchemaV1,
-    jsonObjectSchema,
+    TransactionCaptureRequestSchemaV1,
   ]),
-}).superRefine((value, context) => {
-  if (value.intent !== 'transaction_capture') return;
-  if (TransactionCaptureRequestSchemaV1.safeParse(value.request).success) return;
-  if (TransactionCaptureRequestDraftSchemaV1.safeParse(value.request).success) return;
-  context.addIssue({
-    code: 'custom',
-    path: ['request'],
-    message: 'transaction_capture requires transaction-capture-request-draft or TransactionCaptureRequestV1',
-  });
-}).describe('AccountingLeadRequestV1 for explicit accounting work.');
+}).strict();
+
+const OtherAccountingDelegateRequestSchemaV1 = z.object({
+  schemaName: z.literal('accounting-lead-request'),
+  schemaVersion: z.literal(1),
+  intent: z.enum(['ingestion', 'journal', 'chart_of_accounts', 'reconciliation']),
+  request: jsonObjectSchema,
+}).strict();
+
+export const AccountingDelegateRequestSchemaV1 = z.union([
+  TransactionCaptureDelegateRequestSchemaV1,
+  OtherAccountingDelegateRequestSchemaV1,
+]).describe('AccountingLeadRequestV1 for explicit accounting work.');
 
 export const QueryLeadRequestDraftSchemaV1 = z.object({
   schemaName: z.literal('query-lead-request-draft'),
@@ -80,28 +84,35 @@ export const QueryDelegateRequestSchemaV1 = z.union([
 
 export const DelegateTeamToolInputSchema = z.object({
   team: TeamIdSchema.describe([
-    'Exact team id.',
+    'Exact registered specialist team id.',
     'Use query for checked reads of household finance data.',
-    'Use accounting for transaction capture, journal, chart, ingestion, or reconciliation mutations.',
+    'Use accounting for transaction capture, journal, chart, ingestion, or reconciliation work.',
   ].join(' ')),
-  request: jsonObjectSchema.describe([
+  request: z.union([
+    QueryDelegateRequestSchemaV1,
+    AccountingDelegateRequestSchemaV1,
+    jsonObjectSchema,
+  ]).describe([
     'JSON object for the selected team.',
     'For query, use query-lead-request-draft or full EvidenceRequestV1.',
-    'For accounting, use AccountingLeadRequestV1; transaction_capture may contain transaction-capture-request-draft.',
+    'For accounting, use AccountingLeadRequestV1; transaction_capture must contain transaction-capture-request-draft or TransactionCaptureRequestV1.',
   ].join(' ')),
-}).strict().describe('Delegate exactly one user task to the specialist team matching the user intent.');
+}).strict().superRefine((value, context) => {
+  const schema = value.team === 'query'
+    ? QueryDelegateRequestSchemaV1
+    : value.team === 'accounting' ? AccountingDelegateRequestSchemaV1 : undefined;
+  if (schema === undefined || schema.safeParse(value.request).success) return;
+  context.addIssue({
+    code: 'custom',
+    path: ['request'],
+    message: `Request does not match the ${value.team} team contract.`,
+  });
+}).describe('Delegate exactly one user task to the specialist team matching the user intent.');
 
 export type TransactionCaptureRequestDraftV1 = z.infer<typeof TransactionCaptureRequestDraftSchemaV1>;
 
 export function parseDelegateTeamToolInput(input: unknown) {
-  const parsed = DelegateTeamToolInputSchema.parse(input);
-  if (parsed.team === 'query') {
-    return { ...parsed, request: QueryDelegateRequestSchemaV1.parse(parsed.request) };
-  }
-  if (parsed.team === 'accounting') {
-    return { ...parsed, request: AccountingDelegateRequestSchemaV1.parse(parsed.request) };
-  }
-  return parsed;
+  return DelegateTeamToolInputSchema.parse(input);
 }
 
 export function requestForRuntime(request: unknown): JsonValue {
