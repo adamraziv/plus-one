@@ -85,6 +85,11 @@ export class OrchestratorAgent {
         const startedAt = Date.now();
         const logger = getLogger('runtime.orchestrator');
         await emitChannelEvent(active?.channelEvents, {
+          kind: 'assistant.commentary',
+          target: targetFromInboundMessage(input.message),
+          body: delegationCommentary(input.team.team, input.request),
+        }, active?.signal);
+        await emitChannelEvent(active?.channelEvents, {
           kind: 'tool.started',
           target: targetFromInboundMessage(input.message),
           toolName: 'delegateTeam',
@@ -249,7 +254,7 @@ export class OrchestratorAgent {
           if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
             return turnFromTeamResults(message, invocation.teamResults);
           }
-          const body = nonEmptyResponseText(result.text);
+          const body = finalStepResponseText(result);
           if (body === undefined) {
             if (invocation.teamResults.length !== 0) {
               return turnFromTeamResults(message, invocation.teamResults);
@@ -398,6 +403,48 @@ function nonEmptyResponseText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const body = value.trim();
   return body.length === 0 ? undefined : body;
+}
+
+function finalStepResponseText(result: unknown): string | undefined {
+  if (!isRecord(result)) return undefined;
+  if (!Array.isArray(result.steps) || result.steps.length === 0) {
+    return nonEmptyResponseText(result.text);
+  }
+  let lastToolStep = -1;
+  for (let index = 0; index < result.steps.length; index += 1) {
+    if (hasToolCalls(result.steps[index])) lastToolStep = index;
+  }
+  for (let index = result.steps.length - 1; index > lastToolStep; index -= 1) {
+    const step = result.steps[index];
+    if (hasToolCalls(step) || !isRecord(step)) continue;
+    const body = nonEmptyResponseText(step.text);
+    if (body !== undefined) return body;
+  }
+  return undefined;
+}
+
+function hasToolCalls(step: unknown): boolean {
+  return isRecord(step) && Array.isArray(step.toolCalls) && step.toolCalls.length > 0;
+}
+
+function delegationCommentary(team: string, request: unknown): string {
+  const coverage = isRecord(request) && Array.isArray(request.coverage)
+    ? request.coverage.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (team === 'query' && coverage.some((value) =>
+    value === 'account list' || value === 'reporting.accounts')) {
+    return "I'll check your household accounts.";
+  }
+  if (team === 'query' && coverage.some((value) =>
+    value === 'categorized transactions' || value === 'reporting.categorized_transactions')) {
+    return "I'll check your household transactions.";
+  }
+  if (team === 'query') return "I'll check your household records.";
+  return "I'll check that for you.";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function selectTeamResult(teamResults: readonly TeamResultEnvelopeV1[]): TeamResultEnvelopeV1 | undefined {

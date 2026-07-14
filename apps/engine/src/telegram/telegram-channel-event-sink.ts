@@ -2,6 +2,7 @@ import type { ChannelEvent, ChannelEventSink, ChannelEventTarget, TransportAdapt
 
 export class TelegramChannelEventSink implements ChannelEventSink {
   private readonly statusMessages = new Map<string, string>();
+  private readonly commentaryTurns = new Set<string>();
 
   constructor(private readonly input: { transport: TransportAdapter }) {}
 
@@ -13,6 +14,7 @@ export class TelegramChannelEventSink implements ChannelEventSink {
     }
     if (event.kind === 'typing.stop') return;
     if (event.kind === 'tool.started' && event.toolName === 'delegateTeam') {
+      if (this.commentaryTurns.has(statusKey(event.target, 'turn'))) return;
       await this.sendStatus(event.target, 'turn', 'Checking your household records…');
       return;
     }
@@ -21,18 +23,22 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
     if (event.kind === 'final.delivered') {
+      this.commentaryTurns.delete(statusKey(event.target, 'turn'));
       await this.clearStatus(event.target, 'Reply sent.');
       return;
     }
     if (event.kind === 'assistant.commentary') {
-      await this.input.transport.sendInterim?.({
+      if (this.input.transport.sendInterim === undefined) return;
+      await this.input.transport.sendInterim({
         destination: event.target.destination,
         body: event.body,
         format: 'plain_text',
       });
+      this.commentaryTurns.add(statusKey(event.target, 'turn'));
       return;
     }
     if (event.kind === 'final.failed') {
+      this.commentaryTurns.delete(statusKey(event.target, 'turn'));
       const body = failureMessage(event.reason);
       await this.clearStatus(event.target, body);
       await this.input.transport.sendInterim?.({

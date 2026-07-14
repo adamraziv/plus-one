@@ -354,6 +354,85 @@ describe('OrchestratorAgent', () => {
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
   });
 
+  it('sends an application-authored delegation bubble and returns only final-step text', async () => {
+    const channelEvents = { emit: vi.fn(async (event: unknown) => { void event; }) };
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
+      });
+      return {
+        text: 'Let me check your household accounts for you!The checked evidence includes one account row.',
+        steps: [
+          { text: 'Let me check your household accounts for you!', toolCalls: [{ toolName: 'delegateTeam' }] },
+          { text: 'The checked evidence includes one account row.', toolCalls: [] },
+        ],
+      };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+      channelEvents,
+    });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
+
+    const emitted = channelEvents.emit.mock.calls.map(([event]) => event);
+    expect(emitted.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        kind: 'assistant.commentary',
+        body: "I'll check your household accounts.",
+      }),
+      expect.objectContaining({ kind: 'tool.started', toolName: 'delegateTeam' }),
+    ]);
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({ body: 'Let me check your household accounts for you!' }),
+    );
+  });
+
+  it('falls back to checked team text when the post-tool step has no final body', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query', request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+      });
+      return {
+        text: 'Preamble that must never be a final response.',
+        steps: [
+          { text: 'Preamble that must never be a final response.', toolCalls: [{ toolName: 'delegateTeam' }] },
+          { text: '', toolCalls: [] },
+        ],
+      };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toContain('The checked evidence includes one account row.');
+    expect(response.body).not.toContain('Preamble that must never be a final response.');
+  });
+
+  it('uses the last semantic step for a direct answer', async () => {
+    const generate = vi.fn(async () => ({
+      text: 'Earlier draft.Final direct answer.',
+      steps: [
+        { text: 'Earlier draft.', toolCalls: [] },
+        { text: 'Final direct answer.', toolCalls: [] },
+      ],
+    }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [] });
+
+    await expect(orchestrator.run({ message: message('hi') }))
+      .resolves.toMatchObject({ body: 'Final direct answer.' });
+  });
+
   it('removes delegateTeam after the first delegation so finalization can only return text', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {

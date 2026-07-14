@@ -26,7 +26,13 @@ import {
 } from '@plus-one/contracts';
 import { ingestionSkills } from '@plus-one/ingestion';
 import { planningSkills } from '@plus-one/planning';
-import { querySkills } from '@plus-one/query';
+import {
+  queryRelationForCoverage,
+  querySkills,
+  queryToolNameForCoverage,
+  readReportingRelationGrain,
+  type ReportingRelationMetadataReader,
+} from '@plus-one/query';
 import { reportingSkills } from '@plus-one/reporting';
 import {
   AgentInvocationRunner,
@@ -102,7 +108,7 @@ export function createTeamRuntime(input: {
       const request = runtimeInput.team.team === 'accounting'
         ? await normalizeAccountingLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
         : runtimeInput.team.team === 'query'
-          ? normalizeQueryLeadRequest(runtimeInput.message, runtimeInput.request)
+          ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
           : runtimeInput.request;
       await runtime.createTask({
         householdId: runtimeInput.message.householdId,
@@ -223,36 +229,56 @@ export async function normalizeAccountingLeadRequest(
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
 }
 
-export function normalizeQueryLeadRequest(
+export async function normalizeQueryLeadRequest(
+  pools: Pick<DatabasePools, 'query'>,
   message: InboundChannelMessageV1,
   request: JsonValue,
-): JsonValue {
+): Promise<JsonValue> {
   const parsed = EvidenceRequestSchemaV1.safeParse(request);
-  if (parsed.success) return JSON.parse(JSON.stringify(parsed.data)) as JsonValue;
-
   const draft = QueryLeadRequestDraftSchemaV1.safeParse(request);
-  const businessQuestion = draft.success ? draft.data.businessQuestion : queryBusinessQuestion(message, request);
   const date = message.receivedAt.slice(0, 10);
+  const normalized = parsed.success
+    ? { ...parsed.data, householdId: message.householdId }
+    : EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: message.householdId,
+      requestId: nextId('evidence'),
+      businessQuestion: draft.success ? draft.data.businessQuestion : queryBusinessQuestion(message, request),
+      intendedUse: 'household_finance_answer',
+      timeframe: draft.success && draft.data.timeframe !== undefined
+        ? draft.data.timeframe
+        : { start: date, end: date },
+      desiredGrain: draft.success && draft.data.desiredGrain !== undefined
+        ? draft.data.desiredGrain
+        : ['household'],
+      filters: [],
+      requiredFreshness: 'latest available reporting projection',
+      requiredCalculations: draft.success ? draft.data.requiredCalculations : [],
+      coverage: draft.success && draft.data.coverage !== undefined
+        ? draft.data.coverage
+        : ['requested household finance answer'],
+    });
+  const relationName = queryRelationForCoverage(normalized.coverage);
+  const desiredGrain = relationName === undefined
+    ? normalized.desiredGrain
+    : await readReportingRelationGrain(queryMetadataReader(pools), relationName);
   return JSON.parse(JSON.stringify(EvidenceRequestSchemaV1.parse({
-    schemaName: 'evidence-request',
-    schemaVersion: 1,
-    householdId: message.householdId,
-    requestId: nextId('evidence'),
-    businessQuestion,
-    intendedUse: 'household_finance_answer',
-    timeframe: draft.success && draft.data.timeframe !== undefined
-      ? draft.data.timeframe
-      : { start: date, end: date },
-    desiredGrain: draft.success && draft.data.desiredGrain !== undefined
-      ? draft.data.desiredGrain
-      : ['household'],
-    filters: [],
-    requiredFreshness: 'latest available reporting projection',
-    requiredCalculations: draft.success ? draft.data.requiredCalculations : [],
-    coverage: draft.success && draft.data.coverage !== undefined
-      ? draft.data.coverage
-      : ['requested household finance answer'],
+    ...normalized,
+    desiredGrain,
   }))) as JsonValue;
+}
+
+function queryMetadataReader(pools: Pick<DatabasePools, 'query'>): ReportingRelationMetadataReader {
+  return {
+    async query<R extends Record<string, unknown> = Record<string, unknown>>(
+      text: string,
+      values?: readonly unknown[],
+    ): Promise<{ rows: readonly R[] }> {
+      const result = await pools.query.query<R>(text, values === undefined ? undefined : [...values]);
+      return { rows: result.rows };
+    },
+  };
 }
 
 export function makerInputForLeadWorkItem(
@@ -262,9 +288,10 @@ export function makerInputForLeadWorkItem(
   normalizedRequest: JsonValue,
 ): JsonValue {
   if (team.team === 'query' && workCellId === 'query-evidence') {
+    const normalized = EvidenceRequestSchemaV1.safeParse(normalizedRequest);
+    if (normalized.success) return JSON.parse(JSON.stringify(normalized.data)) as JsonValue;
     const plan = EvidenceRequestSchemaV1.safeParse(planMakerInput);
     if (plan.success) return JSON.parse(JSON.stringify(plan.data)) as JsonValue;
-    if (EvidenceRequestSchemaV1.safeParse(normalizedRequest).success) return normalizedRequest;
   }
   return planMakerInput;
 }
@@ -277,7 +304,7 @@ export function deterministicLeadPlanForRequest(
     const parsed = EvidenceRequestSchemaV1.safeParse(request);
     if (!parsed.success
       || parsed.data.requiredCalculations.length > 0
-      || !parsed.data.coverage.some((coverage) => deterministicQueryCoverages.has(coverage))) {
+      || queryToolNameForCoverage(parsed.data.coverage) === undefined) {
       return undefined;
     }
     return TeamLeadPlanSchemaV1.parse({
@@ -305,28 +332,6 @@ export function deterministicLeadPlanForRequest(
   }
   return undefined;
 }
-
-const deterministicQueryCoverages = new Set([
-  'account list',
-  'reporting.accounts',
-  'balance snapshot',
-  'reporting.current_balances',
-  'reporting.account_current_balances',
-  'categorized transactions',
-  'reporting.categorized_transactions',
-  'category spend monthly',
-  'reporting.category_spend_monthly',
-  'budget variance',
-  'reporting.budget_variance',
-  'savings goal progress',
-  'reporting.savings_goal_progress',
-  'debt progress',
-  'reporting.debt_progress',
-  'reconciliation status',
-  'reporting.reconciliation_status',
-  'source freshness',
-  'reporting.source_freshness',
-]);
 
 const deterministicAccountingPlans = {
   transaction_capture: {

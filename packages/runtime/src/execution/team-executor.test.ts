@@ -59,6 +59,75 @@ describe('TeamExecutor', () => {
       'revision', 'begin-maker', 'freeze-maker', 'begin-checker', 'freeze-checker']);
   });
 
+  it('stops a revision before rechecking an unchanged maker artifact', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      validateMaker: vi.fn(async (input) => ({
+        ...input,
+        artifactType: 'maker_output',
+        schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+        canonicalizationVersion: 'rfc8785-v1',
+        hashAlgorithm: 'sha256',
+        artifactHash: 'a'.repeat(64),
+        createdAt: '2026-06-14T10:00:00.000Z',
+      })),
+      beginChecker: vi.fn(),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const runner = { run: vi.fn()
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact', schemaVersion: 1,
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 }, output: { answer: '41' },
+        claims: [{ claimId: 'c1', text: '41', evidenceArtifactIds: [] }], assumptions: [], uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'revision_requested',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        coveredArtifactHash: 'a'.repeat(64), findings: [{ code: 'wrong', message: 'Recalculate.' }],
+      })
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact', schemaVersion: 1,
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 }, output: { answer: '41' },
+        claims: [{ claimId: 'c1', text: '41', evidenceArtifactIds: [] }], assumptions: [], uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'revision_requested',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        coveredArtifactHash: 'a'.repeat(64), findings: [{ code: 'wrong', message: 'Recalculate.' }],
+      }) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({ systemPrompt: 'maker', messages: [{ role: 'user', content: '{}' }],
+          parentMessages: [], memoryEnabled: false, activeTools: [], toolHistory: [] })),
+        forChecker: vi.fn(() => ({ systemPrompt: 'checker', messages: [{ role: 'user', content: '{}' }],
+          parentMessages: [], memoryEnabled: false, activeTools: [], toolHistory: [] })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({ maxAttempts: 2, teamDeadlineMs: 5_000, identity: {
+        policyName: 'test', policyVersion: 1 } })) } as never,
+      ids: { nextArtifactId: vi.fn()
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J9K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K') },
+    });
+
+    const result = await executor.executeWorkCell(makeExecutionInput());
+
+    expect(result).toMatchObject({ status: 'failed', outstanding: ['revision_no_progress'] });
+    expect(runner.run).toHaveBeenCalledTimes(3);
+    expect(runtime.beginChecker).toHaveBeenCalledTimes(1);
+    expect(runtime.fail).toHaveBeenCalledWith(expect.objectContaining({
+      expectedFrom: 'maker_validated',
+      failureCategory: 'checker_rejected',
+    }));
+  });
+
   it('leaves an accepted mutation work cell at checker_validated', async () => {
     const runtime = {
       createTask: vi.fn(),

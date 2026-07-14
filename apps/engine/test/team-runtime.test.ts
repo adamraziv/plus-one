@@ -33,6 +33,15 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
   };
 }
 
+function queryPools(grains: Record<string, readonly string[]>) {
+  const query = vi.fn(async (_text: string, values: readonly unknown[]) => {
+    const relationName = values[0];
+    const grain = typeof relationName === 'string' ? grains[relationName] : undefined;
+    return { rows: grain === undefined ? [] : [{ grain }] };
+  });
+  return { pools: { query: { query } } as never, query };
+}
+
 describe('normalizeAccountingLeadRequest', () => {
   it('canonicalizes typed transaction capture drafts without parsing prose', async () => {
     const query = vi.fn()
@@ -145,9 +154,39 @@ describe('normalizeAccountingLeadRequest', () => {
 });
 
 describe('normalizeQueryLeadRequest', () => {
-  it('canonicalizes a typed query draft using model-supplied grain and coverage', () => {
-    const normalized = normalizeQueryLeadRequest(message, queryDraft('List our accounts.', {
-      desiredGrain: ['household', 'account'],
+  it('canonicalizes a typed query draft from reporting metadata instead of model-supplied grain', async () => {
+    const { pools, query } = queryPools({
+      'reporting.categorized_transactions': ['household', 'posting'],
+    });
+    const normalized = await normalizeQueryLeadRequest(pools, message, queryDraft('List our transactions.', {
+      desiredGrain: ['transaction', 'category'],
+      coverage: ['categorized transactions'],
+    }));
+
+    const parsed = EvidenceRequestSchemaV1.parse(normalized);
+    expect(parsed).toMatchObject({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      businessQuestion: 'List our transactions.',
+      intendedUse: 'household_finance_answer',
+      timeframe: { start: '2026-06-24', end: '2026-06-24' },
+      desiredGrain: ['household', 'posting'],
+      filters: [],
+      requiredFreshness: 'latest available reporting projection',
+      requiredCalculations: [],
+      coverage: ['categorized transactions'],
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('reporting.relation_metadata'), [
+      'reporting.categorized_transactions',
+    ]);
+    expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
+
+  it('canonicalizes a typed account-list query draft from reporting metadata', async () => {
+    const { pools } = queryPools({ 'reporting.accounts': ['household', 'account'] });
+    const normalized = await normalizeQueryLeadRequest(pools, message, queryDraft('List our accounts.', {
+      desiredGrain: ['account'],
       coverage: ['account list'],
     }));
 
@@ -168,8 +207,9 @@ describe('normalizeQueryLeadRequest', () => {
     expect(parsed.requestId).toMatch(/^evidence_[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 
-  it('uses generic coverage for legacy thin query objects instead of keyword regex', () => {
-    const normalized = normalizeQueryLeadRequest(message, {
+  it('uses generic coverage for legacy thin query objects instead of keyword regex', async () => {
+    const { pools, query } = queryPools({});
+    const normalized = await normalizeQueryLeadRequest(pools, message, {
       businessQuestion: 'What are our balances?',
     });
 
@@ -180,31 +220,40 @@ describe('normalizeQueryLeadRequest', () => {
       requiredCalculations: [],
       coverage: ['requested household finance answer'],
     });
+    expect(query).not.toHaveBeenCalled();
   });
 
-  it('keeps a valid EvidenceRequestV1 unchanged', () => {
+  it('canonicalizes a full EvidenceRequestV1 when its model grain conflicts with reporting metadata', async () => {
+    const { pools } = queryPools({
+      'reporting.categorized_transactions': ['household', 'posting'],
+    });
     const request = EvidenceRequestSchemaV1.parse({
       schemaName: 'evidence-request',
       schemaVersion: 1,
-      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J2K',
       requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
-      businessQuestion: 'What are our balances?',
+      businessQuestion: 'List our transactions.',
       intendedUse: 'household_finance_answer',
       timeframe: { start: '2026-06-01', end: '2026-06-24' },
-      desiredGrain: ['household', 'account'],
+      desiredGrain: ['transaction', 'category'],
       filters: [],
       requiredFreshness: 'latest available reporting projection',
       requiredCalculations: [],
-      coverage: ['balance snapshot'],
+      coverage: ['categorized transactions'],
     });
 
-    expect(normalizeQueryLeadRequest(message, request)).toEqual(request);
+    await expect(normalizeQueryLeadRequest(pools, message, request)).resolves.toEqual({
+      ...request,
+      householdId: message.householdId,
+      desiredGrain: ['household', 'posting'],
+    });
   });
 });
 
 describe('makerInputForLeadWorkItem', () => {
-  it('uses the normalized Query request as query-evidence maker input, but leaves query-analyst maker input unchanged', () => {
-    const normalized = normalizeQueryLeadRequest(message, queryDraft('List our accounts.', {
+  it('uses the normalized Query request as query-evidence maker input, but leaves query-analyst maker input unchanged', async () => {
+    const { pools } = queryPools({ 'reporting.accounts': ['household', 'account'] });
+    const normalized = await normalizeQueryLeadRequest(pools, message, queryDraft('List our accounts.', {
       desiredGrain: ['household', 'account'],
       coverage: ['account list'],
     }));
@@ -228,14 +277,31 @@ describe('makerInputForLeadWorkItem', () => {
 
     expect(makerInputForLeadWorkItem(queryTeamDefinition, 'query-evidence', { original: true }, normalized))
       .toEqual(normalized);
+    const conflictingPlanRequest = EvidenceRequestSchemaV1.parse({
+      schemaName: 'evidence-request',
+      schemaVersion: 1,
+      householdId: message.householdId,
+      requestId: 'evidence_01JZZZZZZZZZZZZZZZZZZZZZZZ',
+      businessQuestion: 'List our accounts.',
+      intendedUse: 'household_finance_answer',
+      timeframe: { start: '2026-06-01', end: '2026-06-24' },
+      desiredGrain: ['category'],
+      filters: [],
+      requiredFreshness: 'latest available reporting projection',
+      requiredCalculations: [],
+      coverage: ['account list'],
+    });
+    expect(makerInputForLeadWorkItem(queryTeamDefinition, 'query-evidence', conflictingPlanRequest, normalized))
+      .toEqual(normalized);
     expect(makerInputForLeadWorkItem(queryTeamDefinition, 'query-analyst', analystInput, normalized))
       .toEqual(analystInput);
   });
 });
 
 describe('deterministicLeadPlanForRequest', () => {
-  it('builds the one valid Query lead plan for the normalized account-list slice', () => {
-    const request = normalizeQueryLeadRequest(message, queryDraft('List our accounts.', {
+  it('builds the one valid Query lead plan for the normalized account-list slice', async () => {
+    const { pools } = queryPools({ 'reporting.accounts': ['household', 'account'] });
+    const request = await normalizeQueryLeadRequest(pools, message, queryDraft('List our accounts.', {
       desiredGrain: ['household', 'account'],
       coverage: ['account list'],
     }));
@@ -249,8 +315,9 @@ describe('deterministicLeadPlanForRequest', () => {
     });
   });
 
-  it('builds the same deterministic Query plan for a normalized balances slice', () => {
-    const request = normalizeQueryLeadRequest(message, {
+  it('builds the same deterministic Query plan for a normalized balances slice', async () => {
+    const { pools } = queryPools({});
+    const request = await normalizeQueryLeadRequest(pools, message, {
       businessQuestion: 'What are our balances?',
     });
 

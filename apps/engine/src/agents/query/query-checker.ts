@@ -5,6 +5,7 @@ import {
   QueryResultSchemaV1,
   VerificationTaskSchemaV1,
 } from '@plus-one/contracts';
+import { satisfiesRequestedGrain } from '@plus-one/query';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
 import { submitContractResult } from '../../mastra/submit-contract-result.js';
@@ -78,10 +79,4 @@ function queryFindings(
     findings.push({ code: 'query_coverage_warning', message: warning });
   }
   return findings;
-}
-
-function satisfiesRequestedGrain(actual: readonly string[], requested: readonly string[]): boolean {
-  const requestedGrain = new Set(requested);
-  return requested.every((value) => actual.includes(value))
-    && actual.every((value) => requestedGrain.has(value) || value === 'household');
 }
