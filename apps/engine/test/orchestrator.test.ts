@@ -257,6 +257,33 @@ describe('OrchestratorAgent', () => {
     expect((processors[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
   });
 
+  it('defines account routing semantics in its instructions', () => {
+    let orchestratorInstructions: string | undefined;
+
+    new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        orchestratorInstructions = config.instructions;
+        return { ...config, generate: vi.fn() } as never;
+      },
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    expect(orchestratorInstructions).toContain(
+      'Account existence or account inventory questions use account list coverage.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Use balance snapshot only when the user explicitly asks for a balance, amount, value, or net worth.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'An empty reporting.current_balances result does not prove that no accounts exist.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Do not infer entity absence from an empty metric projection.',
+    );
+  });
+
   it('uses prepared thread context and persists the final user-facing reply', async () => {
     const sessionMemory: OrchestratorSessionMemoryPort = {
       prepareInput: vi.fn(async () => [
