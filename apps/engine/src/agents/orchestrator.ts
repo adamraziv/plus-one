@@ -26,6 +26,10 @@ import {
 } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
+import {
+  internalIdentifierMatchCategory,
+  type InternalIdentifierMatchCategory,
+} from '../safety/internal-identifier.js';
 import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
 
 const orchestratorInstructions = [
@@ -40,9 +44,11 @@ const orchestratorInstructions = [
   'delegateTeam input must always be strict JSON, and request must be a JSON object, never a quoted JSON string.',
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
+  'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
   'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
+  'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
   'Account existence or account inventory questions use account list coverage.',
   'Examples such as "show my accounts", "check my accounts", and "which accounts do I have" mean account list, even when phrased as a check.',
   'Use balance snapshot only when the user explicitly asks for a balance, amount, value, or net worth.',
@@ -343,10 +349,7 @@ function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cle
 }
 
 function inboundContextPrompt(message: InboundChannelMessageV1): string {
-  return [
-    'InboundChannelMessageV1 context:',
-    JSON.stringify(message),
-  ].join('\n');
+  return message.body;
 }
 
 function responseFromTeamResults(
@@ -476,12 +479,15 @@ function responseBody(teamResult: TeamResultEnvelopeV1): string {
   return details.length === 0 ? heading : `${heading}\n\n${details.join('\n\n')}`;
 }
 
-function assertUserSafeResponseBody(body: string): void {
-  if (/\b(?:household|book|account)\s*(?:id|identifier)\b/i.test(body)
-    || /\b(?:hh|household|book|acct|account)_[a-z0-9_-]+\b/i.test(body)
-    || /\b[hb]\d{3,}\b/i.test(body)) {
-    throw new Error('Final response contains an internal identifier request.');
+class InternalIdentifierResponseError extends Error {
+  constructor(readonly matchCategory: InternalIdentifierMatchCategory) {
+    super('Final response contains an internal identifier request.');
   }
+}
+
+function assertUserSafeResponseBody(body: string): void {
+  const matchCategory = internalIdentifierMatchCategory(body);
+  if (matchCategory !== undefined) throw new InternalIdentifierResponseError(matchCategory);
 }
 
 function citationsFor(teamResult: TeamResultEnvelopeV1) {
@@ -503,6 +509,7 @@ function labelForTeam(team: string): string {
 function turnFailureCategory(error: unknown): string {
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
   if (error instanceof DOMException && error.name === 'AbortError') return 'cancelled';
+  if (error instanceof InternalIdentifierResponseError) return `internal_${error.matchCategory}`;
   if (error instanceof ZodError) return 'schema_validation';
   return 'runtime_failure';
 }

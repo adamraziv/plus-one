@@ -1,12 +1,16 @@
-import { createTool } from '@mastra/core/tools';
+import { createTool, isValidationError } from '@mastra/core/tools';
+import { z } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
+  MakerArtifactSchemaV1,
+  QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
+import { internalIdentifierMatchCategory } from '../safety/internal-identifier.js';
 import {
   DelegateTeamToolInputSchema,
   parseDelegateTeamToolInput,
@@ -20,6 +24,76 @@ export interface OrchestratorTeamRuntime {
     request: JsonValue;
     signal: AbortSignal;
   }): Promise<TeamResultEnvelopeV1>;
+}
+
+const UserFacingQueryValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+export const FinalSynthesisTeamResultViewSchema = z.object({
+  schemaName: z.literal('final-synthesis-team-result'),
+  schemaVersion: z.literal(1),
+  team: z.string(),
+  status: z.enum(['verified', 'partial', 'insufficient_evidence', 'conflicted', 'failed']),
+  checkedClaims: z.array(z.string()),
+  assumptions: z.array(z.string()),
+  uncertainty: z.array(z.string()),
+  outstanding: z.array(z.string()),
+  checkedData: z.array(z.object({
+    checkedClaim: z.string(),
+    rows: z.array(z.record(z.string(), UserFacingQueryValueSchema)),
+  }).strict()),
+}).strict();
+
+export type FinalSynthesisTeamResultView = z.infer<typeof FinalSynthesisTeamResultViewSchema>;
+
+const DELEGATE_TEAM_RETRY_INSTRUCTION = 'Retry delegateTeam with an exact registered team id and a JSON-object request matching that team\'s declared schema.';
+
+export const DelegateTeamRetrySignalSchema = z.object({
+  schemaName: z.literal('delegate-team-retry-signal'),
+  schemaVersion: z.literal(1),
+  status: z.literal('retry_required'),
+  instruction: z.literal(DELEGATE_TEAM_RETRY_INSTRUCTION),
+}).strict();
+
+export type DelegateTeamRetrySignal = z.infer<typeof DelegateTeamRetrySignalSchema>;
+
+const WITHHELD_DETAIL = 'Some checked details were withheld for privacy.';
+
+export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV1): FinalSynthesisTeamResultView {
+  const acceptedArtifacts = new Map<string, TeamResultEnvelopeV1['makerArtifacts'][number]>();
+  for (const artifact of result.makerArtifacts) {
+    const accepted = result.checkerVerdicts.some((verdict) =>
+      verdict.verdict === 'accepted'
+      && verdict.coveredArtifactId === artifact.artifactId
+      && verdict.coveredArtifactHash === artifact.artifactHash,
+    );
+    if (accepted) acceptedArtifacts.set(artifact.artifactId, artifact);
+  }
+  const checkedData = result.claims.flatMap((claim) => {
+    const checkedClaim = userFacingText(claim.text);
+    return claim.checkedMakerArtifactIds.flatMap((artifactId) => {
+      const artifact = acceptedArtifacts.get(artifactId);
+      if (artifact === undefined || checkedClaim === undefined) return [];
+      const makerArtifact = MakerArtifactSchemaV1.safeParse(artifact.payload);
+      if (!makerArtifact.success) return [];
+      const queryResult = QueryResultSchemaV1.safeParse(makerArtifact.data.output);
+      if (!queryResult.success) return [];
+      const rows = queryResult.data.rows
+        .map(userFacingQueryRow)
+        .filter((row): row is Record<string, z.infer<typeof UserFacingQueryValueSchema>> => row !== undefined);
+      return rows.length === 0 ? [] : [{ checkedClaim, rows }];
+    });
+  });
+  return FinalSynthesisTeamResultViewSchema.parse({
+    schemaName: 'final-synthesis-team-result',
+    schemaVersion: 1,
+    team: result.team,
+    status: result.status,
+    checkedClaims: userFacingTexts(result.claims.map((claim) => claim.text)),
+    assumptions: userFacingTexts(result.assumptions),
+    uncertainty: userFacingTexts(result.uncertainty),
+    outstanding: userFacingTexts(result.outstanding),
+    checkedData,
+  });
 }
 
 export function createDelegateTeamTool(input: {
@@ -46,6 +120,23 @@ export function createDelegateTeamTool(input: {
     ].join(' '),
     inputSchema: DelegateTeamToolInputSchema,
     outputSchema: TeamResultEnvelopeSchemaV1,
+    toModelOutput: (result: unknown) => {
+      if (isValidationError(result)) {
+        return {
+          type: 'json',
+          value: DelegateTeamRetrySignalSchema.parse({
+            schemaName: 'delegate-team-retry-signal',
+            schemaVersion: 1,
+            status: 'retry_required',
+            instruction: DELEGATE_TEAM_RETRY_INSTRUCTION,
+          }),
+        };
+      }
+      return {
+        type: 'json',
+        value: finalSynthesisTeamResultView(TeamResultEnvelopeSchemaV1.parse(result)),
+      };
+    },
     execute: async (inputData) => {
       const active = input.getActiveInvocation();
       if (active === undefined) throw new Error('No active orchestrator invocation.');
@@ -77,4 +168,38 @@ export function createDelegateTeamTool(input: {
       }
     },
   });
+}
+
+function userFacingTexts(values: readonly string[]): string[] {
+  const safeValues = values.flatMap((value) => {
+    const safeValue = userFacingText(value);
+    return safeValue === undefined ? [] : [safeValue];
+  });
+  const omittedUnsafeText = safeValues.length !== values.filter((value) => value.trim().length > 0).length;
+  return omittedUnsafeText ? [...safeValues, WITHHELD_DETAIL] : safeValues;
+}
+
+function userFacingText(value: string): string | undefined {
+  const text = value.trim();
+  if (text.length === 0 || internalIdentifierMatchCategory(text) !== undefined) return undefined;
+  return text;
+}
+
+function userFacingQueryRow(row: Record<string, unknown>): Record<string, z.infer<typeof UserFacingQueryValueSchema>> | undefined {
+  const entries = Object.entries(row).flatMap(([key, value]) => {
+    if (isInternalQueryField(key)) return [];
+    const safeValue = userFacingQueryValue(value);
+    return safeValue === undefined ? [] : [[key, safeValue] as const];
+  });
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function isInternalQueryField(key: string): boolean {
+  return /(?:^|_)(?:id|identifier)(?:_|$)|(?:household|book|task|artifact|hash|source|provenance|metadata)/i.test(key);
+}
+
+function userFacingQueryValue(value: unknown): z.infer<typeof UserFacingQueryValueSchema> | undefined {
+  if (typeof value === 'string') return userFacingText(value) ?? WITHHELD_DETAIL;
+  const parsed = UserFacingQueryValueSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }

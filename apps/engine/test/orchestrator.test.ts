@@ -6,6 +6,7 @@ import { TokenLimiter } from '@mastra/core/processors';
 import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
+  QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
@@ -109,6 +110,137 @@ function teamResult(team: 'accounting' | 'query' = 'query') {
     stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     completionReason: 'Ready for orchestrator reconciliation.',
     outstanding: [],
+  });
+}
+
+function finalSynthesisProjectionResult() {
+  return TeamResultEnvelopeSchemaV1.parse({
+    ...teamResult(),
+    claims: [
+      {
+        claimId: 'checking-account',
+        text: 'Checking is configured for this household.',
+        evidenceArtifactIds: [],
+        checkedMakerArtifactIds: [artifactId],
+      },
+      {
+        claimId: 'unsafe-claim',
+        text: 'Use account_private_001 to continue.',
+        evidenceArtifactIds: [],
+        checkedMakerArtifactIds: [artifactId],
+      },
+    ],
+    assumptions: [
+      'Amounts are shown in USD.',
+      `The household identifier is ${householdId}.`,
+    ],
+    uncertainty: [
+      'No additional uncertainty was reported.',
+      'The Book ID is internal-only.',
+    ],
+    outstanding: [
+      'You can review the checked result.',
+      'Ask for account_private_001 if clarification is needed.',
+    ],
+    makerArtifacts: [{
+      ...teamResult().makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: QueryResultSchemaV1.parse({
+          schemaName: 'query-result',
+          schemaVersion: 1,
+          relationName: 'reporting.accounts',
+          grain: ['household', 'account'],
+          rows: [{
+            account_id: 'account_private_001',
+            household_id: householdId,
+            name: 'Checking',
+            note: 'Use account_private_001 to continue.',
+          }],
+          fieldDefinitions: ['account_id', 'household_id', 'name', 'note'],
+          sourceReferences: [
+            'relation=reporting.accounts',
+            `filter=household_id:eq:${householdId}`,
+          ],
+          freshness: 'latest available reporting projection',
+          coverageWarnings: [],
+        }),
+        claims: [{
+          claimId: 'checking-account',
+          text: 'Checking is configured for this household.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+  });
+}
+
+function emptyCurrentBalancesResult() {
+  const currentBalancesArtifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1M';
+  const currentBalancesArtifactHash = 'c'.repeat(64);
+  const currentBalances = QueryResultSchemaV1.parse({
+    schemaName: 'query-result',
+    schemaVersion: 1,
+    relationName: 'reporting.current_balances',
+    grain: ['household', 'account'],
+    rows: [],
+    fieldDefinitions: ['account_id', 'native_amount'],
+    sourceReferences: [
+      'relation=reporting.current_balances',
+      `filter=household_id:eq:${householdId}`,
+    ],
+    freshness: 'latest available reporting projection',
+    coverageWarnings: [],
+  });
+
+  return TeamResultEnvelopeSchemaV1.parse({
+    ...teamResult(),
+    claims: [{
+      claimId: 'current-balance-rows',
+      text: 'The checked current-balance projection returned no rows.',
+      evidenceArtifactIds: [],
+      checkedMakerArtifactIds: [currentBalancesArtifactId],
+    }],
+    freshness: ['reporting.current_balances refreshed 2026-06-23T10:00:00.000Z'],
+    coverage: ['balance snapshot'],
+    makerArtifacts: [{
+      artifactId: currentBalancesArtifactId,
+      householdId,
+      taskId,
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: currentBalancesArtifactHash,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: currentBalances,
+        claims: [{
+          claimId: 'current-balance-rows',
+          text: 'The checked current-balance projection returned no rows.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: now,
+    }],
+    checkerVerdicts: [{
+      verdict: 'accepted',
+      coveredArtifactId: currentBalancesArtifactId,
+      coveredArtifactHash: currentBalancesArtifactHash,
+      findings: [],
+    }],
+    completionReason: 'The checked current-balance projection returned no rows.',
+    outstanding: [
+      'The account inventory remains established separately from the current-balance projection.',
+    ],
   });
 }
 
@@ -278,6 +410,12 @@ describe('OrchestratorAgent', () => {
       'Use balance snapshot only when the user explicitly asks for a balance, amount, value, or net worth.',
     );
     expect(orchestratorInstructions).toContain(
+      'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
+    );
+    expect(orchestratorInstructions).toContain(
       'An empty reporting.current_balances result does not prove that no accounts exist.',
     );
     expect(orchestratorInstructions).toContain(
@@ -318,6 +456,228 @@ describe('OrchestratorAgent', () => {
       message: message('Use checking for that transfer.'),
       assistantText: 'Final clean answer.',
     });
+  });
+
+  it('keeps the full checked team result for citations while exposing only a safe final-synthesis view to the model', async () => {
+    const result = finalSynthesisProjectionResult();
+    let delegated: TeamResultEnvelopeV1 | undefined;
+    let modelOutput: unknown;
+    const generate = vi.fn(async () => {
+      delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+      });
+      const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput;
+      if (toModelOutput !== undefined) modelOutput = toModelOutput(delegated);
+      return { text: 'Checking is configured for this household.' };
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(async () => result),
+      teams: [queryTeam],
+    });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(delegated).toMatchObject({
+      householdId,
+      taskId,
+      makerArtifacts: [expect.objectContaining({
+        artifactId,
+        artifactHash,
+        payload: expect.objectContaining({
+          output: expect.objectContaining({
+            rows: [expect.objectContaining({ account_id: 'account_private_001' })],
+          }),
+        }),
+      })],
+    });
+    expect(response.citations).toEqual(expect.arrayContaining([
+      { label: 'query:checking-account', artifactId },
+      { label: 'query:unsafe-claim', artifactId },
+    ]));
+    expect(typeof orchestrator.agentTools.delegateTeam.toModelOutput).toBe('function');
+    expect(modelOutput).toMatchObject({
+      type: 'json',
+      value: {
+        schemaName: 'final-synthesis-team-result',
+        schemaVersion: 1,
+        team: 'query',
+        status: 'verified',
+        checkedClaims: expect.arrayContaining([
+          'Checking is configured for this household.',
+          'Some checked details were withheld for privacy.',
+        ]),
+        assumptions: expect.arrayContaining(['Amounts are shown in USD.']),
+        uncertainty: expect.arrayContaining(['No additional uncertainty was reported.']),
+        outstanding: expect.arrayContaining(['You can review the checked result.']),
+        checkedData: [{
+          checkedClaim: 'Checking is configured for this household.',
+          rows: [{
+            name: 'Checking',
+            note: 'Some checked details were withheld for privacy.',
+          }],
+        }],
+      },
+    });
+    const serializedView = JSON.stringify(modelOutput);
+    expect(serializedView.includes(householdId)).toBe(false);
+    expect(serializedView.includes(taskId)).toBe(false);
+    expect(serializedView.includes(artifactId)).toBe(false);
+    expect(serializedView.includes(artifactHash)).toBe(false);
+    expect(serializedView.includes('account_private_001')).toBe(false);
+    expect(serializedView.includes('account_id')).toBe(false);
+    expect(serializedView.includes('household_id')).toBe(false);
+    expect(serializedView.includes('reporting.accounts')).toBe(false);
+    expect(serializedView.includes('single-maker-checker')).toBe(false);
+    expect(serializedView.includes('query-evidence')).toBe(false);
+    expect(serializedView.includes('query-answer')).toBe(false);
+    expect(serializedView.includes('Ready for orchestrator reconciliation.')).toBe(false);
+  });
+
+  it('maps a Mastra input-validation wrapper to a safe retry signal without consuming delegation', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    let modelOutput: unknown;
+    const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {
+        prepareStep(): Promise<{ activeTools: string[]; toolChoice: string }> | { activeTools: string[]; toolChoice: string };
+      };
+      const execute = orchestrator.agentTools.delegateTeam.execute as unknown as
+        (input: unknown, options: unknown) => Promise<unknown>;
+      const invalidResult = await execute({ team: 'query', request: 'account_private_001' }, {});
+      expect(invalidResult).toMatchObject({ error: true });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
+      });
+      const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput as
+        | ((output: unknown) => unknown)
+        | undefined;
+      if (toModelOutput === undefined) throw new Error('Expected delegateTeam to provide model output.');
+      modelOutput = toModelOutput(invalidResult);
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+      });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: [],
+        toolChoice: 'none',
+      });
+      return { text: 'The checked evidence includes one account row.' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
+
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(modelOutput).toEqual({
+      type: 'json',
+      value: {
+        schemaName: 'delegate-team-retry-signal',
+        schemaVersion: 1,
+        status: 'retry_required',
+        instruction: 'Retry delegateTeam with an exact registered team id and a JSON-object request matching that team\'s declared schema.',
+      },
+    });
+    const serializedModelOutput = JSON.stringify(modelOutput);
+    expect(serializedModelOutput).not.toContain('account_private_001');
+    expect(serializedModelOutput).not.toContain('validationErrors');
+    expect(serializedModelOutput).not.toContain('Tool input validation failed');
+    expect(serializedModelOutput).not.toContain('Provided arguments');
+  });
+
+  it('passes only the user body into a non-memory model prompt', async () => {
+    const body = 'What are the balances in my accounts?';
+    let prompt: unknown;
+    const generate = vi.fn(async (value: unknown) => {
+      prompt = value;
+      return { text: 'I will check the balances.' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await orchestrator.run({ message: message(body) });
+
+    expect(typeof prompt === 'string').toBe(true);
+    if (typeof prompt !== 'string') throw new Error('Expected a text-only prompt.');
+    expect(prompt === body).toBe(true);
+    expect(prompt.includes(householdId)).toBe(false);
+    expect(prompt.includes(conversationId)).toBe(false);
+    expect(prompt.includes('telegram-chat-42')).toBe(false);
+  });
+
+  it('records only an identifier match category when final response safety blocks a token', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
+    const logging = configureLogging({ homeDirectory });
+    const generate = vi.fn(async () => ({ text: 'Please use account_private_001 to continue.' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    try {
+      await expect(orchestrator.run({ message: message('Can you help?') }))
+        .rejects.toThrow('internal identifier request');
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('failureCategory=internal_identifier_token');
+      expect(agentLog).not.toContain('account_private_001');
+    } finally {
+      logging.close();
+    }
+  });
+
+  it('keeps checked account-list evidence separate from an empty current-balance projection during deterministic synthesis', async () => {
+    let orchestratorInstructions: string | undefined;
+    const preparedMessages = [
+      memoryMessage('assistant', 'Checked account-list evidence established that Checking and Groceries are configured.'),
+      memoryMessage('user', 'What are the balances in my accounts?'),
+    ];
+    const sessionMemory: OrchestratorSessionMemoryPort = {
+      prepareInput: vi.fn(async () => preparedMessages),
+      persistTurn: vi.fn(),
+      close: vi.fn(),
+    };
+    const currentBalancesResult = emptyCurrentBalancesResult();
+    const runTeamLead = vi.fn(async () => currentBalancesResult);
+    const generate = vi.fn(async (messages: unknown) => {
+      expect(messages).toEqual(preparedMessages);
+      const delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('What are the balances in my accounts?', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['balance snapshot'],
+        }),
+      });
+      expect(delegated.makerArtifacts[0]?.payload).toMatchObject({
+        output: { relationName: 'reporting.current_balances', rows: [] },
+      });
+      return { text: 'No current-balance rows were returned.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (typeof config.instructions !== 'string') throw new Error('Expected orchestrator instructions to be a string.');
+        orchestratorInstructions = config.instructions;
+        return { ...config, generate } as never;
+      },
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('What are the balances in my accounts?') });
+
+    expect(orchestratorInstructions).toContain(
+      'An empty reporting.current_balances result does not prove that no accounts exist.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Do not infer entity absence from an empty metric projection. State only that the requested metric projection returned no rows.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Only reporting.accounts account-list evidence may support a claim that no accounts are configured.',
+    );
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({ coverage: ['balance snapshot'] }),
+    }));
+    expect(response.body).not.toMatch(/no accounts|no accounts set up|do not have accounts/i);
+    expect(response.body).toBe('No current-balance rows were returned.');
   });
 
   it('answers a direct message as text with one two-step-bounded orchestrator generation', async () => {
