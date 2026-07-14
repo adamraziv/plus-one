@@ -45,12 +45,65 @@ export const JournalWorkRequestSchemaV1 = z.object({
   instruction: nonEmpty,
 }).strict();
 
-export const ChartWorkRequestSchemaV1 = z.object({
+const chartWorkBase = {
   schemaName: z.literal('chart-work-request'),
   schemaVersion: z.literal(1),
   householdId: HouseholdIdSchema,
   bookId: BookIdSchema,
   instruction: nonEmpty,
+  known: z.object({
+    parentAccountId: AccountIdSchema.optional(),
+    name: optionalText,
+    purpose: optionalText,
+    accountingClass: AccountingClassSchemaV1.optional(),
+    normalBalance: NormalBalanceSchemaV1.optional(),
+    nativeCurrency: CurrencyCodeSchema.optional(),
+    ownershipLabel: optionalText,
+    sourceSystem: z.string().min(1).max(128).optional(),
+    externalAccountId: z.string().min(1).max(512).optional(),
+  }).strict(),
+};
+
+export const ChartWorkRequestSchemaV1 = z.discriminatedUnion('action', [
+  z.object({
+    ...chartWorkBase,
+    action: z.literal('create_account'),
+    accountId: AccountIdSchema,
+  }).strict(),
+  z.object({
+    ...chartWorkBase,
+    action: z.literal('update_account'),
+    accountId: AccountIdSchema,
+  }).strict(),
+  z.object({
+    ...chartWorkBase,
+    action: z.literal('archive_account'),
+    accountId: AccountIdSchema,
+  }).strict(),
+  z.object({
+    ...chartWorkBase,
+    action: z.literal('create_source_mapping'),
+    mappingId: AccountSourceMappingIdSchema,
+    accountId: AccountIdSchema,
+  }).strict(),
+  z.object({
+    ...chartWorkBase,
+    action: z.literal('replace_source_mapping'),
+    mappingId: AccountSourceMappingIdSchema,
+    archivedMappingId: AccountSourceMappingIdSchema,
+    accountId: AccountIdSchema,
+  }).strict(),
+]);
+
+export const ChartClarificationSchemaV1 = z.object({
+  schemaName: z.literal('chart-clarification'),
+  schemaVersion: z.literal(1),
+  missingFields: z.array(z.enum([
+    'action', 'name', 'accounting_class', 'normal_balance', 'native_currency',
+    'account', 'parent_account', 'source_system', 'external_account_id', 'mapping',
+  ])).min(1),
+  questions: z.array(nonEmpty).min(1),
+  reason: nonEmpty,
 }).strict();
 
 export const AccountingClarificationSchemaV1 = z.object({
@@ -195,13 +248,20 @@ export const ChartOfAccountsProposalSchemaV1 = z.discriminatedUnion('action', [
   }).strict(),
 ]);
 
+export const ChartWorkResultSchemaV1 = z.discriminatedUnion('schemaName', [
+  ChartOfAccountsProposalSchemaV1,
+  ChartClarificationSchemaV1,
+]);
+
 export type AccountingLeadRequestV1 = z.infer<typeof AccountingLeadRequestSchemaV1>;
 export type TransactionCaptureRequestV1 = z.infer<typeof TransactionCaptureRequestSchemaV1>;
 export type JournalWorkRequestV1 = z.infer<typeof JournalWorkRequestSchemaV1>;
 export type ChartWorkRequestV1 = z.infer<typeof ChartWorkRequestSchemaV1>;
+export type ChartClarificationV1 = z.infer<typeof ChartClarificationSchemaV1>;
 export type AccountingClarificationV1 = z.infer<typeof AccountingClarificationSchemaV1>;
 export type CheckedJournalDraftProposalV1 = z.infer<typeof CheckedJournalDraftProposalSchemaV1>;
 export type AccountingJournalMutationProposalV1 =
   z.infer<typeof AccountingJournalMutationProposalSchemaV1>;
 export type AccountingWorkResultV1 = z.infer<typeof AccountingWorkResultSchemaV1>;
 export type ChartOfAccountsProposalV1 = z.infer<typeof ChartOfAccountsProposalSchemaV1>;
+export type ChartWorkResultV1 = z.infer<typeof ChartWorkResultSchemaV1>;

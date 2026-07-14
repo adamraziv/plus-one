@@ -438,7 +438,7 @@ function makerOutputFor(
 }
 
 function outputSchemaFor(workCellId: string) {
-  if (workCellId === 'chart-of-accounts') return { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 };
+  if (workCellId === 'chart-of-accounts') return { schemaName: 'chart-work-result', schemaVersion: 1 };
   if (workCellId === 'ingestion') return { schemaName: 'ingestion-work-result', schemaVersion: 1 };
   if (workCellId === 'reconciliation') return { schemaName: 'reconciliation-work-result', schemaVersion: 1 };
   return { schemaName: 'accounting-work-result', schemaVersion: 1 };
@@ -472,7 +472,10 @@ function makerInputFor(workCellId: string, options: { missingPaymentAccount?: bo
       schemaVersion: 1,
       householdId,
       bookId,
+      action: 'create_account',
+      accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
       instruction: 'Create a groceries expense account.',
+      known: {},
     };
   }
   if (workCellId === 'journal') {

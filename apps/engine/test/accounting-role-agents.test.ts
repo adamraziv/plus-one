@@ -10,6 +10,8 @@ import {
 import {
   AccountingJournalMutationProposalSchemaV1,
   accountingSkills,
+  ChartWorkRequestSchemaV1,
+  ChartWorkResultSchemaV1,
 } from '@plus-one/accounting';
 import {
   createAccountingRoleAgents,
@@ -726,5 +728,31 @@ describe('Accounting Mastra role agents', () => {
       coveredArtifactHash: makerArtifact.artifactHash,
       findings: [],
     });
+  });
+
+  it('models chart work identities and missing user-owned fields explicitly', () => {
+    const accountId = 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+    expect(ChartWorkRequestSchemaV1.parse({
+      schemaName: 'chart-work-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      action: 'create_account',
+      accountId,
+      instruction: 'Add a bank account',
+      known: {},
+    })).toMatchObject({ action: 'create_account', accountId });
+
+    expect(ChartWorkResultSchemaV1.parse({
+      schemaName: 'chart-clarification',
+      schemaVersion: 1,
+      missingFields: ['name', 'accounting_class', 'native_currency'],
+      questions: [
+        'What should the account be called?',
+        'Is this an asset, liability, equity, income, or expense account?',
+        'What is its native currency?',
+      ],
+      reason: 'A safe account proposal requires user-owned accounting fields.',
+    }).schemaName).toBe('chart-clarification');
   });
 });
