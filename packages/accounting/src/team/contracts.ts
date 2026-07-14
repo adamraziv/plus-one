@@ -10,12 +10,9 @@ import {
 const nonEmpty = z.string().min(1).max(4_000);
 const optionalText = z.string().min(1).max(2_000).optional();
 
-export const AccountingLeadRequestSchemaV1 = z.object({
-  schemaName: z.literal('accounting-lead-request'),
-  schemaVersion: z.literal(1),
-  intent: z.enum(['transaction_capture', 'ingestion', 'journal', 'chart_of_accounts', 'reconciliation']),
-  request: z.json(),
-}).strict();
+export const AccountingIntentSchemaV1 = z.enum([
+  'transaction_capture', 'ingestion', 'journal', 'chart_of_accounts', 'reconciliation',
+]);
 
 export const TransactionCaptureRequestSchemaV1 = z.object({
   schemaName: z.literal('transaction-capture-request'),
@@ -253,7 +250,7 @@ export const ChartWorkResultSchemaV1 = z.discriminatedUnion('schemaName', [
   ChartClarificationSchemaV1,
 ]);
 
-export type AccountingLeadRequestV1 = z.infer<typeof AccountingLeadRequestSchemaV1>;
+export type AccountingIntentV1 = z.infer<typeof AccountingIntentSchemaV1>;
 export type TransactionCaptureRequestV1 = z.infer<typeof TransactionCaptureRequestSchemaV1>;
 export type JournalWorkRequestV1 = z.infer<typeof JournalWorkRequestSchemaV1>;
 export type ChartWorkRequestV1 = z.infer<typeof ChartWorkRequestSchemaV1>;

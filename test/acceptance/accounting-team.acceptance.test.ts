@@ -363,14 +363,7 @@ async function runAccountingScenario(input: {
         schemaName: 'accounting-lead-request',
         schemaVersion: 1,
         intent: input.intent,
-        request: input.intent === 'transaction_capture'
-          ? {
-            schemaName: 'transaction-capture-request-draft',
-            schemaVersion: 1,
-            instruction: 'Handle accounting request.',
-            known: {},
-          }
-          : { householdId, bookId },
+        request: delegateRequestFor(input.intent),
       },
     });
     return {
@@ -504,6 +497,50 @@ function makerInputFor(workCellId: string, options: { missingPaymentAccount?: bo
       occurredOn: '2026-06-23',
       categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
     },
+  };
+}
+
+function delegateRequestFor(intent: 'transaction_capture' | 'ingestion' | 'journal' | 'chart_of_accounts' | 'reconciliation') {
+  if (intent === 'transaction_capture') {
+    return {
+      schemaName: 'transaction-capture-request-draft' as const,
+      schemaVersion: 1 as const,
+      instruction: 'Handle accounting request.',
+      known: {},
+    };
+  }
+  if (intent === 'ingestion') {
+    return {
+      schemaName: 'ingestion-work-request-draft' as const,
+      schemaVersion: 1 as const,
+      instruction: 'Import the attached statement.',
+      sourceReference: {},
+    };
+  }
+  if (intent === 'journal') {
+    return {
+      schemaName: 'journal-work-request-draft' as const,
+      schemaVersion: 1 as const,
+      operation: 'post' as const,
+      instruction: 'Post the accounting entry.',
+    };
+  }
+  if (intent === 'chart_of_accounts') {
+    return {
+      schemaName: 'chart-work-request-draft' as const,
+      schemaVersion: 1 as const,
+      action: 'create_account' as const,
+      instruction: 'Create the requested account.',
+      known: {},
+    };
+  }
+  return {
+    schemaName: 'reconciliation-work-request-draft' as const,
+    schemaVersion: 1 as const,
+    instruction: 'Reconcile the requested statement.',
+    accountName: 'Checking',
+    statementReference: 'June statement',
+    requestedOperation: 'reconcile' as const,
   };
 }
 

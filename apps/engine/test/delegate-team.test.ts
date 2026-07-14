@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { createDelegateTeamTool } from '../src/tools/delegate-team.js';
-import { DelegateTeamToolInputSchema } from '../src/tools/delegate-team-schemas.js';
+import {
+  AccountingDelegateRequestSchemaV1,
+  DelegateTeamToolInputSchema,
+} from '../src/tools/delegate-team-schemas.js';
+import { MaterializedAccountingLeadRequestSchemaV1 } from '../src/accounting/accounting-lead-contracts.js';
 
 describe('createDelegateTeamTool', () => {
   it('describes the registered team catalog from authoritative ids and charters', () => {
@@ -48,6 +52,81 @@ describe('createDelegateTeamTool', () => {
         },
       },
     }).success).toBe(false);
+  });
+
+  it('accepts only declared Accounting drafts or complete work requests', () => {
+    expect(() => AccountingDelegateRequestSchemaV1.parse({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'chart_of_accounts',
+      request: { instruction: 'Add a bank account' },
+    })).toThrow();
+
+    expect(AccountingDelegateRequestSchemaV1.parse({
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'chart_of_accounts',
+      request: {
+        schemaName: 'chart-work-request-draft',
+        schemaVersion: 1,
+        action: 'create_account',
+        instruction: 'Add a bank account',
+        known: {},
+      },
+    }).intent).toBe('chart_of_accounts');
+  });
+
+  it.each([
+    ['transaction_capture', {
+      schemaName: 'transaction-capture-request-draft', schemaVersion: 1,
+      instruction: 'Capture a grocery purchase.', known: {},
+    }],
+    ['journal', {
+      schemaName: 'journal-work-request-draft', schemaVersion: 1,
+      operation: 'post', instruction: 'Post a grocery purchase.',
+    }],
+    ['chart_of_accounts', {
+      schemaName: 'chart-work-request-draft', schemaVersion: 1,
+      action: 'create_account', instruction: 'Create a checking account.', known: {},
+    }],
+    ['ingestion', {
+      schemaName: 'ingestion-work-request-draft', schemaVersion: 1,
+      instruction: 'Import this statement.', sourceReference: {},
+    }],
+    ['reconciliation', {
+      schemaName: 'reconciliation-work-request-draft', schemaVersion: 1,
+      instruction: 'Reconcile the checking statement.', accountName: 'Checking',
+      statementReference: 'June statement', requestedOperation: 'reconcile',
+    }],
+  ] as const)('does not accept arbitrary JSON for the %s Accounting intent', (intent, request) => {
+    expect(AccountingDelegateRequestSchemaV1.parse({
+      schemaName: 'accounting-lead-request', schemaVersion: 1, intent, request,
+    }).intent).toBe(intent);
+    expect(AccountingDelegateRequestSchemaV1.safeParse({
+      schemaName: 'accounting-lead-request', schemaVersion: 1, intent,
+      request: { instruction: 'No typed request schema.' },
+    }).success).toBe(false);
+  });
+
+  it('keeps semantic drafts out of the materialized Accounting contract', () => {
+    expect(MaterializedAccountingLeadRequestSchemaV1.safeParse({
+      schemaName: 'accounting-lead-request', schemaVersion: 1,
+      intent: 'chart_of_accounts',
+      request: {
+        schemaName: 'chart-work-request-draft', schemaVersion: 1,
+        action: 'create_account', instruction: 'Create a checking account.', known: {},
+      },
+    }).success).toBe(false);
+    expect(MaterializedAccountingLeadRequestSchemaV1.safeParse({
+      schemaName: 'accounting-lead-request', schemaVersion: 1,
+      intent: 'journal',
+      request: {
+        schemaName: 'journal-work-request', schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        operation: 'post', instruction: 'Post the entry.',
+      },
+    }).success).toBe(true);
   });
 });
 

@@ -1,13 +1,14 @@
 import { z } from 'zod';
 import {
-  TransactionCaptureRequestSchemaV1,
-} from '@plus-one/accounting';
-import {
-  CurrencyCodeSchema,
   EvidenceRequestSchemaV1,
   JsonValueSchema,
   type JsonValue,
 } from '@plus-one/contracts';
+import { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
+import {
+  TransactionCaptureRequestDraftSchemaV1,
+  type TransactionCaptureRequestDraftV1,
+} from '../accounting/accounting-request-drafts.js';
 
 const jsonObjectSchema = z.record(z.string(), JsonValueSchema);
 const nonEmptyText = z.string().min(1).max(4_000);
@@ -20,45 +21,8 @@ const TeamIdSchema = z.enum([
   'records-reporting',
 ]);
 
-export const TransactionCaptureRequestDraftSchemaV1 = z.object({
-  schemaName: z.literal('transaction-capture-request-draft'),
-  schemaVersion: z.literal(1),
-  instruction: nonEmptyText.describe('Original user instruction, preserving account and category names exactly.'),
-  known: z.object({
-    amount: z.string().min(1).max(128).optional()
-      .describe('Decimal amount from the user, without a currency symbol.'),
-    currency: CurrencyCodeSchema.optional()
-      .describe('Uppercase currency code explicitly stated or unambiguous from the request.'),
-    paymentAccountName: z.string().min(1).max(512).optional()
-      .describe('User-provided payment account name, not a ledger account id.'),
-    occurredOn: z.string().min(1).max(64).optional()
-      .describe('Transaction date from the user. Prefer YYYY-MM-DD when stated.'),
-    categoryName: z.string().min(1).max(512).optional()
-      .describe('User-provided category name, not a ledger account id.'),
-  }).strict().default({}),
-}).strict().describe('Semantic draft for an explicit transaction capture request.');
-
-const TransactionCaptureDelegateRequestSchemaV1 = z.object({
-  schemaName: z.literal('accounting-lead-request'),
-  schemaVersion: z.literal(1),
-  intent: z.literal('transaction_capture'),
-  request: z.union([
-    TransactionCaptureRequestDraftSchemaV1,
-    TransactionCaptureRequestSchemaV1,
-  ]),
-}).strict();
-
-const OtherAccountingDelegateRequestSchemaV1 = z.object({
-  schemaName: z.literal('accounting-lead-request'),
-  schemaVersion: z.literal(1),
-  intent: z.enum(['ingestion', 'journal', 'chart_of_accounts', 'reconciliation']),
-  request: jsonObjectSchema,
-}).strict();
-
-export const AccountingDelegateRequestSchemaV1 = z.union([
-  TransactionCaptureDelegateRequestSchemaV1,
-  OtherAccountingDelegateRequestSchemaV1,
-]).describe('AccountingLeadRequestV1 for explicit accounting work.');
+export { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
+export { TransactionCaptureRequestDraftSchemaV1 } from '../accounting/accounting-request-drafts.js';
 
 export const QueryLeadRequestDraftSchemaV1 = z.object({
   schemaName: z.literal('query-lead-request-draft'),
@@ -109,7 +73,7 @@ export const DelegateTeamToolInputSchema = z.object({
   });
 }).describe('Delegate exactly one user task to the specialist team matching the user intent.');
 
-export type TransactionCaptureRequestDraftV1 = z.infer<typeof TransactionCaptureRequestDraftSchemaV1>;
+export type { TransactionCaptureRequestDraftV1 };
 
 export function parseDelegateTeamToolInput(input: unknown) {
   return DelegateTeamToolInputSchema.parse(input);

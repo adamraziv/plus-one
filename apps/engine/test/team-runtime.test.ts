@@ -98,26 +98,22 @@ describe('normalizeAccountingLeadRequest', () => {
     });
   });
 
-  it('does not extract amount or currency from message text when no typed draft supplies them', async () => {
+  it('does not normalize undeclared transaction input from message text', async () => {
     const pools = {
       accounting: {
         query: vi.fn(async () => ({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })),
       },
     } as never;
 
-    const normalized = await normalizeAccountingLeadRequest(pools, message, {
+    const request = {
       schemaName: 'accounting-lead-request',
       schemaVersion: 1,
       intent: 'transaction_capture',
       request: {},
-    });
+    };
+    const normalized = await normalizeAccountingLeadRequest(pools, message, request);
 
-    expect(normalized).toMatchObject({
-      request: {
-        instruction: 'add $10 of buying a burger',
-        known: {},
-      },
-    });
+    expect(normalized).toEqual(request);
   });
 
   it('canonicalizes typed journal drafts by resolving the household book id', async () => {
@@ -132,6 +128,8 @@ describe('normalizeAccountingLeadRequest', () => {
       schemaVersion: 1,
       intent: 'journal',
       request: {
+        schemaName: 'journal-work-request-draft',
+        schemaVersion: 1,
         operation: 'transfer',
         instruction: 'transfer $1000 from my savings to my checking account',
       },

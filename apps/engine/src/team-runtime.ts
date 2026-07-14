@@ -1,17 +1,14 @@
 import { randomBytes } from 'node:crypto';
-import { z } from 'zod';
 import {
   PostgresArtifactRepository,
   PostgresVerificationLedgerRepository,
   type DatabasePools,
 } from '@plus-one/database';
 import {
-  AccountingLeadRequestSchemaV1,
   JournalWorkRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
   accountingSkills,
   validateAccountingLeadPlan,
-  type AccountingLeadRequestV1,
   type TransactionCaptureRequestV1,
 } from '@plus-one/accounting';
 import {
@@ -51,10 +48,15 @@ import {
 import type { AgentSystem } from './agent-catalog.js';
 import type { OrchestratorTeamRuntime } from './tools/delegate-team.js';
 import {
-  QueryLeadRequestDraftSchemaV1,
+  AccountingDelegateRequestSchemaV1,
+  type AccountingDelegateRequestV1,
+} from './accounting/accounting-lead-contracts.js';
+import {
+  JournalWorkRequestDraftSchemaV1,
   TransactionCaptureRequestDraftSchemaV1,
   type TransactionCaptureRequestDraftV1,
-} from './tools/delegate-team-schemas.js';
+} from './accounting/accounting-request-drafts.js';
+import { QueryLeadRequestDraftSchemaV1 } from './tools/delegate-team-schemas.js';
 
 const skills = [
   ...querySkills,
@@ -128,7 +130,7 @@ export function createTeamRuntime(input: {
           abortSignal: runtimeInput.signal,
         });
       const accountingRequest = runtimeInput.team.team === 'accounting'
-        ? AccountingLeadRequestSchemaV1.safeParse(request)
+        ? AccountingDelegateRequestSchemaV1.safeParse(request)
         : undefined;
       const plan = accountingRequest?.success
         ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
@@ -159,14 +161,14 @@ export async function normalizeAccountingLeadRequest(
   message: InboundChannelMessageV1,
   request: JsonValue,
 ): Promise<JsonValue> {
-  const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
+  const parsed = AccountingDelegateRequestSchemaV1.safeParse(request);
   if (!parsed.success) return request;
   if (parsed.data.intent === 'journal') {
     if (JournalWorkRequestSchemaV1.safeParse(parsed.data.request).success) return request;
-    const draft = JournalWorkRequestDraftSchema.safeParse(parsed.data.request);
+    const draft = JournalWorkRequestDraftSchemaV1.safeParse(parsed.data.request);
     if (!draft.success) return request;
     const bookId = await resolveHouseholdBookId(pools, message.householdId);
-    return JSON.parse(JSON.stringify(AccountingLeadRequestSchemaV1.parse({
+    return JSON.parse(JSON.stringify(AccountingDelegateRequestSchemaV1.parse({
       schemaName: 'accounting-lead-request',
       schemaVersion: 1,
       intent: 'journal',
@@ -184,7 +186,7 @@ export async function normalizeAccountingLeadRequest(
   const transactionCapture = TransactionCaptureRequestSchemaV1.safeParse(parsed.data.request);
   if (transactionCapture.success) {
     const enriched = await enrichTransactionCaptureRequest(pools, transactionCapture.data);
-    return JSON.parse(JSON.stringify(AccountingLeadRequestSchemaV1.parse({
+    return JSON.parse(JSON.stringify(AccountingDelegateRequestSchemaV1.parse({
       schemaName: 'accounting-lead-request',
       schemaVersion: 1,
       intent: 'transaction_capture',
@@ -205,7 +207,7 @@ export async function normalizeAccountingLeadRequest(
       bookId,
       resolvedKnown.known.occurredOn,
     );
-  const normalized = AccountingLeadRequestSchemaV1.parse({
+  const normalized = AccountingDelegateRequestSchemaV1.parse({
     schemaName: 'accounting-lead-request',
     schemaVersion: 1,
     intent: 'transaction_capture',
@@ -316,7 +318,7 @@ export function deterministicLeadPlanForRequest(
     });
   }
   if (team.team === 'accounting') {
-    const parsed = AccountingLeadRequestSchemaV1.safeParse(request);
+    const parsed = AccountingDelegateRequestSchemaV1.safeParse(request);
     if (!parsed.success) return undefined;
     const plan = deterministicAccountingPlans[parsed.data.intent];
     return TeamLeadPlanSchemaV1.parse({
@@ -361,11 +363,6 @@ const deterministicAccountingPlans = {
   },
 } as const;
 
-const JournalWorkRequestDraftSchema = z.object({
-  operation: z.enum(['post', 'transfer', 'split', 'adjustment', 'reverse_replace', 'fx_realized']),
-  instruction: z.string().min(1).max(4_000),
-}).strict();
-
 const PaymentAccountIdSchemaV1 =
   TransactionCaptureRequestSchemaV1.shape.known.shape.paymentAccountId.unwrap();
 const TransactionCaptureCurrencySchemaV1 =
@@ -394,9 +391,9 @@ async function resolveHouseholdBookId(pools: DatabasePools, householdId: string)
   });
 }
 
-function instructionText(message: InboundChannelMessageV1, request: AccountingLeadRequestV1): string {
+function instructionText(message: InboundChannelMessageV1, request: AccountingDelegateRequestV1): string {
   const nested = request.request;
-  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested) && 'instruction' in nested) {
     const instruction = nested.instruction;
     if (typeof instruction === 'string' && instruction.length > 0) return instruction;
   }
