@@ -1,24 +1,20 @@
 import { z } from 'zod';
 import { ArtifactIdSchema, HouseholdIdSchema, TaskIdSchema } from './ids.js';
 import { CurrencyCodeSchema, DecimalStringSchema } from './money.js';
+import { opaqueIdentifierSchema } from './opaque-identifiers.js';
 import { LocalDateSchema } from './time.js';
 
-function opaqueId(prefix: string) {
-  return z.string().regex(new RegExp('^' + prefix + '_[0-9A-HJKMNP-TV-Z]{26}$'));
-}
-
-export const BookIdSchema = opaqueId('book').brand<'BookId'>();
-export const BookConfigurationIdSchema = opaqueId('bookconfig').brand<'BookConfigurationId'>();
-export const AccountIdSchema = opaqueId('account').brand<'AccountId'>();
-export const AccountSourceMappingIdSchema = opaqueId('accountmap')
-  .brand<'AccountSourceMappingId'>();
-export const PeriodIdSchema = opaqueId('period').brand<'PeriodId'>();
-export const DraftSeriesIdSchema = opaqueId('draftseries').brand<'DraftSeriesId'>();
-export const JournalDraftIdSchema = opaqueId('draft').brand<'JournalDraftId'>();
-export const JournalIdSchema = opaqueId('journal').brand<'JournalId'>();
-export const PostingIdSchema = opaqueId('posting').brand<'PostingId'>();
-export const CounterpartyIdSchema = opaqueId('counterparty').brand<'CounterpartyId'>();
-export const TagIdSchema = opaqueId('tag').brand<'TagId'>();
+export const BookIdSchema = opaqueIdentifierSchema<'BookId'>('book');
+export const BookConfigurationIdSchema = opaqueIdentifierSchema<'BookConfigurationId'>('bookConfiguration');
+export const AccountIdSchema = opaqueIdentifierSchema<'AccountId'>('account');
+export const AccountSourceMappingIdSchema = opaqueIdentifierSchema<'AccountSourceMappingId'>('accountSourceMapping');
+export const PeriodIdSchema = opaqueIdentifierSchema<'PeriodId'>('period');
+export const DraftSeriesIdSchema = opaqueIdentifierSchema<'DraftSeriesId'>('draftSeries');
+export const JournalDraftIdSchema = opaqueIdentifierSchema<'JournalDraftId'>('journalDraft');
+export const JournalIdSchema = opaqueIdentifierSchema<'JournalId'>('journal');
+export const PostingIdSchema = opaqueIdentifierSchema<'PostingId'>('posting');
+export const CounterpartyIdSchema = opaqueIdentifierSchema<'CounterpartyId'>('counterparty');
+export const TagIdSchema = opaqueIdentifierSchema<'TagId'>('tag');
 
 export type BookId = z.infer<typeof BookIdSchema>;
 export type BookConfigurationId = z.infer<typeof BookConfigurationIdSchema>;

@@ -56,7 +56,7 @@ export const DelegateTeamRetrySignalSchema = z.object({
 
 export type DelegateTeamRetrySignal = z.infer<typeof DelegateTeamRetrySignalSchema>;
 
-const WITHHELD_DETAIL = 'Some checked details were withheld for privacy.';
+export const WITHHELD_DETAIL = 'Some checked details were withheld for privacy.';
 
 export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV1): FinalSynthesisTeamResultView {
   const acceptedArtifacts = new Map<string, TeamResultEnvelopeV1['makerArtifacts'][number]>();
@@ -170,7 +170,7 @@ export function createDelegateTeamTool(input: {
   });
 }
 
-function userFacingTexts(values: readonly string[]): string[] {
+export function userFacingTexts(values: readonly string[]): string[] {
   const safeValues = values.flatMap((value) => {
     const safeValue = userFacingText(value);
     return safeValue === undefined ? [] : [safeValue];
@@ -179,7 +179,7 @@ function userFacingTexts(values: readonly string[]): string[] {
   return omittedUnsafeText ? [...safeValues, WITHHELD_DETAIL] : safeValues;
 }
 
-function userFacingText(value: string): string | undefined {
+export function userFacingText(value: string): string | undefined {
   const text = value.trim();
   if (text.length === 0 || internalIdentifierMatchCategory(text) !== undefined) return undefined;
   return text;

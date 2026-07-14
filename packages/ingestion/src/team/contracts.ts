@@ -4,6 +4,7 @@ import {
 } from '@plus-one/contracts';
 import {
   ConfirmImportBatchProposalSchemaV1, ImportBatchIdSchema,
+  NormalizedRowIdSchema,
   ReconciliationProposalSchemaV1, StatementSnapshotIdSchema,
   PeriodCloseProposalSchemaV1, PeriodReopenProposalSchemaV1,
 } from '../contracts.js';
@@ -20,7 +21,7 @@ export type IngestionWorkRequestV1 = z.infer<typeof IngestionWorkRequestSchemaV1
 export const IngestionClarificationSchemaV1 = z.object({
   schemaName: z.literal('ingestion-clarification'),
   schemaVersion: z.literal(1),
-  unresolvedNormalizedRowIds: z.array(z.string().min(1)).min(1),
+  unresolvedNormalizedRowIds: z.array(NormalizedRowIdSchema).min(1),
   questions: z.array(z.string().min(1).max(2_000)).min(1),
   reason: z.string().min(1).max(2_000),
 }).strict();

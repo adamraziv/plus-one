@@ -30,7 +30,11 @@ import {
   internalIdentifierMatchCategory,
   type InternalIdentifierMatchCategory,
 } from '../safety/internal-identifier.js';
-import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
+import {
+  createDelegateTeamTool,
+  userFacingTexts,
+  type OrchestratorTeamRuntime,
+} from '../tools/delegate-team.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -62,7 +66,7 @@ const orchestratorInstructions = [
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
-const MAX_ORCHESTRATOR_STEPS = 2;
+const MAX_ORCHESTRATOR_STEPS = 3;
 const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
 
 export type OrchestratorTurnResult =
@@ -473,10 +477,10 @@ function statusRank(status: TeamResultEnvelopeV1['status']): number {
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
   const heading = `${labelForTeam(teamResult.team)} status: ${teamResult.status}`;
   const claims = teamResult.claims.map((claim) => claim.text);
-  const details = [...claims, teamResult.completionReason, ...teamResult.outstanding]
-    .filter((value) => value.length > 0);
+  const details = userFacingTexts([...claims, teamResult.completionReason, ...teamResult.outstanding]);
+  if (details.length === 0) return heading;
   if (teamResult.status === 'verified') return details.join('\n\n');
-  return details.length === 0 ? heading : `${heading}\n\n${details.join('\n\n')}`;
+  return `${heading}\n\n${details.join('\n\n')}`;
 }
 
 class InternalIdentifierResponseError extends Error {

@@ -2,10 +2,12 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { Agent } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
 import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
+  OpaqueIdentifierDefinitions,
   QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV1,
   type TeamResultEnvelopeV1,
@@ -13,12 +15,14 @@ import {
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
+import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
 import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+const draftId = 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactHash = 'a'.repeat(64);
 const now = '2026-06-23T10:00:00.000Z';
 
@@ -129,6 +133,12 @@ function finalSynthesisProjectionResult() {
         evidenceArtifactIds: [],
         checkedMakerArtifactIds: [artifactId],
       },
+      {
+        claimId: 'unsafe-draft-claim',
+        text: `Use ${draftId} to continue.`,
+        evidenceArtifactIds: [],
+        checkedMakerArtifactIds: [artifactId],
+      },
     ],
     assumptions: [
       'Amounts are shown in USD.',
@@ -141,6 +151,7 @@ function finalSynthesisProjectionResult() {
     outstanding: [
       'You can review the checked result.',
       'Ask for account_private_001 if clarification is needed.',
+      `The checked artifact is ${artifactId}.`,
     ],
     makerArtifacts: [{
       ...teamResult().makerArtifacts[0]!,
@@ -302,6 +313,19 @@ function singleLoopOrchestrator(input: {
 }
 
 describe('OrchestratorAgent', () => {
+  it.each(Object.values(OpaqueIdentifierDefinitions))(
+    'recognizes every contract-owned opaque identifier family in user-facing safety checks',
+    (definition) => {
+      expect(internalIdentifierMatchCategory(
+        `Internal token: ${definition.prefix}_01JNZQ4A9B8C7D6E5F4G3H2J1K`,
+      )).toBe('identifier_token');
+    },
+  );
+
+  it('recognizes malformed tokens with a contract-owned opaque identifier prefix', () => {
+    expect(internalIdentifierMatchCategory('Internal token: draft_private_001')).toBe('identifier_token');
+  });
+
   it('logs turn lifecycle metadata while preserving inherited request context', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
     const logging = configureLogging({ homeDirectory });
@@ -525,6 +549,7 @@ describe('OrchestratorAgent', () => {
     expect(serializedView.includes(taskId)).toBe(false);
     expect(serializedView.includes(artifactId)).toBe(false);
     expect(serializedView.includes(artifactHash)).toBe(false);
+    expect(serializedView.includes(draftId)).toBe(false);
     expect(serializedView.includes('account_private_001')).toBe(false);
     expect(serializedView.includes('account_id')).toBe(false);
     expect(serializedView.includes('household_id')).toBe(false);
@@ -585,6 +610,71 @@ describe('OrchestratorAgent', () => {
     expect(serializedModelOutput).not.toContain('validationErrors');
     expect(serializedModelOutput).not.toContain('Tool input validation failed');
     expect(serializedModelOutput).not.toContain('Provided arguments');
+  });
+
+  it('uses a real Mastra step sequence to retry invalid delegation before final synthesis', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const modelCalls: unknown[] = [];
+    const modelSteps = [
+      {
+        finishReason: 'tool-calls' as const,
+        content: [{
+          type: 'tool-call' as const,
+          toolCallId: 'invalid-delegation',
+          toolName: 'delegateTeam',
+          input: JSON.stringify({ team: 'query', request: draftId }),
+        }],
+      },
+      {
+        finishReason: 'tool-calls' as const,
+        content: [{
+          type: 'tool-call' as const,
+          toolCallId: 'valid-delegation',
+          toolName: 'delegateTeam',
+          input: JSON.stringify({
+            team: 'query',
+            request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+          }),
+        }],
+      },
+      {
+        finishReason: 'stop' as const,
+        content: [{ type: 'text' as const, text: 'Final synthesis after corrected delegation.' }],
+      },
+    ];
+    const scriptedModel = {
+      specificationVersion: 'v2' as const,
+      provider: 'test',
+      modelId: 'orchestrator-step-sequence',
+      supportedUrls: {},
+      doGenerate: vi.fn(async (options: unknown) => {
+        modelCalls.push(options);
+        const next = modelSteps.shift();
+        if (next === undefined) throw new Error('Model received more steps than the test script permits.');
+        return {
+          ...next,
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error('The orchestrator test uses non-streaming generation.');
+      },
+    };
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => new Agent({ ...config, model: scriptedModel as never }),
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toBe('Final synthesis after corrected delegation.');
+    expect(response.body).not.toContain('The checked evidence includes one account row.');
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(scriptedModel.doGenerate).toHaveBeenCalledTimes(3);
+    expect(modelCalls).toHaveLength(3);
   });
 
   it('passes only the user body into a non-memory model prompt', async () => {
@@ -680,7 +770,7 @@ describe('OrchestratorAgent', () => {
     expect(response.body).toBe('No current-balance rows were returned.');
   });
 
-  it('answers a direct message as text with one two-step-bounded orchestrator generation', async () => {
+  it('allows three semantic model steps for one retry, one delegation, and final synthesis', async () => {
     const generate = vi.fn(async () => ({
       text: 'Plus One can help with household finance questions.',
     }));
@@ -715,7 +805,12 @@ describe('OrchestratorAgent', () => {
       steps: Array<{ finishReason?: string }>;
     }) => boolean;
     expect(stopWhen({ steps: [{ finishReason: 'retry' }, { finishReason: 'tool-calls' }] })).toBe(false);
-    expect(stopWhen({ steps: [{ finishReason: 'tool-calls' }, { finishReason: 'stop' }] })).toBe(true);
+    expect(stopWhen({ steps: [{ finishReason: 'tool-calls' }, { finishReason: 'stop' }] })).toBe(false);
+    expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'stop' },
+    ] })).toBe(true);
   });
 
   it('lets the single orchestrator generation delegate once and return checked reply text', async () => {
@@ -1159,6 +1254,43 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead).toHaveBeenCalledOnce();
   });
 
+  it('withholds opaque identifiers from an unsafe deterministic fallback while retaining checked citations', async () => {
+    const unsafeResult = TeamResultEnvelopeSchemaV1.parse({
+      ...teamResult(),
+      claims: [
+        ...teamResult().claims,
+        {
+          claimId: 'unsafe-draft-claim',
+          text: `Use ${draftId} to continue.`,
+          evidenceArtifactIds: [],
+          checkedMakerArtifactIds: [artifactId],
+        },
+      ],
+      completionReason: `The checked artifact is ${artifactId}.`,
+      outstanding: [`Ask for ${draftId} if clarification is needed.`],
+    });
+    const runTeamLead = vi.fn(async () => unsafeResult);
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      throw new Error('Inference capacity queue is full');
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toContain('The checked evidence includes one account row.');
+    expect(response.body).toContain('Some checked details were withheld for privacy.');
+    expect(response.body).not.toContain(draftId);
+    expect(response.body).not.toContain(artifactId);
+    expect(response.citations).toEqual(expect.arrayContaining([
+      { label: 'query:accounts-listed', artifactId },
+      { label: 'query:unsafe-draft-claim', artifactId },
+    ]));
+  });
+
   it('renders a checked result when post-delegation API retries exhaust as a Mastra result', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
@@ -1255,6 +1387,14 @@ describe('OrchestratorAgent', () => {
     const runTeamLead = vi.fn();
     const generate = vi.fn(async () => ({ text: 'Please send your Household ID and Book ID.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('Can you help?') }))
+      .rejects.toThrow('internal identifier request');
+  });
+
+  it('rejects final model text that contains a contract opaque identifier', async () => {
+    const generate = vi.fn(async () => ({ text: `Please use ${draftId} to continue.` }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('Can you help?') }))
       .rejects.toThrow('internal identifier request');

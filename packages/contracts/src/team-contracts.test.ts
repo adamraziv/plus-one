@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MakerArtifactSchemaV1,
   MakerInvocationSchemaV1,
+  TeamClaimSchemaV1,
   TeamLeadInvocationSchemaV1,
   TeamLeadPlanSchemaV1,
   TeamResultEnvelopeSchemaV1,
@@ -94,6 +95,23 @@ describe('team execution contracts', () => {
     expect(TeamResultEnvelopeSchemaV1.safeParse({
       ...result,
       claims: [{ ...result.claims[0]!, checkedMakerArtifactIds: ['artifact_01AAAAAAAAAAAAAAAAAAAAAAAAAA'] }],
+    }).success).toBe(false);
+  });
+
+  it('requires opaque artifact identities for all claim references', () => {
+    const claim = {
+      claimId: 'claim-1',
+      text: 'The answer is checked.',
+      evidenceArtifactIds: ['artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K'],
+      checkedMakerArtifactIds: ['artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K'],
+    };
+    expect(TeamClaimSchemaV1.safeParse({
+      ...claim,
+      evidenceArtifactIds: ['artifact_private_001'],
+    }).success).toBe(false);
+    expect(TeamClaimSchemaV1.safeParse({
+      ...claim,
+      checkedMakerArtifactIds: ['artifact_private_001'],
     }).success).toBe(false);
   });
 });
