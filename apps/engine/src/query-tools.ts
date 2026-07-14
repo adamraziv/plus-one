@@ -154,8 +154,14 @@ export function createDefaultQueryTools(pools: DatabasePools): RoleAgentTools {
     validator,
   });
   for (const definition of queryToolDefinitions) {
-    const { userFacingFields: _userFacingFields, ...registeredDefinition } = definition;
-    registry.register(registeredDefinition);
+    registry.register({
+      toolName: definition.toolName,
+      relationNames: definition.relationNames,
+      sql: definition.sql,
+      parameters: definition.parameters,
+      limit: definition.limit,
+      description: definition.description,
+    });
   }
 
   return createQueryTools({

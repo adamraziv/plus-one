@@ -468,7 +468,12 @@ function makerInputFor(workCellId: string, options: { missingPaymentAccount?: bo
       action: 'create_account',
       accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
       instruction: 'Create a groceries expense account.',
-      known: {},
+      known: {
+        name: 'Groceries',
+        accountingClass: 'expense',
+        normalBalance: 'debit',
+        nativeCurrency: 'USD',
+      },
     };
   }
   if (workCellId === 'journal') {

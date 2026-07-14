@@ -6,12 +6,10 @@ import {
 } from '@plus-one/contracts';
 import { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
 import {
-  TransactionCaptureRequestDraftSchemaV1,
   type TransactionCaptureRequestDraftV1,
 } from '../accounting/accounting-request-drafts.js';
 
 const jsonObjectSchema = z.record(z.string(), JsonValueSchema);
-const nonEmptyText = z.string().min(1).max(4_000);
 const TeamIdSchema = z.enum([
   'query',
   'accounting',
