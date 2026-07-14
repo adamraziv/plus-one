@@ -6,12 +6,20 @@ import {
   EvidenceRequestSchemaV1,
   HouseholdIdSchema,
   InboundChannelMessageSchemaV1,
+  MakerArtifactSchemaV1,
+  MakerInvocationSchemaV1,
   TaskIdSchema,
   UtcInstantSchema,
 } from '@plus-one/contracts';
 import { queryTeamDefinition } from '@plus-one/query';
-import { ChartWorkRequestSchemaV1, accountingTeamDefinition } from '@plus-one/accounting';
+import {
+  ChartWorkRequestSchemaV1,
+  ChartWorkResultSchemaV1,
+  accountingSkills,
+  accountingTeamDefinition,
+} from '@plus-one/accounting';
 import { ArtifactStore, createArtifactEnvelope } from '@plus-one/runtime';
+import { createChartMakerAgent } from '../src/agents/accounting/index.js';
 import {
   deterministicLeadPlanForRequest,
   makerInputForLeadWorkItem,
@@ -22,6 +30,8 @@ import {
   accountingRequestMaterializers,
   materializeAccountingLeadRequest,
 } from '../src/accounting/accounting-request-materializers.js';
+import { parseDelegateTeamToolInput } from '../src/tools/delegate-team-schemas.js';
+import { captureContractSubmission } from '../../../test/helpers/contract-agent-test-double.js';
 
 const message = InboundChannelMessageSchemaV1.parse({
   schemaName: 'inbound-channel-message',
@@ -521,6 +531,69 @@ describe('accounting request materializers', () => {
 });
 
 describe('normalizeAccountingLeadRequest', () => {
+  it('parses and materializes an add-bank-account delegate into a chart work result path', async () => {
+    const query = vi.fn(async () => ({
+      rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }],
+    }));
+    const delegate = {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'chart_of_accounts',
+      request: {
+        schemaName: 'chart-work-request-draft',
+        schemaVersion: 1,
+        action: 'create_account',
+        instruction: 'Add a bank account.',
+        known: {},
+      },
+    };
+    expect(parseDelegateTeamToolInput({ team: 'accounting', request: delegate }).request).toMatchObject(delegate);
+    const normalized = await normalizeAccountingLeadRequest({ accounting: { query } } as never, message, delegate);
+    const request = ChartWorkRequestSchemaV1.parse((normalized as { request: unknown }).request);
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const maker = createChartMakerAgent({
+      models: {
+        lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+        maker: { id: 'provider/maker', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+        checker: { id: 'provider/checker', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      },
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as never),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'chart-of-accounts')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: message.householdId,
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'chart-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'chart-work-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+      input: request,
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-chart-change', description: 'Return one checked chart result.' },
+    });
+    const submission = captureContractSubmission();
+
+    await maker.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
+
+    expect(request.accountId).toMatch(/^account_[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(modelGenerate).not.toHaveBeenCalled();
+    const artifact = MakerArtifactSchemaV1.parse(submission.submitted());
+    expect(ChartWorkResultSchemaV1.parse(artifact.output)).toMatchObject({
+      schemaName: 'chart-clarification',
+      missingFields: ['name', 'accounting_class', 'native_currency'],
+    });
+  });
+
   it('materializes a chart create draft with runtime scope and a preallocated account identity', async () => {
     const query = vi.fn(async () => ({
       rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }],

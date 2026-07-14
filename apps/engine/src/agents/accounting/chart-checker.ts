@@ -3,7 +3,11 @@ import {
   MakerArtifactSchemaV1,
   VerificationTaskSchemaV1,
 } from '@plus-one/contracts';
-import { ChartClarificationSchemaV1, ChartWorkRequestSchemaV1 } from '@plus-one/accounting';
+import {
+  ChartClarificationSchemaV1,
+  ChartOfAccountsProposalSchemaV1,
+  ChartWorkRequestSchemaV1,
+} from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
 import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
@@ -36,7 +40,9 @@ export function createChartCheckerAgent(input: AccountingRoleAgentInput): Accoun
     (messages: unknown, options: unknown) => Promise<unknown>;
   fallback.generate = (async (messages: unknown, options: unknown) => {
     const task = parseVerificationTask(messages as readonly { role: string; content: string }[]);
-    const verdict = task === undefined ? undefined : verdictForClarification(task);
+    const verdict = task === undefined
+      ? undefined
+      : verdictForClarification(task) ?? verdictForIdentityMismatch(task);
     if (verdict === undefined) return fallbackGenerate(messages, options);
     return submitContractResult(options, verdict);
   }) as typeof fallback.generate;
@@ -72,6 +78,44 @@ function verdictForClarification(task: NonNullable<ReturnType<typeof parseVerifi
       message: `Clarification asks for ${field}, but the request already provided it.`,
     })),
   });
+}
+
+function verdictForIdentityMismatch(task: NonNullable<ReturnType<typeof parseVerificationTask>>) {
+  const maker = MakerArtifactSchemaV1.parse(task.makerArtifact.payload);
+  const proposal = ChartOfAccountsProposalSchemaV1.safeParse(maker.output);
+  const request = ChartWorkRequestSchemaV1.safeParse(task.makerInput);
+  if (!proposal.success || !request.success || chartIdentityMatches(request.data, proposal.data)) {
+    return undefined;
+  }
+  return CheckerVerdictSchemaV1.parse({
+    verdict: 'revision_requested',
+    coveredArtifactId: task.makerArtifact.artifactId,
+    coveredArtifactHash: task.makerArtifact.artifactHash,
+    findings: [{
+      code: 'chart_identity_mismatch',
+      message: 'The chart proposal changed a runtime-owned identity or scope field.',
+    }],
+  });
+}
+
+function chartIdentityMatches(
+  request: ReturnType<typeof ChartWorkRequestSchemaV1.parse>,
+  proposal: ReturnType<typeof ChartOfAccountsProposalSchemaV1.parse>,
+): boolean {
+  if (proposal.action !== request.action
+    || proposal.householdId !== request.householdId
+    || proposal.bookId !== request.bookId
+    || proposal.accountId !== request.accountId) {
+    return false;
+  }
+  if ('mappingId' in request) {
+    if (!('mappingId' in proposal) || proposal.mappingId !== request.mappingId) return false;
+  }
+  if ('archivedMappingId' in request) {
+    if (!('archivedMappingId' in proposal)
+      || proposal.archivedMappingId !== request.archivedMappingId) return false;
+  }
+  return true;
 }
 
 function isMissing(
