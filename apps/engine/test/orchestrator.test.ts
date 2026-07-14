@@ -117,7 +117,7 @@ function teamResult(team: 'accounting' | 'query' = 'query') {
   });
 }
 
-function finalSynthesisProjectionResult() {
+function finalSynthesisProjectionResult(relationName = 'reporting.categorized_transactions') {
   return TeamResultEnvelopeSchemaV1.parse({
     ...teamResult(),
     claims: [
@@ -162,18 +162,38 @@ function finalSynthesisProjectionResult() {
         output: QueryResultSchemaV1.parse({
           schemaName: 'query-result',
           schemaVersion: 1,
-          relationName: 'reporting.accounts',
-          grain: ['household', 'account'],
+          relationName,
+          grain: ['household', 'posting'],
           rows: [{
             account_id: 'account_private_001',
             household_id: householdId,
-            name: 'Checking',
-            note: 'Use account_private_001 to continue.',
+            effective_on: '2026-06-23',
+            account_name: 'Checking',
+            accounting_class: 'asset',
+            account_native_amount: '420.00',
+            account_native_currency: 'USD',
+            description: 'Use account_private_001 to continue.',
+            account_private_001: 'internal account-key payload',
+            account_secret: 'internal alphabetic account-key payload',
             draft_private_001: 'internal checker payload',
+            draft_secret: 'internal alphabetic draft-key payload',
           }],
-          fieldDefinitions: ['account_id', 'household_id', 'name', 'note', 'draft_private_001'],
+          fieldDefinitions: [
+            'account_id',
+            'household_id',
+            'effective_on',
+            'account_name',
+            'accounting_class',
+            'account_native_amount',
+            'account_native_currency',
+            'description',
+            'account_private_001',
+            'account_secret',
+            'draft_private_001',
+            'draft_secret',
+          ],
           sourceReferences: [
-            'relation=reporting.accounts',
+            `relation=${relationName}`,
             `filter=household_id:eq:${householdId}`,
           ],
           freshness: 'latest available reporting projection',
@@ -490,7 +510,7 @@ describe('OrchestratorAgent', () => {
     const generate = vi.fn(async () => {
       delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
-        request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+        request: queryDraft('Show our recent transactions.', { coverage: ['categorized transactions'] }),
       });
       const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput;
       if (toModelOutput !== undefined) modelOutput = toModelOutput(delegated);
@@ -502,7 +522,7 @@ describe('OrchestratorAgent', () => {
       teams: [queryTeam],
     });
 
-    const response = await orchestrator.run({ message: message('List our accounts.') });
+    const response = await orchestrator.run({ message: message('Show our recent transactions.') });
 
     expect(delegated).toMatchObject({
       householdId,
@@ -539,8 +559,12 @@ describe('OrchestratorAgent', () => {
         checkedData: [{
           checkedClaim: 'Checking is configured for this household.',
           rows: [{
-            name: 'Checking',
-            note: 'Some checked details were withheld for privacy.',
+            effective_on: '2026-06-23',
+            account_name: 'Checking',
+            accounting_class: 'asset',
+            account_native_amount: '420.00',
+            account_native_currency: 'USD',
+            description: 'Some checked details were withheld for privacy.',
           }],
         }],
       },
@@ -554,13 +578,37 @@ describe('OrchestratorAgent', () => {
     expect(serializedView.includes('draft_private_001')).toBe(false);
     expect(serializedView.includes('internal checker payload')).toBe(false);
     expect(serializedView.includes('account_private_001')).toBe(false);
+    expect(serializedView.includes('internal account-key payload')).toBe(false);
+    expect(serializedView.includes('account_secret')).toBe(false);
+    expect(serializedView.includes('internal alphabetic account-key payload')).toBe(false);
+    expect(serializedView.includes('draft_secret')).toBe(false);
+    expect(serializedView.includes('internal alphabetic draft-key payload')).toBe(false);
     expect(serializedView.includes('account_id')).toBe(false);
     expect(serializedView.includes('household_id')).toBe(false);
-    expect(serializedView.includes('reporting.accounts')).toBe(false);
+    expect(serializedView.includes('reporting.categorized_transactions')).toBe(false);
     expect(serializedView.includes('single-maker-checker')).toBe(false);
     expect(serializedView.includes('query-evidence')).toBe(false);
     expect(serializedView.includes('query-answer')).toBe(false);
     expect(serializedView.includes('Ready for orchestrator reconciliation.')).toBe(false);
+  });
+
+  it('does not grant categorized transaction field capability to another reporting relation', () => {
+    const orchestrator = singleLoopOrchestrator({
+      generate: vi.fn(async () => ({ text: 'Unused.' })),
+      runTeamLead: vi.fn(),
+      teams: [queryTeam],
+    });
+    const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput;
+    if (toModelOutput === undefined) throw new Error('Expected delegateTeam to provide model output.');
+
+    const modelOutput = toModelOutput(finalSynthesisProjectionResult('reporting.accounts'));
+    const serializedView = JSON.stringify(modelOutput);
+
+    expect(serializedView.includes('account_name')).toBe(false);
+    expect(serializedView.includes('account_native_amount')).toBe(false);
+    expect(serializedView.includes('account_native_currency')).toBe(false);
+    expect(serializedView.includes('draft_secret')).toBe(false);
+    expect(serializedView.includes('account_secret')).toBe(false);
   });
 
   it('maps a Mastra input-validation wrapper to a safe retry signal without consuming delegation', async () => {

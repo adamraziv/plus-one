@@ -10,6 +10,7 @@ import {
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
+import { isUserFacingQueryField } from '../query-tools.js';
 import { internalIdentifierMatchCategory } from '../safety/internal-identifier.js';
 import {
   DelegateTeamToolInputSchema,
@@ -78,7 +79,7 @@ export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV1): Fina
       const queryResult = QueryResultSchemaV1.safeParse(makerArtifact.data.output);
       if (!queryResult.success) return [];
       const rows = queryResult.data.rows
-        .map(userFacingQueryRow)
+        .map((row) => userFacingQueryRow(queryResult.data.relationName, row))
         .filter((row): row is Record<string, z.infer<typeof UserFacingQueryValueSchema>> => row !== undefined);
       return rows.length === 0 ? [] : [{ checkedClaim, rows }];
     });
@@ -185,9 +186,15 @@ export function userFacingText(value: string): string | undefined {
   return text;
 }
 
-function userFacingQueryRow(row: Record<string, unknown>): Record<string, z.infer<typeof UserFacingQueryValueSchema>> | undefined {
+function userFacingQueryRow(
+  relationName: string,
+  row: Record<string, unknown>,
+): Record<string, z.infer<typeof UserFacingQueryValueSchema>> | undefined {
   const entries = Object.entries(row).flatMap(([key, value]) => {
-    if (isInternalQueryField(key) || internalIdentifierMatchCategory(key) !== undefined) return [];
+    const userFacingField = isUserFacingQueryField(relationName, key);
+    if (!userFacingField && (isInternalQueryField(key) || internalIdentifierMatchCategory(key) !== undefined)) {
+      return [];
+    }
     const safeValue = userFacingQueryValue(value);
     return safeValue === undefined ? [] : [[key, safeValue] as const];
   });

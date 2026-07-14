@@ -15,7 +15,11 @@ const maxRows = 500;
 const maxOutputBytes = 128_000;
 const statementTimeoutMs = 5_000;
 
-const queryToolDefinitions: readonly QueryToolDefinition[] = [
+type QueryToolDefinitionWithUserFacingFields = QueryToolDefinition & {
+  userFacingFields: readonly string[];
+};
+
+const queryToolDefinitions: readonly QueryToolDefinitionWithUserFacingFields[] = [
   {
     toolName: 'account_list',
     relationNames: ['reporting.accounts'],
@@ -23,6 +27,7 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'List household accounts.',
+    userFacingFields: ['name'],
   },
   {
     toolName: 'current_balances',
@@ -31,6 +36,14 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read current account balances.',
+    userFacingFields: [
+      'as_of',
+      'native_amount',
+      'native_currency',
+      'reporting_amount',
+      'reporting_currency',
+      'freshness_at',
+    ],
   },
   {
     toolName: 'categorized_transactions',
@@ -39,6 +52,15 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read categorized transactions.',
+    userFacingFields: [
+      'effective_on',
+      'account_name',
+      'accounting_class',
+      'direction',
+      'account_native_amount',
+      'account_native_currency',
+      'description',
+    ],
   },
   {
     toolName: 'category_spend_monthly',
@@ -47,6 +69,7 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read monthly expense totals by category.',
+    userFacingFields: ['month_start', 'category_name', 'native_amount', 'native_currency'],
   },
   {
     toolName: 'budget_variance',
@@ -55,6 +78,15 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read budget variance.',
+    userFacingFields: [
+      'scope_key',
+      'category_key',
+      'period_start',
+      'period_end',
+      'planned_amount',
+      'planned_currency',
+      'actual_amount',
+    ],
   },
   {
     toolName: 'savings_goal_progress',
@@ -63,6 +95,7 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read savings goal progress.',
+    userFacingFields: ['goal_key', 'current_amount', 'target_amount', 'target_date'],
   },
   {
     toolName: 'debt_progress',
@@ -71,6 +104,15 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read debt progress.',
+    userFacingFields: [
+      'debt_plan_key',
+      'name',
+      'lender_name',
+      'monthly_payment_amount',
+      'monthly_payment_currency',
+      'current_liability_amount',
+      'native_currency',
+    ],
   },
   {
     toolName: 'reconciliation_status',
@@ -79,6 +121,14 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read reconciliation status.',
+    userFacingFields: [
+      'period_start',
+      'period_end',
+      'opening_balance',
+      'closing_balance',
+      'currency',
+      'freshness_at',
+    ],
   },
   {
     toolName: 'source_freshness',
@@ -87,8 +137,14 @@ const queryToolDefinitions: readonly QueryToolDefinition[] = [
     parameters: ['$1'],
     limit: 100,
     description: 'Read source freshness.',
+    userFacingFields: ['source_system', 'latest_source_at', 'source_document_count'],
   },
 ] as const;
+
+export function isUserFacingQueryField(relationName: string, fieldName: string): boolean {
+  return queryToolDefinitions.some((definition) =>
+    definition.relationNames.includes(relationName) && definition.userFacingFields.includes(fieldName));
+}
 
 export function createDefaultQueryTools(pools: DatabasePools): RoleAgentTools {
   const validator = new ReadOnlySqlValidator();
@@ -97,7 +153,10 @@ export function createDefaultQueryTools(pools: DatabasePools): RoleAgentTools {
     maxRows,
     validator,
   });
-  for (const definition of queryToolDefinitions) registry.register(definition);
+  for (const definition of queryToolDefinitions) {
+    const { userFacingFields: _userFacingFields, ...registeredDefinition } = definition;
+    registry.register(registeredDefinition);
+  }
 
   return createQueryTools({
     registry,
