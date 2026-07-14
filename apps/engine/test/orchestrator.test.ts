@@ -263,6 +263,7 @@ describe('OrchestratorAgent', () => {
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => {
+        if (typeof config.instructions !== 'string') throw new Error('Expected orchestrator instructions to be a string.');
         orchestratorInstructions = config.instructions;
         return { ...config, generate: vi.fn() } as never;
       },
