@@ -9,9 +9,8 @@ import {
   type JsonValue,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
-import type { TeamDefinition } from '@plus-one/runtime';
+import { internalImplementationDetailMatchCategory, type TeamDefinition } from '@plus-one/runtime';
 import { isUserFacingQueryField } from '../query-tools.js';
-import { internalImplementationDetailMatchCategory } from '../safety/internal-implementation-detail.js';
 import { internalIdentifierMatchCategory } from '../safety/internal-identifier.js';
 import {
   DelegateTeamToolInputSchema,

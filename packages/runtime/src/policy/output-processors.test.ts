@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { OrchestratorFinalResponseSchemaV1 } from '@plus-one/contracts';
-import { channelFormatProcessor, mandatoryPolicyProcessor, runOutputProcessors } from './output-processors.js';
+import {
+  channelFormatProcessor,
+  internalImplementationDetailProcessor,
+  mandatoryPolicyProcessor,
+  runOutputProcessors,
+} from './output-processors.js';
 
 const baseResponse = OrchestratorFinalResponseSchemaV1.parse({
   schemaName: 'orchestrator-final-response',
@@ -35,6 +40,20 @@ describe('output processors', () => {
       status: 'blocked',
       issues: ['informational_recommendation_action'],
     });
+  });
+
+  it.each([
+    ['Query result from reporting.accounts returned 2 rows.', 'internal_relation_name'],
+    ['Checker accepted the QueryResultV1.', 'internal_schema_type'],
+    ['What is its native_currency?', 'internal_structured_key'],
+    ['Accounting team status: insufficient_evidence', 'internal_structured_key'],
+  ])('blocks internal implementation detail before delivery: %s', (body, issue) => {
+    expect(internalImplementationDetailProcessor.process({ ...baseResponse, body })).toMatchObject({
+      status: 'blocked',
+      issues: [issue],
+      retryable: false,
+    });
+    expect(runOutputProcessors({ ...baseResponse, body })).toMatchObject({ status: 'blocked' });
   });
 
   it('blocks financial responses with an incomplete disclaimer', () => {

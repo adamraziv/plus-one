@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { internalImplementationDetailMatchCategory } from '../src/safety/internal-implementation-detail.js';
+import { internalImplementationDetailMatchCategory } from '@plus-one/runtime';
 
 describe('internal implementation detail safety', () => {
   it.each([

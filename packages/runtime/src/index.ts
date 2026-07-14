@@ -21,6 +21,7 @@ export * from './ledger/ports.js';
 export * from './logging/index.js';
 export * from './orchestrator/channel-commands.js';
 export * from './orchestrator/orchestrator-ingress.js';
+export * from './policy/internal-implementation-detail.js';
 export * from './policy/output-processors.js';
 export * from './runtime-policy.js';
 export * from './scheduler/application-scheduler.js';

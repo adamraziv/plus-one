@@ -16,20 +16,18 @@ import {
 import {
   createTransientModelRetryProcessor,
   getLogger,
+  internalImplementationDetailMatchCategory,
   modelResultEndedOnRetry,
   ModelTemporarilyUnavailableError,
   stopAfterSemanticModelSteps,
   targetFromInboundMessage,
   type ChannelEventSink,
+  type InternalImplementationDetailMatchCategory,
   type TeamDefinition,
   withLogContext,
 } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
-import {
-  internalImplementationDetailMatchCategory,
-  type InternalImplementationDetailMatchCategory,
-} from '../safety/internal-implementation-detail.js';
 import {
   internalIdentifierMatchCategory,
   type InternalIdentifierMatchCategory,
