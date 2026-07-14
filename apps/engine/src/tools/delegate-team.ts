@@ -187,7 +187,7 @@ export function userFacingText(value: string): string | undefined {
 
 function userFacingQueryRow(row: Record<string, unknown>): Record<string, z.infer<typeof UserFacingQueryValueSchema>> | undefined {
   const entries = Object.entries(row).flatMap(([key, value]) => {
-    if (isInternalQueryField(key)) return [];
+    if (isInternalQueryField(key) || internalIdentifierMatchCategory(key) !== undefined) return [];
     const safeValue = userFacingQueryValue(value);
     return safeValue === undefined ? [] : [[key, safeValue] as const];
   });

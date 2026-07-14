@@ -169,8 +169,9 @@ function finalSynthesisProjectionResult() {
             household_id: householdId,
             name: 'Checking',
             note: 'Use account_private_001 to continue.',
+            draft_private_001: 'internal checker payload',
           }],
-          fieldDefinitions: ['account_id', 'household_id', 'name', 'note'],
+          fieldDefinitions: ['account_id', 'household_id', 'name', 'note', 'draft_private_001'],
           sourceReferences: [
             'relation=reporting.accounts',
             `filter=household_id:eq:${householdId}`,
@@ -550,6 +551,8 @@ describe('OrchestratorAgent', () => {
     expect(serializedView.includes(artifactId)).toBe(false);
     expect(serializedView.includes(artifactHash)).toBe(false);
     expect(serializedView.includes(draftId)).toBe(false);
+    expect(serializedView.includes('draft_private_001')).toBe(false);
+    expect(serializedView.includes('internal checker payload')).toBe(false);
     expect(serializedView.includes('account_private_001')).toBe(false);
     expect(serializedView.includes('account_id')).toBe(false);
     expect(serializedView.includes('household_id')).toBe(false);
