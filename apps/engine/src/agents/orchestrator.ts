@@ -27,12 +27,17 @@ import {
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
 import {
+  internalImplementationDetailMatchCategory,
+  type InternalImplementationDetailMatchCategory,
+} from '../safety/internal-implementation-detail.js';
+import {
   internalIdentifierMatchCategory,
   type InternalIdentifierMatchCategory,
 } from '../safety/internal-identifier.js';
 import {
   createDelegateTeamTool,
-  userFacingTexts,
+  finalSynthesisTeamResultView,
+  userFacingText,
   type OrchestratorTeamRuntime,
 } from '../tools/delegate-team.js';
 
@@ -66,7 +71,7 @@ const orchestratorInstructions = [
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
-const MAX_ORCHESTRATOR_STEPS = 3;
+const MAX_ORCHESTRATOR_STEPS = 4;
 const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
 
 export type OrchestratorTurnResult =
@@ -268,15 +273,30 @@ export class OrchestratorAgent {
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
             throw new Error('Delegated team did not return a checked result.');
           }
-          if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-            return turnFromTeamResults(message, invocation.teamResults);
-          }
-          const body = finalStepResponseText(result);
-          if (body === undefined) {
-            if (invocation.teamResults.length !== 0) {
-              return turnFromTeamResults(message, invocation.teamResults);
+          let body = finalStepResponseText(result);
+          if (invocation.teamResults.length !== 0) {
+            const selected = selectTeamResult(invocation.teamResults);
+            const canUseInitialBody = body !== undefined
+              && userFacingSafetyMatchCategory(body) === undefined
+              && (selected?.status === 'verified'
+                || (selected?.status === 'insufficient_evidence' && body.includes('?')));
+            if (!canUseInitialBody) {
+              body = await this.synthesizeTeamResults(message, invocation.teamResults, signal);
             }
+            const safeBody = body !== undefined && userFacingSafetyMatchCategory(body) === undefined
+              ? body
+              : undefined;
+            return turnFromTeamResults(message, invocation.teamResults, safeBody);
+          }
+          if (body === undefined) {
             throw new Error('Orchestrator returned an empty response.');
+          }
+          const unsafeMatchCategory = userFacingSafetyMatchCategory(body);
+          if (unsafeMatchCategory !== undefined) {
+            logger.warn('orchestrator.response.withheld', {
+              fields: { matchCategory: unsafeMatchCategory },
+            });
+            body = 'I could not prepare a safe response. Please try again.';
           }
           return {
             kind: 'final',
@@ -323,6 +343,25 @@ export class OrchestratorAgent {
       },
     };
   }
+
+  private async synthesizeTeamResults(
+    message: InboundChannelMessageV1,
+    teamResults: readonly TeamResultEnvelopeV1[],
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    try {
+      const result = await abortable(this.agent.generate(finalSynthesisPrompt(message, teamResults), {
+        stopWhen: stopAfterSemanticModelSteps(1),
+        toolChoice: 'none',
+        prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
+        abortSignal: signal,
+      }), signal);
+      return finalStepResponseText(result);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return undefined;
+    }
+  }
 }
 
 async function emitChannelEvent(
@@ -359,18 +398,20 @@ function inboundContextPrompt(message: InboundChannelMessageV1): string {
 function responseFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV1[],
+  synthesizedBody?: string,
 ): OrchestratorFinalResponseV1 {
   const teamResult = selectTeamResult(teamResults);
   if (teamResult === undefined) throw new Error('Missing team result for fallback response');
-  const body = responseBody(teamResult);
+  const body = synthesizedBody ?? responseBody(teamResult);
   return responseFromText(message, body, [teamResult]);
 }
 
 function turnFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV1[],
+  synthesizedBody?: string,
 ): OrchestratorTurnResult {
-  const response = responseFromTeamResults(message, teamResults);
+  const response = responseFromTeamResults(message, teamResults, synthesizedBody);
   const teamResult = selectTeamResult(teamResults);
   if (teamResult?.status === 'insufficient_evidence') {
     return { kind: 'ask-user', response };
@@ -475,23 +516,84 @@ function statusRank(status: TeamResultEnvelopeV1['status']): number {
 }
 
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
-  const heading = `${labelForTeam(teamResult.team)} status: ${teamResult.status}`;
-  const claims = teamResult.claims.map((claim) => claim.text);
-  const details = userFacingTexts([...claims, teamResult.completionReason, ...teamResult.outstanding]);
-  if (details.length === 0) return heading;
-  if (teamResult.status === 'verified') return details.join('\n\n');
-  return `${heading}\n\n${details.join('\n\n')}`;
+  if (teamResult.status === 'insufficient_evidence') {
+    const questions = clarificationQuestions(teamResult);
+    return questions.length === 0
+      ? 'I need a little more information before I can continue. What details can you clarify?'
+      : questions.join('\n\n');
+  }
+  if (teamResult.status === 'verified') {
+    return 'I found the requested information, but I could not safely summarize it. Please try again.';
+  }
+  return 'I could not complete that request safely. Please try again.';
 }
 
 class InternalIdentifierResponseError extends Error {
-  constructor(readonly matchCategory: InternalIdentifierMatchCategory) {
-    super('Final response contains an internal identifier request.');
+  constructor(readonly matchCategory: UserFacingSafetyMatchCategory) {
+    super('Final response contains internal-only detail.');
   }
 }
 
 function assertUserSafeResponseBody(body: string): void {
-  const matchCategory = internalIdentifierMatchCategory(body);
+  const matchCategory = userFacingSafetyMatchCategory(body);
   if (matchCategory !== undefined) throw new InternalIdentifierResponseError(matchCategory);
+}
+
+type UserFacingSafetyMatchCategory =
+  | InternalIdentifierMatchCategory
+  | InternalImplementationDetailMatchCategory;
+
+function userFacingSafetyMatchCategory(value: string): UserFacingSafetyMatchCategory | undefined {
+  return internalIdentifierMatchCategory(value) ?? internalImplementationDetailMatchCategory(value);
+}
+
+function clarificationQuestions(teamResult: TeamResultEnvelopeV1): string[] {
+  const acceptedArtifactIds = new Set(teamResult.checkerVerdicts.flatMap((verdict) =>
+    verdict.verdict === 'accepted' ? [verdict.coveredArtifactId] : []));
+  return teamResult.makerArtifacts.flatMap((artifact) => {
+    if (!acceptedArtifactIds.has(artifact.artifactId)) return [];
+    const maker = isRecord(artifact.payload) ? artifact.payload : undefined;
+    const output = maker !== undefined && isRecord(maker.output) ? maker.output : undefined;
+    if (output === undefined || !Array.isArray(output.questions)) return [];
+    return output.questions.flatMap((question) => {
+      if (typeof question !== 'string') return [];
+      const safeQuestion = userFacingText(question);
+      return safeQuestion === undefined ? [] : [safeQuestion];
+    });
+  });
+}
+
+function finalSynthesisPrompt(
+  message: InboundChannelMessageV1,
+  teamResults: readonly TeamResultEnvelopeV1[],
+): string {
+  const results = teamResults.map((result) => {
+    const view = finalSynthesisTeamResultView(result);
+    return {
+      team: view.team,
+      outcome: synthesisOutcome(view.status),
+      facts: view.checkedClaims,
+      assumptions: view.assumptions,
+      uncertainty: view.uncertainty,
+      questions: view.outstanding.filter((value) => value.includes('?')),
+      data: view.checkedData,
+    };
+  });
+  return [
+    'Write the final reply to the user using only the safe checked context below.',
+    'Use concise natural language. Do not mention teams, makers, checkers, schemas, statuses, relation names, field keys, or implementation details.',
+    `User request: ${message.body}`,
+    `Safe checked context: ${JSON.stringify(results)}`,
+    'Return only the user-facing reply text.',
+  ].join('\n');
+}
+
+function synthesisOutcome(status: TeamResultEnvelopeV1['status']): string {
+  if (status === 'verified') return 'checked information is ready';
+  if (status === 'insufficient_evidence') return 'more information is needed from the user';
+  if (status === 'partial') return 'only part of the request could be completed';
+  if (status === 'conflicted') return 'the available information conflicts';
+  return 'the request could not be completed';
 }
 
 function citationsFor(teamResult: TeamResultEnvelopeV1) {
@@ -502,12 +604,6 @@ function citationsFor(teamResult: TeamResultEnvelopeV1) {
     label: `${teamResult.team}:${claim.claimId}`,
     artifactId: claim.checkedMakerArtifactIds[0]!,
   }));
-}
-
-function labelForTeam(team: string): string {
-  if (team === 'accounting') return 'Accounting team';
-  if (team === 'query') return 'Query team';
-  return `${team} team`;
 }
 
 function turnFailureCategory(error: unknown): string {

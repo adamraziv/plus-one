@@ -233,6 +233,7 @@ describe('TeamExecutor', () => {
           schemaVersion: 1,
           reason: 'Need the missing field.',
           questions: ['Which account should be used?'],
+          missingFields: ['payment_account'],
         },
         claims: [{ claimId: 'c1', text: 'Need clarification', evidenceArtifactIds: [] }],
         assumptions: [],
@@ -292,6 +293,7 @@ describe('TeamExecutor', () => {
     expect(result.status).toBe('insufficient_evidence');
     expect(result.completionState).toBe('terminal');
     expect(result.outstanding).toContain('Which account should be used?');
+    expect(result.outstanding).not.toContain('payment_account');
   });
 
   it('retries maker output that references evidence outside permittedEvidence before freezing it', async () => {

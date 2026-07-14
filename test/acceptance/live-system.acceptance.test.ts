@@ -32,7 +32,10 @@ describe('live system smoke acceptance', () => {
         message: message('Add $10 buying a burger', 2),
       });
       expect(accounting.policyBoundary).toBe('personalized_finance');
-      expect(accounting.body).toContain('Accounting team status: insufficient_evidence');
+      expect(accounting.body).toContain('?');
+      expect(accounting.body).not.toMatch(
+        /reporting\.|QueryResultV\d+|(?:maker|checker)|(?:accounting|query) team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+      );
       expect(accounting.citations.map((citation) => citation.label)).toContain('accounting:team-result');
     } finally {
       await close();

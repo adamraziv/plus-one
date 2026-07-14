@@ -283,17 +283,10 @@ function acceptedClarification(output: unknown):
   const questions = Array.isArray((output as { questions?: unknown }).questions)
     ? (output as { questions: unknown[] }).questions.filter((value): value is string => typeof value === 'string')
     : [];
-  const missingFields = Array.isArray((output as { missingFields?: unknown }).missingFields)
-    ? (output as { missingFields: unknown[] }).missingFields.filter((value): value is string => typeof value === 'string')
-    : [];
-  const missingEvidence = Array.isArray((output as { missingEvidence?: unknown }).missingEvidence)
-    ? (output as { missingEvidence: unknown[] }).missingEvidence.filter((value): value is string => typeof value === 'string')
-    : [];
-  const outstanding = [...questions, ...missingFields, ...missingEvidence];
   return {
     status: 'insufficient_evidence',
     reason,
-    outstanding: outstanding.length === 0 ? [reason] : outstanding,
+    outstanding: questions.length === 0 ? [reason] : questions,
   };
 }
 

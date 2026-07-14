@@ -111,6 +111,7 @@ describe('query live routing acceptance', () => {
       expect(parsed.body).toContain('Cash');
       expect(parsed.body).toMatch(/\b(?:1|one)\s+account\b/i);
       expect(parsed.body).not.toContain('main orchestrator result was not provided');
+      expectNoImplementationDetails(parsed.body);
       expect(parsed.citations.some((citation) => typeof citation.artifactId === 'string')).toBe(true);
       expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
         message: expect.objectContaining({ body: 'List our accounts.' }),
@@ -151,6 +152,7 @@ describe('query live routing acceptance', () => {
     await orchestrator.run({ message: inboundMessage('can u make sure that i dont have accounts setup?', 2) });
 
     expect(first.body).toMatch(/\b(?:checking|groceries|accounts?)\b/i);
+    expectNoImplementationDetails(first.body);
     expect(delegated).toHaveLength(2);
     expect(delegated[0]?.request).toMatchObject({ coverage: ['account list'] });
     expect(delegated[1]?.request).toMatchObject({ coverage: ['account list'] });
@@ -172,12 +174,32 @@ describe('query live routing acceptance', () => {
       request: expect.objectContaining({ coverage: expect.arrayContaining(['balance snapshot']) }),
     }));
     expect(response.body).not.toContain(synthesisFallbackMarker);
+    expectNoImplementationDetails(response.body);
     expect(response.body).not.toMatch(/no accounts|no accounts set up|do not have accounts/i);
     expect(response.body).toMatch(
       /(?:(?:current(?:[-\s\u2010-\u2015])?balance(?:\s+results?)?|balance snapshot).{0,60}(?:no|zero).{0,20}rows|(?:no|zero).{0,40}(?:current(?:[-\s\u2010-\u2015])?balance(?:\s+results?)?|balance snapshot).{0,60}rows)/i,
     );
   }, 120_000);
+
+  liveIt('never exposes checked account result contracts when answering the reported Telegram wording', async () => {
+    const orchestrator = createLiveOrchestrator({
+      runTeamLead: async () => checkedAccountListResult(),
+    });
+
+    const response = await orchestrator.run({
+      message: inboundMessage('can u check my accounts?'),
+    });
+
+    expect(response.body).toMatch(/Checking|Groceries/i);
+    expectNoImplementationDetails(response.body);
+  }, 120_000);
 });
+
+function expectNoImplementationDetails(body: string): void {
+  expect(body).not.toMatch(
+    /reporting\.|QueryResultV\d+|(?:maker|checker)|(?:accounting|query) team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+  );
+}
 
 function inboundMessage(body: string, ordinal = 0): InboundChannelMessageV1 {
   return InboundChannelMessageSchemaV1.parse({

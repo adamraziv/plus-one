@@ -281,8 +281,26 @@ function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting')
     ...teamResult(team),
     status: 'insufficient_evidence',
     claims: [],
-    completionReason: 'Need the payment account before recording this transaction.',
-    outstanding: ['Which internal payment account should this use?'],
+    makerArtifacts: [{
+      ...teamResult(team).makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'chart-clarification',
+          schemaVersion: 1,
+          missingFields: ['native_currency'],
+          questions: ['What is its native currency?'],
+          reason: 'A safe chart-of-accounts proposal requires the unresolved user-owned fields.',
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+    completionReason: 'A safe chart-of-accounts proposal requires the unresolved user-owned fields.',
+    outstanding: ['What is its native currency?', 'native_currency'],
   });
 }
 
@@ -559,11 +577,11 @@ describe('OrchestratorAgent', () => {
         checkedData: [{
           checkedClaim: 'Checking is configured for this household.',
           rows: [{
-            effective_on: '2026-06-23',
-            account_name: 'Checking',
-            accounting_class: 'asset',
-            account_native_amount: '420.00',
-            account_native_currency: 'USD',
+            'effective on': '2026-06-23',
+            'account name': 'Checking',
+            'accounting class': 'asset',
+            'account native amount': '420.00',
+            'account native currency': 'USD',
             description: 'Some checked details were withheld for privacy.',
           }],
         }],
@@ -747,7 +765,7 @@ describe('OrchestratorAgent', () => {
     expect(prompt.includes('telegram-chat-42')).toBe(false);
   });
 
-  it('records only an identifier match category when final response safety blocks a token', async () => {
+  it('records only an identifier match category when final response safety withholds a token', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
     const logging = configureLogging({ homeDirectory });
     const generate = vi.fn(async () => ({ text: 'Please use account_private_001 to continue.' }));
@@ -755,9 +773,10 @@ describe('OrchestratorAgent', () => {
 
     try {
       await expect(orchestrator.run({ message: message('Can you help?') }))
-        .rejects.toThrow('internal identifier request');
+        .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
       const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('failureCategory=internal_identifier_token');
+      expect(agentLog).toContain('orchestrator.response.withheld');
+      expect(agentLog).toContain('matchCategory=identifier_token');
       expect(agentLog).not.toContain('account_private_001');
     } finally {
       logging.close();
@@ -821,7 +840,7 @@ describe('OrchestratorAgent', () => {
     expect(response.body).toBe('No current-balance rows were returned.');
   });
 
-  it('allows three semantic model steps for one retry, one delegation, and final synthesis', async () => {
+  it('allows four semantic model steps for two validation retries, delegation, and final synthesis', async () => {
     const generate = vi.fn(async () => ({
       text: 'Plus One can help with household finance questions.',
     }));
@@ -858,6 +877,12 @@ describe('OrchestratorAgent', () => {
     expect(stopWhen({ steps: [{ finishReason: 'retry' }, { finishReason: 'tool-calls' }] })).toBe(false);
     expect(stopWhen({ steps: [{ finishReason: 'tool-calls' }, { finishReason: 'stop' }] })).toBe(false);
     expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'stop' },
+    ] })).toBe(false);
+    expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
       { finishReason: 'tool-calls' },
       { finishReason: 'tool-calls' },
       { finishReason: 'stop' },
@@ -931,26 +956,29 @@ describe('OrchestratorAgent', () => {
     );
   });
 
-  it('falls back to checked team text when the post-tool step has no final body', async () => {
+  it('runs a dedicated synthesis pass when delegation consumes the last semantic step', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
-    const generate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query', request: queryDraft('List our accounts.', { coverage: ['account list'] }),
-      });
-      return {
-        text: 'Preamble that must never be a final response.',
-        steps: [
-          { text: 'Preamble that must never be a final response.', toolCalls: [{ toolName: 'delegateTeam' }] },
-          { text: '', toolCalls: [] },
-        ],
-      };
-    });
+    const generate = vi.fn()
+      .mockImplementationOnce(async () => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'query', request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+        });
+        return {
+          text: 'Preamble that must never be a final response.',
+          steps: [
+            { text: 'Preamble that must never be a final response.', toolCalls: [{ toolName: 'delegateTeam' }] },
+          ],
+        };
+      })
+      .mockResolvedValueOnce({ text: 'I found one account in your household records.' });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     const response = await orchestrator.run({ message: message('List our accounts.') });
 
-    expect(response.body).toContain('The checked evidence includes one account row.');
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(response.body).toBe('I found one account in your household records.');
     expect(response.body).not.toContain('Preamble that must never be a final response.');
+    expect(response.body).not.toMatch(/reporting\.|QueryResultV1|checker|maker|team status|native_currency/i);
   });
 
   it('uses the last semantic step for a direct answer', async () => {
@@ -1192,17 +1220,17 @@ describe('OrchestratorAgent', () => {
           },
         },
       });
-      return { text: 'The accounting team needs clarification before posting.' };
+      return { text: 'What currency should I use for this account?' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
     await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') })).resolves.toMatchObject({
       kind: 'ask-user',
-      response: { body: expect.stringContaining('Which internal payment account should this use?') },
+      response: { body: 'What currency should I use for this account?' },
     });
   });
 
-  it('uses checked clarification instead of unrelated post-delegation text', async () => {
+  it('uses only the checked question when post-delegation text leaks internal result fields', async () => {
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -1219,14 +1247,21 @@ describe('OrchestratorAgent', () => {
           },
         },
       });
-      return { text: 'not a typed final response' };
+      return {
+        text: [
+          'Accounting team status: insufficient_evidence',
+          'Checker accepted the result.',
+          'What is its native currency?',
+          'native_currency',
+        ].join('\n\n'),
+      };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
     await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') }))
       .resolves.toMatchObject({
         kind: 'ask-user',
-        response: { body: expect.stringContaining('Which internal payment account should this use?') },
+        response: { body: 'What is its native currency?' },
       });
   });
 
@@ -1243,8 +1278,9 @@ describe('OrchestratorAgent', () => {
 
     const response = await orchestrator.run({ message: message('Show our transactions.') });
 
-    expect(response.body).toContain('Query team status: failed');
-    expect(response.body).toContain('grain mismatch');
+    expect(response.body).toBe('I could not complete that request safely. Please try again.');
+    expect(response.body).not.toContain('Query team status: failed');
+    expect(response.body).not.toContain('grain mismatch');
     expect(response.body).not.toContain('verified transactions');
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
   });
@@ -1281,8 +1317,8 @@ describe('OrchestratorAgent', () => {
 
     const response = await orchestrator.run({ message: message('List our accounts.') });
 
-    expect(response.body).toContain('The checked evidence includes one account row.');
-    expect(response.body).toContain('Ready for orchestrator reconciliation.');
+    expect(response.body).toBe('I found the requested information, but I could not safely summarize it. Please try again.');
+    expect(response.body).not.toContain('Ready for orchestrator reconciliation.');
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
   });
 
@@ -1299,7 +1335,7 @@ describe('OrchestratorAgent', () => {
 
     await expect(orchestrator.run({ message: message('List our accounts.') }))
       .resolves.toMatchObject({
-        body: expect.stringContaining('The checked evidence includes one account row.'),
+        body: 'I found the requested information, but I could not safely summarize it. Please try again.',
         citations: [{ label: 'query:accounts-listed', artifactId }],
       });
     expect(runTeamLead).toHaveBeenCalledOnce();
@@ -1332,8 +1368,7 @@ describe('OrchestratorAgent', () => {
 
     const response = await orchestrator.run({ message: message('List our accounts.') });
 
-    expect(response.body).toContain('The checked evidence includes one account row.');
-    expect(response.body).toContain('Some checked details were withheld for privacy.');
+    expect(response.body).toBe('I found the requested information, but I could not safely summarize it. Please try again.');
     expect(response.body).not.toContain(draftId);
     expect(response.body).not.toContain(artifactId);
     expect(response.citations).toEqual(expect.arrayContaining([
@@ -1355,7 +1390,7 @@ describe('OrchestratorAgent', () => {
 
     await expect(orchestrator.run({ message: message('List our accounts.') }))
       .resolves.toMatchObject({
-        body: expect.stringContaining('The checked evidence includes one account row.'),
+        body: 'I found the requested information, but I could not safely summarize it. Please try again.',
         citations: [{ label: 'query:accounts-listed', artifactId }],
       });
   });
@@ -1434,21 +1469,21 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead).not.toHaveBeenCalled();
   });
 
-  it('rejects final text that asks the user for internal identifiers', async () => {
+  it('withholds final text that asks the user for internal identifiers', async () => {
     const runTeamLead = vi.fn();
     const generate = vi.fn(async () => ({ text: 'Please send your Household ID and Book ID.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('Can you help?') }))
-      .rejects.toThrow('internal identifier request');
+      .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
   });
 
-  it('rejects final model text that contains a contract opaque identifier', async () => {
+  it('withholds final model text that contains a contract opaque identifier', async () => {
     const generate = vi.fn(async () => ({ text: `Please use ${draftId} to continue.` }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('Can you help?') }))
-      .rejects.toThrow('internal identifier request');
+      .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
   });
 });
 

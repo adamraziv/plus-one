@@ -11,6 +11,7 @@ import {
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import { isUserFacingQueryField } from '../query-tools.js';
+import { internalImplementationDetailMatchCategory } from '../safety/internal-implementation-detail.js';
 import { internalIdentifierMatchCategory } from '../safety/internal-identifier.js';
 import {
   DelegateTeamToolInputSchema,
@@ -69,9 +70,11 @@ export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV1): Fina
     );
     if (accepted) acceptedArtifacts.set(artifact.artifactId, artifact);
   }
+  const includedArtifactIds = new Set<string>();
   const checkedData = result.claims.flatMap((claim) => {
-    const checkedClaim = userFacingText(claim.text);
+    const checkedClaim = userFacingText(claim.text) ?? 'Checked data is available.';
     return claim.checkedMakerArtifactIds.flatMap((artifactId) => {
+      if (includedArtifactIds.has(artifactId)) return [];
       const artifact = acceptedArtifacts.get(artifactId);
       if (artifact === undefined || checkedClaim === undefined) return [];
       const makerArtifact = MakerArtifactSchemaV1.safeParse(artifact.payload);
@@ -81,7 +84,9 @@ export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV1): Fina
       const rows = queryResult.data.rows
         .map((row) => userFacingQueryRow(queryResult.data.relationName, row))
         .filter((row): row is Record<string, z.infer<typeof UserFacingQueryValueSchema>> => row !== undefined);
-      return rows.length === 0 ? [] : [{ checkedClaim, rows }];
+      if (rows.length === 0) return [];
+      includedArtifactIds.add(artifactId);
+      return [{ checkedClaim, rows }];
     });
   });
   return FinalSynthesisTeamResultViewSchema.parse({
@@ -182,7 +187,11 @@ export function userFacingTexts(values: readonly string[]): string[] {
 
 export function userFacingText(value: string): string | undefined {
   const text = value.trim();
-  if (text.length === 0 || internalIdentifierMatchCategory(text) !== undefined) return undefined;
+  if (
+    text.length === 0
+    || internalIdentifierMatchCategory(text) !== undefined
+    || internalImplementationDetailMatchCategory(text) !== undefined
+  ) return undefined;
   return text;
 }
 
@@ -196,9 +205,13 @@ function userFacingQueryRow(
       return [];
     }
     const safeValue = userFacingQueryValue(value);
-    return safeValue === undefined ? [] : [[key, safeValue] as const];
+    return safeValue === undefined ? [] : [[userFacingFieldLabel(key), safeValue] as const];
   });
   return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function userFacingFieldLabel(key: string): string {
+  return key.replaceAll('_', ' ');
 }
 
 function isInternalQueryField(key: string): boolean {
