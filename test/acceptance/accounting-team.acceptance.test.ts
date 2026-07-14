@@ -157,12 +157,13 @@ describe('accounting team acceptance', () => {
     });
 
     expect(result.calls).toEqual(['accounting-lead', makerId, makerId.replace('-maker', '-checker')]);
-    expect(result.response.body).toContain('Accounting team status: verified');
+    expect(result.response.body).toContain('The accounting request is ready.');
+    expectNoImplementationDetails(result.response.body);
     expect(result.teamResult.status).toBe('verified');
     expect(result.teamResult.makerArtifacts).toHaveLength(1);
     expect(result.teamResult.checkerVerdicts).toHaveLength(1);
     if (workCellId === 'chart-of-accounts') {
-      expect(result.response.body).toContain('external confirmation required');
+      expect(result.response.body).toMatch(/external confirmation (?:is )?required/i);
     }
   });
 
@@ -204,7 +205,12 @@ describe('accounting team acceptance', () => {
 
     expect(result.teamResult.status).toBe(status);
     expect(result.teamResult.claims).toEqual([]);
-    expect(result.response.body).toContain('Accounting team status: ' + status);
+    expectNoImplementationDetails(result.response.body);
+    if (status === 'insufficient_evidence') {
+      expect(result.response.body).toBe('What additional details can you provide?');
+    } else {
+      expect(result.response.body).toBe('I could not complete that request safely. Please try again.');
+    }
   });
 
   it.each([
@@ -222,7 +228,8 @@ describe('accounting team acceptance', () => {
 
     expect(result.teamResult.status).toBe('insufficient_evidence');
     expect(result.teamResult.outstanding.length).toBeGreaterThan(0);
-    expect(result.response.body).toContain('Accounting team status: insufficient_evidence');
+    expect(result.response.body).toContain('?');
+    expectNoImplementationDetails(result.response.body);
   });
 });
 
@@ -357,19 +364,28 @@ async function runAccountingScenario(input: {
   };
   let teamResult: TeamResultEnvelopeV1 | undefined;
   const generate = vi.fn(async () => {
-    teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
-      team: 'accounting',
-      request: {
-        schemaName: 'accounting-lead-request',
-        schemaVersion: 1,
-        intent: input.intent,
-        request: delegateRequestFor(input.intent),
-      },
-    });
-    return {
-      text: 'Accounting team status: ' + teamResult.status
-        + (input.workCellId === 'chart-of-accounts' ? '; external confirmation required before commit.' : ''),
-    };
+    if (teamResult === undefined) {
+      teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: input.intent,
+          request: delegateRequestFor(input.intent),
+        },
+      });
+    }
+    if (teamResult.status === 'verified') {
+      return {
+        text: 'The accounting request is ready.'
+          + (input.workCellId === 'chart-of-accounts' ? ' External confirmation is required before it is saved.' : ''),
+      };
+    }
+    if (teamResult.status === 'insufficient_evidence') {
+      const question = teamResult.outstanding.find((value) => value.includes('?'));
+      return { text: question ?? 'What additional details can you provide?' };
+    }
+    return { text: 'I could not complete that request safely. Please try again.' };
   });
   const orchestrator = new OrchestratorAgent({
     model: models.orchestrator,
@@ -392,6 +408,12 @@ async function runAccountingScenario(input: {
   }) });
   expect(teamRuntime.runTeamLead).toHaveBeenCalledWith(expect.objectContaining({ team: accountingTeamDefinition }));
   return { calls, response, teamResult: teamResult!, verificationLedger };
+}
+
+function expectNoImplementationDetails(body: string): void {
+  expect(body).not.toMatch(
+    /reporting\.|[A-Z][A-Za-z0-9]*(?:Schema)?V\d+|(?:maker|checker)|team status|\binternal\b|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+  );
 }
 
 async function executeDelegate(

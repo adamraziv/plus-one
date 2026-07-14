@@ -19,6 +19,7 @@ export function internalImplementationDetailMatchCategory(
   if (
     /\b(?:maker|checker)(?:\s+(?:accepted|rejected|requested|verdict|artifact|output|result|team))?\b/i.test(value)
     || /\b(?:accounting|query|ingestion|planning|operations)?\s*team\s+status\b/i.test(value)
+    || /\binternal(?:-only)?\b/i.test(value)
     || /\b(?:schemaName|schemaVersion|claimId|artifactHash|completionReason)\b/.test(value)
   ) {
     return 'workflow_jargon';

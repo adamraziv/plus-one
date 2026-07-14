@@ -8,6 +8,7 @@ describe('internal implementation detail safety', () => {
     ['What is its native_currency?', 'structured_key'],
     ['Accounting team status: failed', 'workflow_jargon'],
     ['The checker accepted the maker artifact.', 'workflow_jargon'],
+    ['Which internal payment account should this use?', 'workflow_jargon'],
   ])('classifies %s', (value, category) => {
     expect(internalImplementationDetailMatchCategory(value)).toBe(category);
   });

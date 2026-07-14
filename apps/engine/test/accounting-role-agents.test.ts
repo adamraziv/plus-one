@@ -153,9 +153,9 @@ describe('Accounting Mastra role agents', () => {
           schemaVersion: 1,
           missingFields: ['payment_account', 'occurred_on', 'category'],
           questions: [
-            'Which internal payment account should this use?',
+            'Which account did you pay from?',
             'On what date did the transaction occur?',
-            'Which internal category account should this use?',
+            'What category should I use for this transaction?',
           ],
           reason: 'The transaction cannot be posted without account, date, and category.',
         },
@@ -681,8 +681,8 @@ describe('Accounting Mastra role agents', () => {
           schemaVersion: 1,
           missingFields: ['payment_account', 'occurred_on'],
           questions: [
-            'Which internal account should be the source for this transfer?',
-            'Which internal account should be the destination for this transfer?',
+            'Which account is the money moving from?',
+            'Which account is the money moving to?',
             'On what date should this transfer be recorded?',
           ],
           reason: 'The transfer cannot be posted until the exact internal source account, destination account, and effective date are confirmed.',

@@ -63,8 +63,8 @@ function clarificationArtifact(invocation: NonNullable<ReturnType<typeof parseMa
     schemaVersion: 1,
     missingFields: ['payment_account', 'occurred_on'],
     questions: [
-      'Which internal account should be the source for this transfer?',
-      'Which internal account should be the destination for this transfer?',
+      'Which account is the money moving from?',
+      'Which account is the money moving to?',
       'On what date should this transfer be recorded?',
     ],
     reason: 'The transfer cannot be posted until the exact internal source account, destination account, and effective date are confirmed.',

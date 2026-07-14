@@ -180,7 +180,7 @@ function idSuffix(taskId: string): string {
 function questionFor(field: ReturnType<typeof missingFields>[number]): string {
   if (field === 'amount') return 'What amount should be recorded?';
   if (field === 'currency') return 'What currency should be used?';
-  if (field === 'payment_account') return 'Which internal payment account should this use?';
+  if (field === 'payment_account') return 'Which account did you pay from?';
   if (field === 'occurred_on') return 'On what date did the transaction occur?';
-  return 'Which internal category account should this use?';
+  return 'What category should I use for this transaction?';
 }
