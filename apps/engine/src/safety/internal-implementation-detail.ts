@@ -10,7 +10,10 @@ export function internalImplementationDetailMatchCategory(
   if (/\b(?:reporting|accounting|operations|planning|ingestion|mastra_memory)\.[a-z][a-z0-9_]*\b/i.test(value)) {
     return 'relation_name';
   }
-  if (/\b[A-Z][A-Za-z0-9]*(?:Schema)?V\d+\b/.test(value)) {
+  if (
+    /\b[A-Z][A-Za-z0-9]*(?:Schema)?V\d+\b/.test(value)
+    || /\b(?:QueryResult|TeamResultEnvelope|MakerArtifact|CheckerVerdict|EvidenceRequest|AccountingLeadRequest)\b/.test(value)
+  ) {
     return 'schema_type';
   }
   if (/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.test(value)) {
@@ -18,7 +21,11 @@ export function internalImplementationDetailMatchCategory(
   }
   if (
     /\b(?:maker|checker)(?:\s+(?:accepted|rejected|requested|verdict|artifact|output|result|team))?\b/i.test(value)
-    || /\b(?:accounting|query|ingestion|planning|operations)?\s*team\s+status\b/i.test(value)
+    || /\b(?:accounting|query|ingestion|planning|operations)\s+team\b/i.test(value)
+    || /\bteam\s+status\b/i.test(value)
+    || /\bquery\s+result\s+from\b/i.test(value)
+    || /\b(?:coverage warnings?|checked claims?|completion reason|outstanding fields?)\b/i.test(value)
+    || /\bstatus\s*:\s*(?:verified|partial|failed|conflicted|insufficient[ _-]?evidence)\b/i.test(value)
     || /\binternal(?:-only)?\b/i.test(value)
     || /\b(?:schemaName|schemaVersion|claimId|artifactHash|completionReason)\b/.test(value)
   ) {

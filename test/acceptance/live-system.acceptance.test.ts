@@ -34,7 +34,7 @@ describe('live system smoke acceptance', () => {
       expect(accounting.policyBoundary).toBe('personalized_finance');
       expect(accounting.body).toContain('?');
       expect(accounting.body).not.toMatch(
-        /reporting\.|QueryResultV\d+|(?:maker|checker)|(?:accounting|query) team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+        /reporting\.|QueryResult(?:V\d+)?|(?:maker|checker)|(?:accounting|query) team|team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
       );
       expect(accounting.citations.map((citation) => citation.label)).toContain('accounting:team-result');
     } finally {

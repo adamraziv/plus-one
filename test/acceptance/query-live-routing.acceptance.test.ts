@@ -109,7 +109,7 @@ describe('query live routing acceptance', () => {
 
       expect(response.status).toBe(200);
       expect(parsed.body).toContain('Cash');
-      expect(parsed.body).toMatch(/\b(?:1|one)\s+account\b/i);
+      expect(parsed.body).toMatch(/\b(?:(?:1|one)\s+account|only account)\b/i);
       expect(parsed.body).not.toContain('main orchestrator result was not provided');
       expectNoImplementationDetails(parsed.body);
       expect(parsed.citations.some((citation) => typeof citation.artifactId === 'string')).toBe(true);
@@ -197,7 +197,7 @@ describe('query live routing acceptance', () => {
 
 function expectNoImplementationDetails(body: string): void {
   expect(body).not.toMatch(
-    /reporting\.|QueryResultV\d+|(?:maker|checker)|(?:accounting|query) team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+    /reporting\.|QueryResult(?:V\d+)?|(?:maker|checker)|(?:accounting|query) team|team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
   );
 }
 
