@@ -1,11 +1,11 @@
 import type {
   OrchestratorFinalResponseV1,
   ScheduledRunV1,
-  TeamResultEnvelopeV1,
+  TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import {
   OrchestratorFinalResponseSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
 } from '@plus-one/contracts';
 import { ZodError } from 'zod';
 import type { DeliveryResult } from '../delivery/final-delivery-handler.js';
@@ -40,7 +40,7 @@ export class ApplicationScheduler {
       orchestrator(input: { claim: SchedulerClaim; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
       teamLead(input: { claim: SchedulerClaim; signal: AbortSignal }): Promise<unknown>;
       orchestratorReconciler: {
-        reconcile(input: { claim: SchedulerClaim; teamResult: TeamResultEnvelopeV1; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
+        reconcile(input: { claim: SchedulerClaim; teamResult: TeamResultEnvelopeV2; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
       };
     };
     delivery: { deliver(response: OrchestratorFinalResponseV1): Promise<DeliveryResult> };
@@ -149,7 +149,7 @@ export class ApplicationScheduler {
             await this.dependencies.targets.orchestrator({ claim, signal }),
           );
         }
-        const teamResult = TeamResultEnvelopeSchemaV1.parse(
+        const teamResult = TeamResultEnvelopeSchemaV2.parse(
           await this.dependencies.targets.teamLead({ claim, signal }),
         );
         return OrchestratorFinalResponseSchemaV1.parse(

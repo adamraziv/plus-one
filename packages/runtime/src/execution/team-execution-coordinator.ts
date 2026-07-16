@@ -1,7 +1,7 @@
 import {
   TeamLeadPlanSchemaV1,
   type SkillIdentityV1, type StopConditionV1,
-  type TeamLeadPlanV1, type TeamResultEnvelopeV1,
+  type TeamLeadPlanV1, type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import type { ExecutionStrategyRegistry } from '../strategies/execution-strategy-registry.js';
 import { findWorkCell, type TeamDefinition } from '../teams/definitions.js';
@@ -34,7 +34,7 @@ export class TeamExecutionCoordinator {
     work: readonly WorkInput[];
     reconciliation?: Omit<WorkInput, 'makerInput'>;
     stopCondition: StopConditionV1;
-  }): Promise<TeamResultEnvelopeV1> {
+  }): Promise<TeamResultEnvelopeV2> {
     const strategy = this.dependencies.strategies.assertAllowed(
       input.strategyName, input.team.allowedStrategyNames, input.work.length,
     );

@@ -7,7 +7,7 @@ import {
   DeliveryRecordSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   ScheduledRunSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
 } from '@plus-one/contracts';
 import { configureLogging } from '../logging/index.js';
 
@@ -55,9 +55,9 @@ function deliveryRecord() {
 }
 
 function teamResult() {
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
-    schemaVersion: 1,
+    schemaVersion: 2,
     householdId,
     taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     team: 'query',
@@ -78,6 +78,7 @@ function teamResult() {
     stopCondition: { code: 'scheduled-brief', description: 'Produce a scheduled briefing.' },
     completionReason: 'Team result requires orchestrator reconciliation.',
     outstanding: ['orchestrator_reconciliation'],
+    effect: { state: 'none' },
   });
 }
 

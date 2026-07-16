@@ -1,5 +1,5 @@
 import {
-  PlusOneError,
+  PlusOneError, type CheckedCommandV1, type MutationReceiptV1, type ReadbackResultV1,
   type ArtifactEnvelopeV1, type CheckerRubricV1, type CheckerVerdictV1, type MakerArtifactV1,
   type RoleIdentityV1, type SchemaIdentityV1, type StopConditionV1, type TeamResultStatusV1,
 } from '@plus-one/contracts';
@@ -80,6 +80,10 @@ export interface CheckedWorkCellResult {
   status: TeamResultStatusV1;
   completionState: 'terminal' | 'checked_mutation_pending';
   effectRequirement: CheckedEffectRequirement;
+  mutation?:
+    | { state: 'prepared'; command: CheckedCommandV1 }
+    | { state: 'unresolved'; commandId: string; reason: 'commit_ambiguous' | 'readback_failed' }
+    | { state: 'persisted'; receipt: MutationReceiptV1; readback: ReadbackResultV1 };
   makerArtifacts: readonly ArtifactEnvelopeV1[];
   checkerVerdicts: readonly CheckerVerdictV1[];
   acceptedMaker?: MakerArtifactV1;

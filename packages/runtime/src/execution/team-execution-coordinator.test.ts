@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  ArtifactIdSchema, HouseholdIdSchema, TaskIdSchema, UtcInstantSchema,
+  ArtifactIdSchema, CheckedCommandSchemaV1, HouseholdIdSchema, MutationReceiptSchemaV1,
+  ReadbackResultSchemaV1, TaskIdSchema, UtcInstantSchema,
 } from '@plus-one/contracts';
 import {
   ExecutionStrategyRegistry, TeamExecutionCoordinator, TeamResultAssembler,
 } from '../index.js';
+import type { CheckedWorkCellResult } from '../teams/definitions.js';
 
 const skill = { skillName: 'analysis', skillVersion: 1, contentHash: 'a'.repeat(64) };
 
@@ -71,8 +73,7 @@ describe('TeamExecutionCoordinator', () => {
   it('rejects a checked mutation result before read-back completion', () => {
     const assembler = new TeamResultAssembler();
     const deferred = {
-      ...checkedResult('task_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
-      completionState: 'checked_mutation_pending' as const,
+      ...checkedMutationResult(),
     };
     try {
       assembler.assemble({
@@ -86,10 +87,159 @@ describe('TeamExecutionCoordinator', () => {
       });
       throw new Error('Expected deferred mutation assembly to fail');
     } catch (error) {
-      expect(error).toMatchObject({ code: 'checked_mutation_not_terminal' });
+      expect(error).toMatchObject({ code: 'checked_mutation_not_prepared' });
     }
   });
+
+  it('assembles a prepared required-confirmation mutation as partial', () => {
+    const assembler = new TeamResultAssembler();
+    const result = assembler.assemble(assemblyInput([{
+      ...checkedMutationResult(),
+      mutation: { state: 'prepared' as const, command: checkedCommand() },
+    }]));
+    expect(result).toMatchObject({
+      schemaVersion: 2,
+      status: 'partial',
+      effect: { state: 'awaiting_confirmation', command: checkedCommand() },
+    });
+  });
+
+  it('assembles read-back proof as the only verified mutation result', () => {
+    const assembler = new TeamResultAssembler();
+    const result = assembler.assemble(assemblyInput([{
+      ...checkedMutationResult(),
+      completionState: 'terminal' as const,
+      mutation: { state: 'persisted' as const, receipt: mutationReceipt(), readback: mutationReadback() },
+    }]));
+    expect(result).toMatchObject({
+      schemaVersion: 2,
+      status: 'verified',
+      effect: { state: 'persisted', receipt: mutationReceipt(), readback: mutationReadback() },
+    });
+  });
 });
+
+function assemblyInput(results: readonly CheckedWorkCellResult[]) {
+  return {
+    householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    resultTaskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J9K',
+    team: 'accounting',
+    strategyName: 'single-maker-checker',
+    selectedSkill: skill,
+    stopCondition: { code: 'checked-chart', description: 'Return one checked chart proposal.' },
+    results,
+  };
+}
+
+function checkedMutationResult() {
+  const base = checkedResult('task_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+  const proposal = {
+    schemaName: 'chart-of-accounts-proposal' as const,
+    schemaVersion: 1 as const,
+    action: 'create_account' as const,
+    householdId: base.householdId,
+    bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    name: 'Bank ABC',
+    accountingClass: 'asset' as const,
+    normalBalance: 'debit' as const,
+    nativeCurrency: 'IDR',
+  };
+  const maker = {
+    schemaName: 'maker-artifact' as const,
+    schemaVersion: 1 as const,
+    outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+    output: proposal,
+    claims: [{ claimId: 'chart-proposal', text: 'The chart proposal was checked.', evidenceArtifactIds: [] }],
+    assumptions: [],
+    uncertainty: [],
+  };
+  const artifact = {
+    ...base.makerArtifacts[0]!,
+    payload: maker,
+    artifactHash: 'd'.repeat(64),
+  };
+  return {
+    ...base,
+    team: 'accounting',
+    workCellId: 'chart-of-accounts',
+    status: 'verified' as const,
+    completionState: 'checked_mutation_pending' as const,
+    effectRequirement: {
+      kind: 'checked_mutation' as const,
+      proposalSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+      confirmation: 'required' as const,
+    },
+    makerArtifacts: [artifact],
+    checkerVerdicts: [{
+      verdict: 'accepted' as const,
+      coveredArtifactId: artifact.artifactId,
+      coveredArtifactHash: artifact.artifactHash,
+      findings: [],
+    }],
+    acceptedMaker: maker,
+    completionReason: 'The exact chart proposal passed checking.',
+    outstanding: [],
+  };
+}
+
+function checkedCommand() {
+  const result = checkedMutationResult();
+  const artifact = result.makerArtifacts[0]!;
+  return CheckedCommandSchemaV1.parse({
+    schemaName: 'checked-command' as const,
+    schemaVersion: 1 as const,
+    commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    householdId: result.householdId,
+    taskId: result.taskId,
+    checkedProposalId: artifact.artifactId,
+    checkedProposalHash: artifact.artifactHash,
+    commandType: 'apply_chart_of_accounts_change',
+    idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    payloadSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+    payload: result.acceptedMaker!.output,
+  });
+}
+
+function mutationReceipt() {
+  const result = checkedMutationResult();
+  const artifact = result.makerArtifacts[0]!;
+  return MutationReceiptSchemaV1.parse({
+    schemaName: 'mutation-receipt' as const,
+    schemaVersion: 1 as const,
+    receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    householdId: result.householdId,
+    taskId: result.taskId,
+    checkedProposalId: artifact.artifactId,
+    checkedProposalHash: artifact.artifactHash,
+    commandType: 'apply_chart_of_accounts_change',
+    idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    committedRecords: [{ recordType: 'accounting.account', recordId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K' }],
+    expectedState: result.acceptedMaker!.output,
+    expectedStateHash: 'b'.repeat(64),
+    committedAt: '2026-07-16T00:00:00.000Z',
+  });
+}
+
+function mutationReadback() {
+  return ReadbackResultSchemaV1.parse({
+    schemaName: 'mutation-readback' as const,
+    schemaVersion: 1 as const,
+    readbackId: 'readback_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    ok: true,
+    checks: [
+      { kind: 'identifiers' as const, status: 'passed' as const },
+      { kind: 'row_values' as const, status: 'passed' as const },
+      { kind: 'artifact_links' as const, status: 'passed' as const },
+      { kind: 'idempotency_receipt' as const, status: 'passed' as const },
+    ],
+    mismatches: [],
+    observedStateHash: 'c'.repeat(64),
+  });
+}
 
 function checkedResult(taskId: string) {
   const endsIn1K = taskId.endsWith('1K');
