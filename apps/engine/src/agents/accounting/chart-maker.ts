@@ -8,6 +8,7 @@ import {
   type AccountingRoleAgentFactory,
   type AccountingRoleAgentInput,
 } from './types.js';
+import { deterministicChartProposal } from './chart-proposal.js';
 
 export function createChartMakerAgent(input: AccountingRoleAgentInput): AccountingRoleAgent {
   const factory: AccountingRoleAgentFactory = input.agentFactory ?? defaultAccountingRoleAgentFactory;
@@ -33,7 +34,9 @@ export function createChartMakerAgent(input: AccountingRoleAgentInput): Accounti
     (messages: unknown, options: unknown) => Promise<unknown>;
   fallback.generate = (async (messages: unknown, options: unknown) => {
     const invocation = parseMakerInvocation(messages as readonly { role: string; content: string }[]);
-    const artifact = invocation === undefined ? undefined : clarificationArtifact(invocation);
+    const artifact = invocation === undefined
+      ? undefined
+      : clarificationArtifact(invocation) ?? proposalArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
     return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
@@ -77,6 +80,26 @@ function clarificationArtifact(invocation: NonNullable<ReturnType<typeof parseMa
     }],
     assumptions: [],
     uncertainty: missing.map((field) => `Missing ${field}.`),
+  });
+}
+
+function proposalArtifact(invocation: NonNullable<ReturnType<typeof parseMakerInvocation>>) {
+  const request = ChartWorkRequestSchemaV1.safeParse(invocation.input);
+  if (!request.success) return undefined;
+  const output = deterministicChartProposal(request.data);
+  if (output === undefined) return undefined;
+  return MakerArtifactSchemaV1.parse({
+    schemaName: 'maker-artifact',
+    schemaVersion: 1,
+    outputSchema: invocation.outputSchema,
+    output,
+    claims: [{
+      claimId: 'chart-proposal',
+      text: 'Prepared the requested chart-of-accounts change for external confirmation.',
+      evidenceArtifactIds: [],
+    }],
+    assumptions: [],
+    uncertainty: [],
   });
 }
 

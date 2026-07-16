@@ -9,9 +9,11 @@ import {
 } from '@plus-one/contracts';
 import {
   ChartOfAccountsProposalSchemaV1,
+  accountingTeamDefinition,
   createChartOfAccountsMutationHandler,
   AccountingMutationService,
 } from '@plus-one/accounting';
+import { closeDatabasePools, createDatabasePools } from '@plus-one/database';
 import { CheckedMutationWorkCellCoordinator } from '@plus-one/mutations';
 import {
   TeamResultAssembler,
@@ -20,6 +22,8 @@ import {
   type CheckedWorkCellResult,
 } from '@plus-one/runtime';
 import { DefaultChartMutationRuntime } from '../../apps/engine/src/accounting/chart-mutation-runtime.js';
+import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
+import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 import { seedAccountingProposal } from '../helpers/accounting-team.js';
 import { createExecutor } from '../helpers/checked-mutation.js';
@@ -44,6 +48,7 @@ const proposal = ChartOfAccountsProposalSchemaV1.parse({
   bookId: ids.bookId,
   accountId: ids.accountId,
   name: 'Bank ABC',
+  purpose: 'Emergency savings',
   accountingClass: 'asset',
   normalBalance: 'debit',
   nativeCurrency: 'IDR',
@@ -195,6 +200,104 @@ function confirmationMessage(body: string) {
 }
 
 describe('accounting chart confirmation flow', () => {
+  it('creates test2 through the deterministic checked path without role-model calls', async () => {
+    context = await createPostgresTestContext('accounting_chart_deterministic_flow');
+    owner = new Pool({ connectionString: context.migratorUrl });
+    const household = await owner.query<{ id: string }>(
+      `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
+       VALUES ($1,'USD','UTC') RETURNING id::text`,
+      [ids.householdId],
+    );
+    await owner.query(
+      `INSERT INTO accounting.books (book_id, household_id, name)
+       VALUES ($1,$2,'Household Book')`,
+      [ids.bookId, household.rows[0]!.id],
+    );
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('role model should not be called');
+    });
+    const pools = createDatabasePools(context.roleUrls);
+    close = () => closeDatabasePools(pools);
+    const agentSystem = createAgentSystem({
+      models: {
+        lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+        maker: { id: 'provider/maker', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+        checker: { id: 'provider/checker', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+        research: { id: 'provider/research', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      },
+      queryTools: {},
+      queryAgentFactory: () => ({ generate: vi.fn() } as never),
+      accountingAgentFactory: () => ({ generate: modelGenerate } as never),
+      agentFactory: () => ({ generate: vi.fn() } as never),
+    });
+    const runtime = createTeamRuntime({ pools, agentSystem });
+    const requestMessage = confirmationMessage('test2, equity, idr');
+
+    const pending = await runtime.runTeamLead({
+      message: requestMessage,
+      team: accountingTeamDefinition,
+      request: {
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'chart_of_accounts',
+        request: {
+          schemaName: 'chart-work-request-draft',
+          schemaVersion: 1,
+          action: 'create_account',
+          instruction: 'Create an equity account named test2 in IDR.',
+          known: {
+            accountName: 'test2',
+            accountingClass: 'equity',
+            nativeCurrency: 'IDR',
+          },
+        },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(pending).toMatchObject({
+      status: 'partial',
+      claims: [{
+        claimId: 'chart-proposal',
+        text: 'Prepared the requested chart-of-accounts change for external confirmation.',
+      }],
+      effect: {
+        state: 'awaiting_confirmation',
+        command: {
+          payload: {
+            action: 'create_account',
+            name: 'test2',
+            accountingClass: 'equity',
+            normalBalance: 'credit',
+            nativeCurrency: 'IDR',
+          },
+        },
+      },
+    });
+
+    const persisted = await runtime.resumePendingMutation({
+      message: confirmationMessage('yes, create it'),
+      pending,
+      signal: new AbortController().signal,
+    });
+
+    expect(persisted).toMatchObject({
+      status: 'verified',
+      effect: { state: 'persisted', readback: { ok: true } },
+    });
+    expect((await owner.query(
+      `SELECT name, accounting_class, normal_balance, native_currency
+       FROM accounting.accounts WHERE name = $1`,
+      ['test2'],
+    )).rows).toEqual([{
+      name: 'test2',
+      accounting_class: 'equity',
+      normal_balance: 'credit',
+      native_currency: 'IDR',
+    }]);
+  });
+
   it('adds Bank ABC only after exact confirmation and read-back proof', async () => {
     const live = await setupLiveChartRuntime('accounting_chart_confirmation_flow');
     const pending = await live.runtime.prepare({
@@ -225,11 +328,12 @@ describe('accounting chart confirmation flow', () => {
       },
     });
     expect((await owner!.query(
-      `SELECT name, accounting_class, normal_balance, native_currency
+      `SELECT name, purpose, accounting_class, normal_balance, native_currency
        FROM accounting.accounts WHERE name = $1`,
       ['Bank ABC'],
     )).rows).toEqual([{
       name: 'Bank ABC',
+      purpose: 'Emergency savings',
       accounting_class: 'asset',
       normal_balance: 'debit',
       native_currency: 'IDR',

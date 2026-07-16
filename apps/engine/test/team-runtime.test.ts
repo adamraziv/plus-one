@@ -1004,4 +1004,25 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     });
   });
+
+  it('routes chart-of-accounts requests deterministically', () => {
+    const request = {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'chart_of_accounts',
+      request: {
+        schemaName: 'chart-work-request-draft',
+        schemaVersion: 1,
+        action: 'create_account',
+        instruction: 'Add a bank account.',
+        known: {},
+      },
+    };
+
+    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toMatchObject({
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'chart-of-accounts', makerInput: request.request }],
+      stopCondition: { code: 'checked-chart-change' },
+    });
+  });
 });

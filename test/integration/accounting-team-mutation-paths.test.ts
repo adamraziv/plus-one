@@ -82,6 +82,15 @@ describe('accounting team mutation paths', () => {
     expect(clarification.mutationExecutor.execute).not.toHaveBeenCalled();
 
     const chartClarification = setup(chartClarificationChecked());
+    await expect(chartClarification.service.prepareChart({
+      workCellInput: { workCell: { workCellId: 'chart-of-accounts' } } as never,
+      commandId,
+      idempotencyKey,
+    })).resolves.toMatchObject({
+      status: 'insufficient_evidence',
+      completionState: 'terminal',
+      outstanding: ['What should the account be called?'],
+    });
     await expect(chartClarification.service.execute({
       workCellId: 'chart-of-accounts',
       workCellInput: {} as never,

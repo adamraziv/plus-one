@@ -2,6 +2,7 @@ import {
   CheckerVerdictSchemaV1,
   MakerArtifactSchemaV1,
   VerificationTaskSchemaV1,
+  type JsonValue,
 } from '@plus-one/contracts';
 import {
   ChartClarificationSchemaV1,
@@ -16,6 +17,8 @@ import {
   type AccountingRoleAgentFactory,
   type AccountingRoleAgentInput,
 } from './types.js';
+import { canonicalizeJson } from '@plus-one/runtime';
+import { deterministicChartProposal } from './chart-proposal.js';
 
 export function createChartCheckerAgent(input: AccountingRoleAgentInput): AccountingRoleAgent {
   const factory: AccountingRoleAgentFactory = input.agentFactory ?? defaultAccountingRoleAgentFactory;
@@ -42,7 +45,9 @@ export function createChartCheckerAgent(input: AccountingRoleAgentInput): Accoun
     const task = parseVerificationTask(messages as readonly { role: string; content: string }[]);
     const verdict = task === undefined
       ? undefined
-      : verdictForClarification(task) ?? verdictForIdentityMismatch(task);
+      : verdictForClarification(task)
+        ?? verdictForDeterministicProposal(task)
+        ?? verdictForIdentityMismatch(task);
     if (verdict === undefined) return fallbackGenerate(messages, options);
     return submitContractResult(options, verdict);
   }) as typeof fallback.generate;
@@ -78,6 +83,31 @@ function verdictForClarification(task: NonNullable<ReturnType<typeof parseVerifi
       message: `Clarification asks for ${field}, but the request already provided it.`,
     })),
   });
+}
+
+function verdictForDeterministicProposal(
+  task: NonNullable<ReturnType<typeof parseVerificationTask>>,
+) {
+  const maker = MakerArtifactSchemaV1.parse(task.makerArtifact.payload);
+  const proposal = ChartOfAccountsProposalSchemaV1.safeParse(maker.output);
+  const request = ChartWorkRequestSchemaV1.safeParse(task.makerInput);
+  if (!proposal.success || !request.success) return undefined;
+  const expected = deterministicChartProposal(request.data);
+  if (expected === undefined) return undefined;
+  const accepted = canonicalizeJson(jsonValue(proposal.data)) === canonicalizeJson(jsonValue(expected));
+  return CheckerVerdictSchemaV1.parse({
+    verdict: accepted ? 'accepted' : 'revision_requested',
+    coveredArtifactId: task.makerArtifact.artifactId,
+    coveredArtifactHash: task.makerArtifact.artifactHash,
+    findings: accepted ? [] : [{
+      code: 'chart_proposal_mismatch',
+      message: 'The chart proposal does not exactly match the materialized chart request.',
+    }],
+  });
+}
+
+function jsonValue(value: unknown): JsonValue {
+  return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
 function verdictForIdentityMismatch(task: NonNullable<ReturnType<typeof parseVerificationTask>>) {

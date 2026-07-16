@@ -46,6 +46,11 @@ export interface VerifiedMutationWorkCellResult extends CheckedWorkCellResult {
   mutation: { state: 'persisted'; receipt: MutationReceiptV1; readback: ReadbackResultV1 };
 }
 
+export interface TerminalNonMutationWorkCellResult extends CheckedWorkCellResult {
+  status: Exclude<CheckedWorkCellResult['status'], 'verified'>;
+  completionState: 'terminal';
+}
+
 export class CheckedMutationWorkCellCoordinator {
   constructor(private readonly dependencies: {
     teamExecutor: Pick<TeamExecutor, 'executeWorkCell'>;
@@ -59,8 +64,9 @@ export class CheckedMutationWorkCellCoordinator {
     commandId: string;
     idempotencyKey: string;
     adapter: CheckedMutationCommandAdapter;
-  }): Promise<PreparedMutationWorkCellResult> {
+  }): Promise<PreparedMutationWorkCellResult | TerminalNonMutationWorkCellResult> {
     const checked = await this.dependencies.teamExecutor.executeWorkCell(input.workCellInput);
+    if (isTerminalNonMutationResult(checked)) return checked;
     const makerArtifact = checked.makerArtifacts.at(-1);
     const effectRequirement = checked.effectRequirement;
     const acceptedMaker = checked.acceptedMaker;
@@ -143,6 +149,9 @@ export class CheckedMutationWorkCellCoordinator {
       idempotencyKey: input.idempotencyKey,
       adapter: input.adapter,
     });
+    if (prepared.status !== 'verified') {
+      throw invalidPreparationResult(prepared);
+    }
     return this.executePrepared({
       prepared,
       ...(input.confirmationId === undefined ? {} : { confirmationId: input.confirmationId }),
@@ -178,6 +187,23 @@ export class CheckedMutationWorkCellCoordinator {
       status: 'verified',
     });
   }
+}
+
+function isTerminalNonMutationResult(
+  result: CheckedWorkCellResult,
+): result is TerminalNonMutationWorkCellResult {
+  return result.status !== 'verified' && result.completionState === 'terminal';
+}
+
+function invalidPreparationResult(result: CheckedWorkCellResult): PlusOneError {
+  return new PlusOneError({
+    category: 'constraint_violation',
+    code: 'checked_mutation_result_invalid',
+    message: 'Mutation execution requires one exact deferred accepted maker artifact',
+    retry: 'never',
+    receiptLookupRequired: false,
+    details: { taskId: result.taskId, completionState: result.completionState },
+  });
 }
 
 function assertUnchangedCheckedCommand(

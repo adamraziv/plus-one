@@ -50,6 +50,14 @@ const checked = {
   completionReason: 'accepted',
   outstanding: [],
 };
+const clarification = {
+  ...checked,
+  status: 'insufficient_evidence' as const,
+  completionState: 'terminal' as const,
+  acceptedMaker: undefined,
+  completionReason: 'Required user-owned fields are missing.',
+  outstanding: ['What should the account be called?'],
+};
 const receipt = { receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K' };
 const readback = { readbackId: 'readback_01JNZQ4A9B8C7D6E5F4G3H2J1K', ok: true };
 
@@ -57,8 +65,8 @@ function setup(execute = vi.fn().mockResolvedValue({
   status: 'readback_verified',
   receipt,
   readback,
-})) {
-  const teamExecutor = { executeWorkCell: vi.fn().mockResolvedValue(checked) };
+}), checkedResult: unknown = checked) {
+  const teamExecutor = { executeWorkCell: vi.fn().mockResolvedValue(checkedResult) };
   const runtime = { complete: vi.fn().mockResolvedValue({ status: 'verified' }) };
   const ledger = { findTask: vi.fn().mockResolvedValue({ status: 'readback_verified' }) };
   const adapter: CheckedMutationCommandAdapter = {
@@ -143,6 +151,8 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       adapter,
     });
 
+    expect(prepared.status).toBe('verified');
+    if (prepared.status !== 'verified') throw new Error('Expected a prepared mutation.');
     expect(prepared.completionState).toBe('checked_mutation_pending');
     expect(prepared.command).toMatchObject({
       checkedProposalId: artifact.artifactId,
@@ -150,6 +160,20 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       payloadSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
       payload: maker.output,
     });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('returns a checked clarification without building a mutation command', async () => {
+    const { coordinator, adapter, execute } = setup(undefined, clarification);
+
+    await expect(coordinator.prepare({
+      workCellInput: {} as never,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      adapter,
+    })).resolves.toBe(clarification);
+
+    expect(adapter.buildCommand).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -161,6 +185,8 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       adapter,
     });
+    expect(prepared.status).toBe('verified');
+    if (prepared.status !== 'verified') throw new Error('Expected a prepared mutation.');
     const result = await coordinator.executePrepared({
       prepared,
       confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',

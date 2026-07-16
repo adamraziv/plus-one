@@ -810,6 +810,166 @@ describe('Accounting Mastra role agents', () => {
     });
   });
 
+  it('returns a claimed chart proposal without calling the model when a new account is fully known', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createChartMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'chart-of-accounts')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'chart-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'chart-work-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'chart-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        action: 'create_account',
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        instruction: 'Create an equity account named test2 in IDR.',
+        known: {
+          name: 'test2',
+          accountingClass: 'equity',
+          normalBalance: 'credit',
+          nativeCurrency: 'IDR',
+        },
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-chart-change', description: 'Return one checked chart change.' },
+    });
+
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+      output: {
+        schemaName: 'chart-of-accounts-proposal',
+        schemaVersion: 1,
+        action: 'create_account',
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        name: 'test2',
+        accountingClass: 'equity',
+        normalBalance: 'credit',
+        nativeCurrency: 'IDR',
+      },
+      claims: [{
+        claimId: 'chart-proposal',
+        text: 'Prepared the requested chart-of-accounts change for external confirmation.',
+        evidenceArtifactIds: [],
+      }],
+    });
+  });
+
+  it('accepts a fully-known chart proposal without calling the checker model', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createChartCheckerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'b'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'chart-of-accounts-proposal',
+          schemaVersion: 1,
+          action: 'create_account',
+          householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          name: 'test2',
+          accountingClass: 'equity',
+          normalBalance: 'credit',
+          nativeCurrency: 'IDR',
+        },
+        claims: [{
+          claimId: 'chart-proposal',
+          text: 'Prepared the requested chart-of-accounts change for external confirmation.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'chart-of-accounts')!;
+    const task = VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'chart-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'chart-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        action: 'create_account',
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        instruction: 'Create an equity account named test2 in IDR.',
+        known: {
+          name: 'test2',
+          accountingClass: 'equity',
+          normalBalance: 'credit',
+          nativeCurrency: 'IDR',
+        },
+      },
+      permittedEvidence: [],
+      selectedSkill: skill.identity,
+      rubric: { rubricName: 'chart-of-accounts-rubric', rubricVersion: 1, instructions: ['Check.'] },
+      policyLabels: ['personalized_finance'],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
+    });
+  });
+
   it('accepts a chart clarification only for fields still unresolved in its maker input', async () => {
     const modelGenerate = vi.fn(async () => {
       throw new Error('model should not be called');

@@ -22,13 +22,9 @@ export function createChartOfAccountsMutationHandler(
     async execute(client: PoolClient, candidate: ChartOfAccountsProposalV1) {
       const input = ChartOfAccountsProposalSchemaV1.parse(candidate);
       if (input.action === 'create_account') {
-        const { purpose: _p, ownershipLabel: _o, parentAccountId: _par, ...rest } = input;
-        void _p; void _o; void _par;
-        await repository.createAccount(client, rest);
+        await repository.createAccount(client, accountWriteInput(input));
       } else if (input.action === 'update_account') {
-        const { purpose: _p, ownershipLabel: _o, parentAccountId: _par, ...rest } = input;
-        void _p; void _o; void _par;
-        await repository.updateAccount(client, rest);
+        await repository.updateAccount(client, accountWriteInput(input));
       } else if (input.action === 'archive_account') {
         await repository.archiveAccount(client, input.householdId, input.accountId);
       } else if (input.action === 'create_source_mapping') {
@@ -141,5 +137,22 @@ export function createChartOfAccountsMutationHandler(
         observedState: (observed !== undefined ? JSON.parse(JSON.stringify(observed)) : null) as never,
       };
     },
+  };
+}
+
+function accountWriteInput(
+  input: Extract<ChartOfAccountsProposalV1, { action: 'create_account' | 'update_account' }>,
+) {
+  return {
+    householdId: input.householdId,
+    bookId: input.bookId,
+    accountId: input.accountId,
+    name: input.name,
+    accountingClass: input.accountingClass,
+    normalBalance: input.normalBalance,
+    nativeCurrency: input.nativeCurrency,
+    ...(input.parentAccountId === undefined ? {} : { parentAccountId: input.parentAccountId }),
+    ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+    ...(input.ownershipLabel === undefined ? {} : { ownershipLabel: input.ownershipLabel }),
   };
 }

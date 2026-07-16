@@ -701,6 +701,12 @@ describe('OrchestratorAgent', () => {
     expect(orchestratorInstructions).toContain(
       'Do not infer entity absence from an empty metric projection.',
     );
+    expect(orchestratorInstructions).toContain(
+      'Account creation and chart changes always require checked specialist work; call delegateTeam instead of answering directly or collecting fields yourself.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'For account creation or chart changes, use the accounting team with intent chart_of_accounts and a nested chart-work-request-draft.',
+    );
   });
 
   it('uses prepared thread context and persists the final user-facing reply', async () => {

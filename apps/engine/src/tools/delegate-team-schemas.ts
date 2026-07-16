@@ -58,6 +58,7 @@ export const DelegateTeamToolInputSchema = z.object({
     'JSON object for the selected team.',
     'For query, use query-lead-request-draft or full EvidenceRequestV1.',
     'For accounting, use AccountingLeadRequestV1; transaction_capture must contain transaction-capture-request-draft or TransactionCaptureRequestV1.',
+    'For account creation or chart changes, use intent chart_of_accounts with a chart-work-request-draft or ChartWorkRequestV1.',
   ].join(' ')),
 }).strict().superRefine((value, context) => {
   const schema = value.team === 'query'

@@ -16,6 +16,9 @@ describe('chart mutation handler', () => {
       bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' as never,
       accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K' as never,
       name: 'Cash',
+      purpose: 'Pocket money',
+      ownershipLabel: 'Adam',
+      parentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K' as never,
       accountingClass: 'asset' as const,
       normalBalance: 'debit' as const,
       nativeCurrency: 'USD' as never,
@@ -26,6 +29,14 @@ describe('chart mutation handler', () => {
       checkedProposalHash: 'a'.repeat(64),
       idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K' as never });
     expect(repository.createAccount).toHaveBeenCalledOnce();
+    expect(repository.createAccount).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        purpose: 'Pocket money',
+        ownershipLabel: 'Adam',
+        parentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      }),
+    );
   });
 
   it('archives the previous mapping and inserts the new one for replace_source_mapping', async () => {
