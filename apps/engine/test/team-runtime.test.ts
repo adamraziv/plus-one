@@ -594,7 +594,7 @@ describe('normalizeAccountingLeadRequest', () => {
     });
   });
 
-  it('materializes a chart create draft with runtime scope and a preallocated account identity', async () => {
+  it('materializes an asset chart create draft with a debit normal-balance default', async () => {
     const query = vi.fn(async () => ({
       rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }],
     }));
@@ -612,7 +612,6 @@ describe('normalizeAccountingLeadRequest', () => {
         known: {
           accountName: 'Checking',
           accountingClass: 'asset',
-          normalBalance: 'debit',
           nativeCurrency: 'USD',
         },
       },

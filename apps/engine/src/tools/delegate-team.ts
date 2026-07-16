@@ -107,9 +107,17 @@ export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV2): Fina
       return [{ checkedClaim, rows }];
     });
   });
-  const proposedChange = result.effect.state === 'awaiting_confirmation'
+  const proposedChange = result.effect.state === 'awaiting_confirmation' || result.effect.state === 'persisted'
     ? (() => {
-      const proposal = ChartOfAccountsProposalSchemaV1.safeParse(result.effect.command.payload);
+      const candidate = result.effect.state === 'awaiting_confirmation'
+        ? result.effect.command.payload
+        : (() => {
+          const artifact = acceptedArtifacts.get(result.effect.proposal.artifactId);
+          if (artifact === undefined) return undefined;
+          const maker = MakerArtifactSchemaV1.safeParse(artifact.payload);
+          return maker.success ? maker.data.output : undefined;
+        })();
+      const proposal = ChartOfAccountsProposalSchemaV1.safeParse(candidate);
       if (!proposal.success) return undefined;
       return {
         kind: 'chart_of_accounts' as const,

@@ -452,17 +452,24 @@ async function chartKnownFromDraft(
   const parentAccountId = draft.known.parentAccountName === undefined
     ? undefined
     : await resolveScopedAccountByName(pools, householdId, bookId, draft.known.parentAccountName);
+  const normalBalance = draft.known.normalBalance
+    ?? defaultNormalBalance(draft.known.accountingClass);
   return {
     ...(parentAccountId === undefined ? {} : { parentAccountId }),
     ...(draft.known.accountName === undefined ? {} : { name: draft.known.accountName }),
     ...(draft.known.purpose === undefined ? {} : { purpose: draft.known.purpose }),
     ...(draft.known.accountingClass === undefined ? {} : { accountingClass: draft.known.accountingClass }),
-    ...(draft.known.normalBalance === undefined ? {} : { normalBalance: draft.known.normalBalance }),
+    ...(normalBalance === undefined ? {} : { normalBalance }),
     ...(draft.known.nativeCurrency === undefined ? {} : { nativeCurrency: draft.known.nativeCurrency }),
     ...(draft.known.ownershipLabel === undefined ? {} : { ownershipLabel: draft.known.ownershipLabel }),
     ...(draft.known.sourceSystem === undefined ? {} : { sourceSystem: draft.known.sourceSystem }),
     ...(draft.known.externalAccountId === undefined ? {} : { externalAccountId: draft.known.externalAccountId }),
   };
+}
+
+function defaultNormalBalance(accountingClass: ChartWorkRequestDraftV1['known']['accountingClass']) {
+  if (accountingClass === undefined) return undefined;
+  return accountingClass === 'asset' || accountingClass === 'expense' ? 'debit' as const : 'credit' as const;
 }
 
 async function scopeChartKnown(

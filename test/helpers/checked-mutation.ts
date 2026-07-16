@@ -32,7 +32,11 @@ import type { PostgresTestContext } from './postgres.js';
 export const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 export const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 export const proposalId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K';
-export const proposalPayload = { amount: '20.00' };
+export const proposalPayload = {
+  schemaName: 'test-command-input',
+  schemaVersion: 1,
+  amount: '20.00',
+};
 export const makerArtifactPayload = {
   schemaName: 'maker-artifact',
   schemaVersion: 1,

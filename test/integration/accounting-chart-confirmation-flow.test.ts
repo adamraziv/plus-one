@@ -52,7 +52,7 @@ const proposal = ChartOfAccountsProposalSchemaV1.parse({
 const maker = MakerArtifactSchemaV1.parse({
   schemaName: 'maker-artifact',
   schemaVersion: 1,
-  outputSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+  outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
   output: proposal,
   claims: [{
     claimId: 'accounting-proposal',
@@ -123,10 +123,6 @@ async function setupLiveChartRuntime(testName: string) {
     [ids.householdId],
   );
   await owner.query(
-    `INSERT INTO operations.currency_metadata (currency_code, display_name, decimal_scale)
-     VALUES ('IDR', 'Indonesian Rupiah', 2)`,
-  );
-  await owner.query(
     `INSERT INTO accounting.books (book_id, household_id, name)
      VALUES ($1,$2,'Household Book')`,
     [ids.bookId, household.rows[0]!.id],
@@ -136,7 +132,7 @@ async function setupLiveChartRuntime(testName: string) {
     taskId: ids.taskId,
     artifactId: ids.artifactId,
     checkerArtifactId: ids.checkerArtifactId,
-    outputSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+    outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
     proposal: proposalJson,
   });
 

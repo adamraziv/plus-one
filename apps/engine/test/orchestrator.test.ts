@@ -182,6 +182,50 @@ function pendingChartTeamResult(input: {
   });
 }
 
+function persistedChartTeamResult() {
+  const pending = pendingChartTeamResult();
+  if (pending.effect.state !== 'awaiting_confirmation') throw new Error('Expected pending chart result');
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...pending,
+    status: 'verified',
+    completionReason: 'The checked chart change was committed and read back successfully.',
+    effect: {
+      state: 'persisted',
+      proposal: pending.effect.proposal,
+      receipt: {
+        schemaName: 'mutation-receipt',
+        schemaVersion: 1,
+        receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        commandId: pending.effect.command.commandId,
+        householdId,
+        taskId,
+        checkedProposalId: artifactId,
+        checkedProposalHash: artifactHash,
+        commandType: pending.effect.command.commandType,
+        idempotencyKey: pending.effect.command.idempotencyKey,
+        committedRecords: [{
+          recordType: 'accounting.account',
+          recordId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        }],
+        expectedState: pending.effect.command.payload,
+        expectedStateHash: 'c'.repeat(64),
+        committedAt: now,
+      },
+      readback: {
+        schemaName: 'mutation-readback',
+        schemaVersion: 1,
+        readbackId: 'readback_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        commandId: pending.effect.command.commandId,
+        receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        ok: true,
+        checks: [{ kind: 'idempotency_receipt', status: 'passed' }],
+        mismatches: [],
+        observedStateHash: 'd'.repeat(64),
+      },
+    },
+  });
+}
+
 const addAccountMessage = message('Add Bank ABC as an IDR asset account.');
 
 function finalSynthesisProjectionResult(relationName = 'reporting.categorized_transactions') {
@@ -488,6 +532,33 @@ describe('OrchestratorAgent', () => {
     ['what does debit mean?', 'unclear'],
   ] as const)('classifies %s as %s for a suspended proposal', (body, expected) => {
     expect(confirmationDecision(body)).toBe(expected);
+  });
+
+  it('reports readback-verified account creation after confirmation', async () => {
+    const pending = pendingChartTeamResult();
+    const resumePendingMutation = vi.fn(async () => persistedChartTeamResult());
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const turn = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+    });
+
+    expect(turn).toMatchObject({
+      kind: 'final',
+      response: {
+        body: 'I added Bank ABC as an IDR asset account with a normal debit balance.',
+      },
+    });
+    expect(resumePendingMutation).toHaveBeenCalledOnce();
   });
 
   it('never exposes maker persistence claims while an effect is pending', () => {

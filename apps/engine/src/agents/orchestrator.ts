@@ -578,6 +578,18 @@ function responseBody(teamResult: TeamResultEnvelopeV2): string {
       : questions.join('\n\n');
   }
   if (teamResult.status === 'verified') {
+    const view = finalSynthesisTeamResultView(teamResult);
+    if (view.effectState === 'persisted') {
+      const change = view.proposedChange;
+      if (change?.action === 'create_account'
+        && change.accountName !== undefined
+        && change.accountingClass !== undefined
+        && change.normalBalance !== undefined
+        && change.nativeCurrency !== undefined) {
+        return `I added ${change.accountName} as an ${change.nativeCurrency} ${change.accountingClass} account with a normal ${change.normalBalance} balance.`;
+      }
+      return 'I completed the requested change and verified it.';
+    }
     return 'I found the requested information, but I could not safely summarize it. Please try again.';
   }
   return 'I could not complete that request safely. Please try again.';

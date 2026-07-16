@@ -17,8 +17,16 @@ const identity = {
   taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
   artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
 };
-const acceptedProposal = { amount: '20.00' };
-const rejectedProposal = { amount: '30.00' };
+const acceptedProposal = {
+  schemaName: 'test-command-input',
+  schemaVersion: 1,
+  amount: '20.00',
+};
+const rejectedProposal = {
+  schemaName: 'test-command-input',
+  schemaVersion: 1,
+  amount: '30.00',
+};
 const acceptedMakerPayload = {
   schemaName: 'maker-artifact',
   schemaVersion: 1,
@@ -66,7 +74,9 @@ describe('checked mutation schema', () => {
     context = await createPostgresTestContext('checked_mutation_artifact');
     const pool = new Pool({ connectionString: context.migratorUrl });
     await seedAcceptedArtifact(pool);
-    await expect(insertCommand(pool, { payload: { amount: '99.00' } }))
+    await expect(insertCommand(pool, {
+      payload: { schemaName: 'test-command-input', schemaVersion: 1, amount: '99.00' },
+    }))
       .rejects.toMatchObject({ code: '23514', constraint: 'mutation_command_exact_artifact' });
     await pool.end();
   });
