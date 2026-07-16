@@ -5,6 +5,7 @@ import {
   TransactionCaptureRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -42,7 +43,7 @@ export function createTransactionCaptureMakerAgent(input: AccountingRoleAgentInp
       ? undefined
       : clarificationArtifact(invocation) ?? deterministicProposalArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
-    return { object: artifact };
+    return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
   return fallback;
 }
@@ -179,7 +180,7 @@ function idSuffix(taskId: string): string {
 function questionFor(field: ReturnType<typeof missingFields>[number]): string {
   if (field === 'amount') return 'What amount should be recorded?';
   if (field === 'currency') return 'What currency should be used?';
-  if (field === 'payment_account') return 'Which internal payment account should this use?';
+  if (field === 'payment_account') return 'Which account did you pay from?';
   if (field === 'occurred_on') return 'On what date did the transaction occur?';
-  return 'Which internal category account should this use?';
+  return 'What category should I use for this transaction?';
 }

@@ -2,6 +2,7 @@ import type { ChannelEvent, ChannelEventSink, ChannelEventTarget, TransportAdapt
 
 export class TelegramChannelEventSink implements ChannelEventSink {
   private readonly statusMessages = new Map<string, string>();
+  private readonly commentaryTurns = new Set<string>();
 
   constructor(private readonly input: { transport: TransportAdapter }) {}
 
@@ -13,6 +14,7 @@ export class TelegramChannelEventSink implements ChannelEventSink {
     }
     if (event.kind === 'typing.stop') return;
     if (event.kind === 'tool.started' && event.toolName === 'delegateTeam') {
+      if (this.commentaryTurns.has(statusKey(event.target, 'turn'))) return;
       await this.sendStatus(event.target, 'turn', 'Checking your household records…');
       return;
     }
@@ -21,21 +23,23 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
     if (event.kind === 'final.delivered') {
+      this.commentaryTurns.delete(statusKey(event.target, 'turn'));
       await this.clearStatus(event.target, 'Reply sent.');
       return;
     }
     if (event.kind === 'assistant.commentary') {
-      await this.input.transport.sendInterim?.({
+      if (this.input.transport.sendInterim === undefined) return;
+      await this.input.transport.sendInterim({
         destination: event.target.destination,
         body: event.body,
         format: 'plain_text',
       });
+      this.commentaryTurns.add(statusKey(event.target, 'turn'));
       return;
     }
     if (event.kind === 'final.failed') {
-      const body = event.reason === 'orchestrator_timed_out'
-        ? 'This is taking longer than expected. Please try again.'
-        : 'I hit an internal error before I could send the final reply. Please try again.';
+      this.commentaryTurns.delete(statusKey(event.target, 'turn'));
+      const body = failureMessage(event.reason);
       await this.clearStatus(event.target, body);
       await this.input.transport.sendInterim?.({
         destination: event.target.destination,
@@ -97,6 +101,16 @@ export class TelegramChannelEventSink implements ChannelEventSink {
       return;
     }
   }
+}
+
+function failureMessage(reason: string): string {
+  if (reason === 'orchestrator_timed_out') {
+    return 'This is taking longer than expected. Please try again.';
+  }
+  if (reason === 'model_temporarily_unavailable') {
+    return 'The model provider is temporarily busy. Please try again in a moment.';
+  }
+  return 'I hit an internal error before I could send the final reply. Please try again.';
 }
 
 function statusKey(target: ChannelEventTarget, key: string): string {

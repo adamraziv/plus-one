@@ -72,6 +72,7 @@ export class TeamExecutor {
     let makerOrdinal = 0;
     let checkerOrdinal = 0;
     let firstRound = true;
+    const rejectedArtifactHashes = new Set<string>();
 
     while (makerOrdinal < attemptLimit) {
       if (firstRound) {
@@ -129,6 +130,24 @@ export class TeamExecutor {
         schema: { schemaName: 'maker-artifact', schemaVersion: 1 }, payload: makerOutput,
       });
       makerArtifacts.push(makerArtifact);
+      if (rejectedArtifactHashes.has(makerArtifact.artifactHash)) {
+        const error = new PlusOneError({
+          category: 'checker_rejected',
+          code: 'revision_no_progress',
+          message: 'Revision reproduced the previously rejected maker artifact.',
+          retry: 'never',
+          receiptLookupRequired: false,
+          details: { taskId: input.taskId },
+        });
+        await this.dependencies.runtime.fail({
+          householdId: input.householdId,
+          taskId: input.taskId,
+          expectedFrom: 'maker_validated',
+          failureCategory: 'checker_rejected',
+          resumable: false,
+        });
+        return failedResult(input, makerArtifacts, checkerVerdicts, error);
+      }
       await this.dependencies.runtime.beginChecker(input);
 
       let verdict: CheckerVerdictV1 | undefined;
@@ -181,6 +200,7 @@ export class TeamExecutor {
       checkerVerdicts.push(verdict);
 
       if (verdict.verdict === 'revision_requested' && makerOrdinal < attemptLimit) {
+        rejectedArtifactHashes.add(makerArtifact.artifactHash);
         await this.dependencies.runtime.requestRevision(input);
         await this.dependencies.runtime.beginMaker(input);
         continue;
@@ -263,17 +283,10 @@ function acceptedClarification(output: unknown):
   const questions = Array.isArray((output as { questions?: unknown }).questions)
     ? (output as { questions: unknown[] }).questions.filter((value): value is string => typeof value === 'string')
     : [];
-  const missingFields = Array.isArray((output as { missingFields?: unknown }).missingFields)
-    ? (output as { missingFields: unknown[] }).missingFields.filter((value): value is string => typeof value === 'string')
-    : [];
-  const missingEvidence = Array.isArray((output as { missingEvidence?: unknown }).missingEvidence)
-    ? (output as { missingEvidence: unknown[] }).missingEvidence.filter((value): value is string => typeof value === 'string')
-    : [];
-  const outstanding = [...questions, ...missingFields, ...missingEvidence];
   return {
     status: 'insufficient_evidence',
     reason,
-    outstanding: outstanding.length === 0 ? [reason] : outstanding,
+    outstanding: questions.length === 0 ? [reason] : questions,
   };
 }
 

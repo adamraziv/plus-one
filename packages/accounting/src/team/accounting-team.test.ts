@@ -52,46 +52,31 @@ describe('Accounting Team registrations', () => {
   });
 
   it('routes one typed intent to one allowed cell and rejects lead drift', () => {
-    expect(validateAccountingLeadPlan({
-      schemaName: 'accounting-lead-request', schemaVersion: 1,
-      intent: 'chart_of_accounts', request: {},
-    }, {
+    expect(validateAccountingLeadPlan({ intent: 'chart_of_accounts' }, {
       schemaName: 'team-lead-plan', schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'chart-of-accounts', makerInput: {} }],
       stopCondition: { code: 'checked-chart-change', description: 'Return one checked chart change.' },
     }).work[0]!.workCellId).toBe('chart-of-accounts');
-    expect(validateAccountingLeadPlan({
-      schemaName: 'accounting-lead-request', schemaVersion: 1,
-      intent: 'ingestion', request: {},
-    }, {
+    expect(validateAccountingLeadPlan({ intent: 'ingestion' }, {
       schemaName: 'team-lead-plan', schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'ingestion', makerInput: {} }],
       stopCondition: { code: 'checked-ingestion', description: 'Return one checked import proposal.' },
     }).work[0]!.workCellId).toBe('ingestion');
-    expect(validateAccountingLeadPlan({
-      schemaName: 'accounting-lead-request', schemaVersion: 1,
-      intent: 'reconciliation', request: {},
-    }, {
+    expect(validateAccountingLeadPlan({ intent: 'reconciliation' }, {
       schemaName: 'team-lead-plan', schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'reconciliation', makerInput: {} }],
       stopCondition: { code: 'checked-reconciliation', description: 'Return one checked reconciliation proposal.' },
     }).work[0]!.workCellId).toBe('reconciliation');
-    expect(() => validateAccountingLeadPlan({
-      schemaName: 'accounting-lead-request', schemaVersion: 1,
-      intent: 'ingestion', request: {},
-    }, {
+    expect(() => validateAccountingLeadPlan({ intent: 'ingestion' }, {
       schemaName: 'team-lead-plan', schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'journal', makerInput: {} }],
       stopCondition: { code: 'wrong', description: 'Wrong.' },
     })).toThrow();
-    expect(() => validateAccountingLeadPlan({
-      schemaName: 'accounting-lead-request', schemaVersion: 1,
-      intent: 'transaction_capture', request: {},
-    }, {
+    expect(() => validateAccountingLeadPlan({ intent: 'transaction_capture' }, {
       schemaName: 'team-lead-plan', schemaVersion: 1,
       recommendedStrategyName: 'parallel-independent-makers', work: [],
       stopCondition: { code: 'wrong', description: 'Wrong.' },
@@ -126,6 +111,39 @@ describe('Accounting Team registrations', () => {
       permittedEvidence: [],
     });
     expect(result.status).toBe('insufficient_evidence');
+  });
+
+  it('marks a checked chart clarification as insufficient evidence', () => {
+    const cell = accountingTeamDefinition.workCells.find((candidate) => candidate.workCellId === 'chart-of-accounts')!;
+    const result = cell.evaluateStopCondition({
+      condition: { code: 'chart', description: 'Return a checked chart result.' },
+      maker: {
+        schemaName: 'maker-artifact', schemaVersion: 1,
+        outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'chart-clarification', schemaVersion: 1,
+          missingFields: ['name'],
+          questions: ['What should the account be called?'],
+          reason: 'A safe proposal needs an account name.',
+        },
+        claims: [{ claimId: 'clarify-chart', text: 'The chart name is unresolved.', evidenceArtifactIds: [] }],
+        assumptions: [],
+        uncertainty: [],
+      },
+      verdict: {
+        verdict: 'accepted',
+        coveredArtifactId: ArtifactIdSchema.parse('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
+        coveredArtifactHash: 'a'.repeat(64),
+        findings: [],
+      },
+      permittedEvidence: [],
+    });
+
+    expect(cell.outputSchemaIdentity).toEqual({ schemaName: 'chart-work-result', schemaVersion: 1 });
+    expect(result).toMatchObject({
+      status: 'insufficient_evidence',
+      outstanding: ['What should the account be called?'],
+    });
   });
 
   it('prohibits database access and disallows multi-cell strategies', () => {

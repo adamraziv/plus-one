@@ -13,6 +13,7 @@ export * from './invocations.js';
 export * from './json.js';
 export * from './money.js';
 export * from './mutations.js';
+export * from './opaque-identifiers.js';
 export * from './planning.js';
 export {
   AnalystCalculationArtifactSchemaV1,

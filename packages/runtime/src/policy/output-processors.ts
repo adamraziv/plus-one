@@ -4,6 +4,7 @@ import {
   type OrchestratorFinalResponseV1,
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
+import { internalImplementationDetailMatchCategory } from './internal-implementation-detail.js';
 
 export interface OutputProcessor {
   name: string;
@@ -84,6 +85,22 @@ export const mandatoryPolicyProcessor: OutputProcessor = {
   },
 };
 
+export const internalImplementationDetailProcessor: OutputProcessor = {
+  name: 'internal-implementation-detail',
+  version: 1,
+  process(candidate) {
+    const parsed = OrchestratorFinalResponseSchemaV1.safeParse(candidate);
+    if (!parsed.success) return schemaBlocked(this.name, this.version);
+    const matchCategory = internalImplementationDetailMatchCategory(parsed.data.body);
+    if (matchCategory !== undefined) {
+      return result(this.name, this.version, 'blocked',
+        'Final response contains internal implementation detail.',
+        [`internal_${matchCategory}`], false);
+    }
+    return result(this.name, this.version, 'passed', 'Final response contains only user-facing language.');
+  },
+};
+
 export const channelFormatProcessor: OutputProcessor = {
   name: 'channel-format',
   version: 1,
@@ -121,7 +138,11 @@ export const channelFormatProcessor: OutputProcessor = {
 
 export function runOutputProcessors(
   response: OrchestratorFinalResponseV1,
-  processors: readonly OutputProcessor[] = [mandatoryPolicyProcessor, channelFormatProcessor],
+  processors: readonly OutputProcessor[] = [
+    internalImplementationDetailProcessor,
+    mandatoryPolicyProcessor,
+    channelFormatProcessor,
+  ],
 ): OutputProcessorResultV1 {
   for (const processor of processors) {
     const processed = processor.process(response);

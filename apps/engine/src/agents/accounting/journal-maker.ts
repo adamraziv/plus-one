@@ -4,6 +4,7 @@ import {
   JournalWorkRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -36,7 +37,7 @@ export function createJournalMakerAgent(input: AccountingRoleAgentInput): Accoun
     const invocation = parseMakerInvocation(messages as readonly { role: string; content: string }[]);
     const artifact = invocation === undefined ? undefined : clarificationArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
-    return { object: artifact };
+    return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
   return fallback;
 }
@@ -62,8 +63,8 @@ function clarificationArtifact(invocation: NonNullable<ReturnType<typeof parseMa
     schemaVersion: 1,
     missingFields: ['payment_account', 'occurred_on'],
     questions: [
-      'Which internal account should be the source for this transfer?',
-      'Which internal account should be the destination for this transfer?',
+      'Which account is the money moving from?',
+      'Which account is the money moving to?',
       'On what date should this transfer be recorded?',
     ],
     reason: 'The transfer cannot be posted until the exact internal source account, destination account, and effective date are confirmed.',

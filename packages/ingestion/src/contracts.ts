@@ -1,25 +1,21 @@
 import { z } from 'zod';
 import {
   AccountIdSchema, ArtifactIdSchema, BookIdSchema, CurrencyCodeSchema,
-  DecimalStringSchema, HouseholdIdSchema, JournalIdSchema, LocalDateSchema,
-  PeriodIdSchema, PostJournalProposalSchemaV1,
+  DecimalStringSchema, DraftSeriesIdSchema, HouseholdIdSchema, JournalIdSchema, LocalDateSchema,
+  opaqueIdentifierSchema, PeriodIdSchema, PostJournalProposalSchemaV1,
 } from '@plus-one/contracts';
 
-const opaqueId = <const Brand extends string>(prefix: string) => z
-  .string()
-  .regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`), `Expected ${prefix}_ followed by a ULID`)
-  .brand<Brand>();
-
-export const SourceDocumentIdSchema = opaqueId<'SourceDocumentId'>('source');
-export const ImportBatchIdSchema = opaqueId<'ImportBatchId'>('import');
-export const RawRowIdSchema = opaqueId<'RawRowId'>('rawrow');
-export const NormalizedRowIdSchema = opaqueId<'NormalizedRowId'>('normrow');
-export const MatchDecisionIdSchema = opaqueId<'MatchDecisionId'>('match');
-export const StatementSnapshotIdSchema = opaqueId<'StatementSnapshotId'>('snapshot');
-export const StatementLineIdSchema = opaqueId<'StatementLineId'>('stmtline');
-export const ReconciliationIdSchema = opaqueId<'ReconciliationId'>('recon');
-export const ReconciliationItemIdSchema = opaqueId<'ReconciliationItemId'>('reconitem');
-export const PeriodEventIdSchema = opaqueId<'PeriodEventId'>('periodevent');
+export const SourceDocumentIdSchema = opaqueIdentifierSchema<'SourceDocumentId'>('sourceDocument');
+export const ImportBatchIdSchema = opaqueIdentifierSchema<'ImportBatchId'>('importBatch');
+export const RawRowIdSchema = opaqueIdentifierSchema<'RawRowId'>('rawRow');
+export const NormalizedRowIdSchema = opaqueIdentifierSchema<'NormalizedRowId'>('normalizedRow');
+export const MatchDecisionIdSchema = opaqueIdentifierSchema<'MatchDecisionId'>('matchDecision');
+export const StatementSnapshotIdSchema = opaqueIdentifierSchema<'StatementSnapshotId'>('statementSnapshot');
+export const StatementLineIdSchema = opaqueIdentifierSchema<'StatementLineId'>('statementLine');
+export const ReconciliationIdSchema = opaqueIdentifierSchema<'ReconciliationId'>('reconciliation');
+export const ReconciliationItemIdSchema = opaqueIdentifierSchema<'ReconciliationItemId'>('reconciliationItem');
+export const PeriodEventIdSchema = opaqueIdentifierSchema<'PeriodEventId'>('periodEvent');
+export const DiscrepancyIdSchema = opaqueIdentifierSchema<'DiscrepancyId'>('discrepancy');
 
 export type SourceDocumentId = z.infer<typeof SourceDocumentIdSchema>;
 export type ImportBatchId = z.infer<typeof ImportBatchIdSchema>;
@@ -68,7 +64,7 @@ export const ImportRowDecisionSchemaV1 = z.discriminatedUnion('action', [
     normalizedRowId: NormalizedRowIdSchema,
     action: z.literal('post'),
     draft: z.object({
-      draftSeriesId: z.string().min(1).max(160),
+      draftSeriesId: DraftSeriesIdSchema,
       version: z.number().int().positive(),
       journal: PostJournalProposalSchemaV1,
     }).strict(),
@@ -117,8 +113,6 @@ export const ReconciliationItemProposalSchemaV1 = z.object({
 }).strict();
 export type ReconciliationItemProposalV1 = z.infer<typeof ReconciliationItemProposalSchemaV1>;
 
-export const DiscrepancyIdSchema = z.string().regex(/^discrepancy_[0-9A-HJKMNP-TV-Z]{26}$/);
-
 export const ReconciliationProposalSchemaV1 = z.object({
   schemaName: z.literal('reconciliation-proposal'),
   schemaVersion: z.literal(1),
@@ -152,7 +146,7 @@ export const PeriodCloseProposalSchemaV1 = z.object({
   bookId: BookIdSchema,
   periodId: PeriodIdSchema,
   reconciliationIds: z.array(ReconciliationIdSchema).min(1),
-  unresolvedDiscrepancyIds: z.array(z.string().min(1)),
+  unresolvedDiscrepancyIds: z.array(DiscrepancyIdSchema),
   responsibleArtifactIds: z.array(ArtifactIdSchema).min(1),
 }).strict();
 export type PeriodCloseProposalV1 = z.infer<typeof PeriodCloseProposalSchemaV1>;

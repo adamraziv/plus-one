@@ -4,6 +4,8 @@ import {
   AccountingJournalMutationProposalSchemaV1,
   AccountingWorkResultSchemaV1,
   ChartOfAccountsProposalSchemaV1,
+  ChartWorkRequestSchemaV1,
+  ChartWorkResultSchemaV1,
 } from './contracts.js';
 
 const baseJournal = {
@@ -145,5 +147,49 @@ describe('accounting workflow contracts', () => {
       externalAccountId: 'checking-1',
       metadata: { label: 'Checking' },
     }).action).toBe('create_source_mapping');
+  });
+
+  it('requires action-correlated chart identities', () => {
+    const base = {
+      schemaName: 'chart-work-request' as const,
+      schemaVersion: 1 as const,
+      householdId: baseJournal.householdId,
+      bookId: baseJournal.bookId,
+      instruction: 'Create a household bank account.',
+      known: {},
+    };
+
+    expect(ChartWorkRequestSchemaV1.safeParse({
+      ...base,
+      action: 'update_account',
+    }).success).toBe(false);
+    expect(ChartWorkRequestSchemaV1.safeParse({
+      ...base,
+      action: 'archive_account',
+    }).success).toBe(false);
+    expect(ChartWorkRequestSchemaV1.safeParse({
+      ...base,
+      action: 'create_source_mapping',
+      mappingId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      accountId: baseJournal.postings[0]!.accountId,
+    }).success).toBe(false);
+    expect(ChartWorkRequestSchemaV1.safeParse({
+      ...base,
+      action: 'replace_source_mapping',
+      mappingId: 'accountmap_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      accountId: baseJournal.postings[0]!.accountId,
+    }).success).toBe(false);
+  });
+
+  it('keeps chart clarification separate from executable chart proposals', () => {
+    const clarification = ChartWorkResultSchemaV1.parse({
+      schemaName: 'chart-clarification',
+      schemaVersion: 1,
+      missingFields: ['name', 'accounting_class', 'native_currency'],
+      questions: ['What is the account name?', 'Which accounting class applies?', 'What is the currency?'],
+      reason: 'The requested account lacks required user-owned fields.',
+    });
+    expect(clarification.schemaName).toBe('chart-clarification');
+    expect(ChartOfAccountsProposalSchemaV1.safeParse(clarification).success).toBe(false);
   });
 });

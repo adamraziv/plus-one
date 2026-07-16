@@ -8,6 +8,7 @@ import {
   JournalWorkRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -39,7 +40,7 @@ export function createJournalCheckerAgent(input: AccountingRoleAgentInput): Acco
     const task = parseVerificationTask(messages as readonly { role: string; content: string }[]);
     const verdict = task === undefined ? undefined : verdictForClarification(task);
     if (verdict === undefined) return fallbackGenerate(messages, options);
-    return { object: verdict };
+    return submitContractResult(options, verdict);
   }) as typeof fallback.generate;
   return fallback;
 }

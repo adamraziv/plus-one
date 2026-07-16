@@ -21,28 +21,7 @@ export const REQUIRED_REPORTING_RELATIONS = [
   'reporting.source_freshness',
 ] as const;
 
-type RelationName = typeof REQUIRED_REPORTING_RELATIONS[number];
-
-const metadata = Object.fromEntries(REQUIRED_REPORTING_RELATIONS.map((relationName) => [
-  relationName,
-  {
-    schemaName: 'reporting-relation-metadata',
-    schemaVersion: 1,
-    relationName,
-    grain: relationName.endsWith('_daily') ? ['household', 'date'] : ['household'],
-    metrics: ['amounts', 'counts', 'statuses'],
-    householdScoped: true,
-    currencyBehavior: 'Native amounts are preserved; reporting amounts use household reporting currency when derivable from posted facts.',
-    freshness: relationName.includes('source') ? 'source freshness' : 'projection or ledger freshness',
-    sourceSemantics: 'Rows are derived from authoritative accounting, ingestion, planning, and operations records; reporting rows are not source facts.',
-  },
-])) as Record<RelationName, ReportingRelationMetadataV1>;
-
 export class ReportingCatalog {
-  static staticMetadata(relationName: RelationName): ReportingRelationMetadataV1 {
-    return ReportingRelationMetadataSchemaV1.parse(metadata[relationName]);
-  }
-
   async list(client: Pick<PoolClient, 'query'>): Promise<ReportingRelationMetadataV1[]> {
     const result = await client.query<ReportingRelationMetadataV1>(
       `SELECT 'reporting-relation-metadata' AS "schemaName", 1 AS "schemaVersion",

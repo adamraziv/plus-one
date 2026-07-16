@@ -16,7 +16,7 @@ const outputSchema = z.object({ answer: z.string().min(1) }).strict();
 const toolId = 'query_account_list';
 
 describe('live Mastra adapter tool calling', () => {
-  liveIt('executes a provider-safe active tool before accepting structured output', async () => {
+  liveIt('executes a provider-safe active tool before submitting the contractual result', async () => {
     const config = loadConfig();
     const hits: string[] = [];
     const registry = new QueryToolRegistry({
@@ -77,7 +77,7 @@ describe('live Mastra adapter tool calling', () => {
         'You have exactly one active Query tool.',
         'You must call that active tool before answering.',
         'Call it with this exact input JSON: {"householdId":"hh_01JNZQ4A9B8C7D6E5F4G3H2J1K"}.',
-        'After the tool call, answer with a non-empty string inside the output schema.',
+        'After the tool call, call submitResult with a non-empty answer string.',
       ].join('\n'),
       messages: [{ role: 'user', content: 'Use the active tool, then answer.' }],
       parentMessages: [],

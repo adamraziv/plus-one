@@ -5,8 +5,10 @@ import {
   QueryResultSchemaV1,
   VerificationTaskSchemaV1,
 } from '@plus-one/contracts';
+import { satisfiesRequestedGrain } from '@plus-one/query';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -44,14 +46,12 @@ export function createQueryCheckerAgent(input: QueryRoleAgentInput): QueryRoleAg
     if (maker.outputSchema.schemaName !== 'query-result') return fallbackGenerate(messages, options);
     const result = QueryResultSchemaV1.parse(maker.output);
     const findings = queryFindings(task, result);
-    return {
-      object: CheckerVerdictSchemaV1.parse({
+    return submitContractResult(options, CheckerVerdictSchemaV1.parse({
         verdict: findings.length === 0 ? 'accepted' : 'revision_requested',
         coveredArtifactId: task.makerArtifact.artifactId,
         coveredArtifactHash: task.makerArtifact.artifactHash,
         findings,
-      }),
-    };
+      }));
   }) as typeof fallback.generate;
   return fallback;
 }
@@ -69,7 +69,7 @@ function queryFindings(
 ) {
   const findings: Array<{ code: string; message: string }> = [];
   const request = EvidenceRequestSchemaV1.safeParse(task.makerInput);
-  if (request.success && !sameStrings(result.grain, request.data.desiredGrain)) {
+  if (request.success && !satisfiesRequestedGrain(result.grain, request.data.desiredGrain)) {
     findings.push({ code: 'query_grain_mismatch', message: 'Query result grain does not match requested grain.' });
   }
   if (!result.sourceReferences.includes(`filter=household_id:eq:${task.householdId}`)) {
@@ -79,8 +79,4 @@ function queryFindings(
     findings.push({ code: 'query_coverage_warning', message: warning });
   }
   return findings;
-}
-
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

@@ -7,9 +7,6 @@
     "overrides": {
       "dockerode>uuid": "11.1.1",
       "esbuild": "0.28.1"
-    },
-    "patchedDependencies": {
-      "@mastra/core@1.47.0": "patches/@mastra__core@1.47.0.patch"
     }
   },
   "engines": {
@@ -21,10 +18,10 @@
   "scripts": {
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "test:unit": "vitest run --project unit",
-    "test:db": "vitest run --project database --no-file-parallelism",
-    "test:integration": "vitest run --project integration --passWithNoTests",
-    "test:acceptance": "vitest run --project acceptance --passWithNoTests",
+    "test:unit": "vitest --workspace vitest.workspace.ts run --project unit",
+    "test:db": "vitest --workspace vitest.workspace.ts run --project database --no-file-parallelism",
+    "test:integration": "vitest --workspace vitest.workspace.ts run --project integration --passWithNoTests",
+    "test:acceptance": "vitest --workspace vitest.workspace.ts run --project acceptance --passWithNoTests",
     "dev:mastra": "mastra dev --dir apps/engine/src/mastra",
     "plus-one": "tsx apps/engine/src/cli.ts",
     "install:cli": "bash scripts/install-cli.sh",

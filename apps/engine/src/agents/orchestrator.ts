@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
-import { ZodError, z } from 'zod';
+import { ZodError } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
@@ -13,74 +13,64 @@ import {
   type OrchestratorFinalResponseV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
-import { getLogger, targetFromInboundMessage, type ChannelEventSink, type TeamDefinition, withLogContext } from '@plus-one/runtime';
+import {
+  createTransientModelRetryProcessor,
+  getLogger,
+  internalImplementationDetailMatchCategory,
+  modelResultEndedOnRetry,
+  ModelTemporarilyUnavailableError,
+  stopAfterSemanticModelSteps,
+  targetFromInboundMessage,
+  type ChannelEventSink,
+  type InternalImplementationDetailMatchCategory,
+  type TeamDefinition,
+  withLogContext,
+} from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
-import { createDelegateTeamTool, type OrchestratorTeamRuntime } from '../tools/delegate-team.js';
+import {
+  internalIdentifierMatchCategory,
+  type InternalIdentifierMatchCategory,
+} from '../safety/internal-identifier.js';
+import {
+  createDelegateTeamTool,
+  finalSynthesisTeamResultView,
+  userFacingText,
+  type OrchestratorTeamRuntime,
+} from '../tools/delegate-team.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
   'You are the only user-facing entrypoint.',
   'Answer only from verified context or checked team results.',
-  'When calling delegateTeam, use exact team ids, never display names: query, accounting, budgeting, cash-flow, investments-retirement, records-reporting.',
+  'An empty reporting.current_balances result does not prove that no accounts exist.',
+  'Do not infer entity absence from an empty metric projection. State only that the requested metric projection returned no rows.',
+  'Only reporting.accounts account-list evidence may support a claim that no accounts are configured.',
+  'Answer ordinary conversation directly when no checked specialist work is needed.',
+  'When checked specialist work is needed, call delegateTeam once using an exact registered team id from its team catalog.',
   'delegateTeam input must always be strict JSON, and request must be a JSON object, never a quoted JSON string.',
-  'Delegate financial read questions to team id query.',
-  'Delegate transaction capture, journal, chart-of-accounts, ingestion, and reconciliation requests to team id accounting.',
-  'A request to add, record, capture, import, reconcile, or change accounting data is accounting, not query.',
-  'For internal Plus One ledger work, your next action must be delegateTeam with team accounting; do not answer directly first.',
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
-  'Do not ask the user to confirm transaction capture directly; delegateTeam accounting must ask any needed clarification.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
-  'For a message like "add $10 of buying a burger", call accounting once with an object request; do not call query to discover book ids or other metadata.',
+  'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
   'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
+  'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
+  'Account existence or account inventory questions use account list coverage.',
+  'Examples such as "show my accounts", "check my accounts", and "which accounts do I have" mean account list, even when phrased as a check.',
+  'Use balance snapshot only when the user explicitly asks for a balance, amount, value, or net worth.',
+  'Once a schema-valid EvidenceRequestV1 is delegated, treat its coverage as authoritative; do not silently substitute another reporting relation.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
-  'Return the requested OrchestratorResponseDraft object.',
+  'After delegateTeam returns, explain the checked result to the user in concise natural language.',
+  'Return only the user-facing reply text when you are not calling a tool.',
 ].join('\n');
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
-const MAX_ORCHESTRATOR_STEPS = 2;
-
-const citationDraftSchema = z.object({
-  label: z.string().min(1).max(512),
-  artifactId: z.string().regex(/^artifact_[0-9A-HJKMNP-TV-Z]{26}$/).optional(),
-  sourceRef: z.string().min(1).max(512).optional(),
-}).strict();
-
-const OrchestratorResponseDraftSchema = z.object({
-  body: z.string().min(1).max(32_000),
-  policyBoundary: z.enum(['personalized_finance', 'informational_only', 'unsupported_capability', 'operational']),
-  citations: z.array(citationDraftSchema).default([]),
-  assumptions: z.array(z.string().min(1).max(2_000)).default([]),
-  freshness: z.array(z.string().min(1).max(2_000)).default(['current invocation only']),
-  disclaimer: z.string().min(1).max(2_000)
-    .default('Plus One is an AI assistant, not a licensed financial professional.'),
-  unsupportedCapabilities: z.array(z.enum(['tax', 'insurance'])).default([]),
-  recommendationActions: z.array(z.string().min(1).max(2_000)).default([]),
-}).strict();
-
-type OrchestratorResponseDraft = z.infer<typeof OrchestratorResponseDraftSchema>;
-
-function parseOrchestratorModelOutput(value: unknown): OrchestratorResponseDraft {
-  const final = OrchestratorFinalResponseSchemaV1.safeParse(value);
-  if (final.success) {
-    return {
-      body: final.data.body,
-      policyBoundary: final.data.policyBoundary,
-      citations: final.data.citations,
-      assumptions: final.data.assumptions,
-      freshness: final.data.freshness,
-      disclaimer: final.data.disclaimer,
-      unsupportedCapabilities: final.data.unsupportedCapabilities,
-      recommendationActions: final.data.recommendationActions,
-    };
-  }
-  return OrchestratorResponseDraftSchema.parse(value);
-}
+const MAX_ORCHESTRATOR_STEPS = 4;
+const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
 
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
@@ -114,6 +104,11 @@ export class OrchestratorAgent {
         const active = this.activeInvocation.getStore();
         const startedAt = Date.now();
         const logger = getLogger('runtime.orchestrator');
+        await emitChannelEvent(active?.channelEvents, {
+          kind: 'assistant.commentary',
+          target: targetFromInboundMessage(input.message),
+          body: delegationCommentary(input.team.team, input.request),
+        }, active?.signal);
         await emitChannelEvent(active?.channelEvents, {
           kind: 'tool.started',
           target: targetFromInboundMessage(input.message),
@@ -225,42 +220,85 @@ export class OrchestratorAgent {
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          const result = await abortable(this.agent.generate(prompt, {
-            ...this.orchestratorGenerateOptions(message),
-            maxSteps: MAX_ORCHESTRATOR_STEPS,
-            abortSignal: signal,
-            onStepFinish: (step) => {
-              const usage = step.usage ?? {};
-              logger.info('orchestrator.step.completed', {
-                fields: {
-                  step: ++stepOrdinal,
-                  durationMs: Date.now() - stepStartedAt,
-                  inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
-                  outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
-                  toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
-                },
-              });
-              stepStartedAt = Date.now();
-            },
-            structuredOutput: {
-              schema: OrchestratorResponseDraftSchema,
-              jsonPromptInjection: true,
-            },
-          }), signal);
+          let result: Awaited<ReturnType<typeof this.agent.generate>>;
+          try {
+            result = await abortable(this.agent.generate(prompt, {
+              ...this.orchestratorGenerateOptions(message),
+              stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
+              errorProcessors: [createTransientModelRetryProcessor({
+                maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+              })],
+              maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+              toolChoice: 'auto',
+              prepareStep: async () => invocation.delegationCount === 0
+                ? { activeTools: ['delegateTeam'], toolChoice: 'auto' as const }
+                : { activeTools: [], toolChoice: 'none' as const },
+              abortSignal: signal,
+              onStepFinish: (step) => {
+                const usage = step.usage ?? {};
+                logger.info('orchestrator.step.completed', {
+                  fields: {
+                    step: ++stepOrdinal,
+                    durationMs: Date.now() - stepStartedAt,
+                    inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
+                    outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
+                    toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
+                  },
+                });
+                stepStartedAt = Date.now();
+              },
+            }), signal);
+          } catch (error) {
+            if (
+              !signal.aborted
+              && !invocation.delegationFailed
+              && invocation.teamResults.length !== 0
+            ) {
+              return turnFromTeamResults(message, invocation.teamResults);
+            }
+            throw error;
+          }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
+          if (modelResultEndedOnRetry(result)) {
+            if (!invocation.delegationFailed && invocation.teamResults.length !== 0) {
+              return turnFromTeamResults(message, invocation.teamResults);
+            }
+            throw new ModelTemporarilyUnavailableError();
+          }
           if (invocation.delegationFailed) {
             throw new Error('Delegated team work failed before producing a checked result.');
           }
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
             throw new Error('Delegated team did not return a checked result.');
           }
-          const draft = parseOrchestratorModelOutput(result.object ?? parseJsonObject(result.text));
-          if (invocation.teamResults.some((teamResult) => teamResult.status !== 'verified')) {
-            return turnFromTeamResults(message, invocation.teamResults);
+          let body = finalStepResponseText(result);
+          if (invocation.teamResults.length !== 0) {
+            const selected = selectTeamResult(invocation.teamResults);
+            const canUseInitialBody = body !== undefined
+              && userFacingSafetyMatchCategory(body) === undefined
+              && (selected?.status === 'verified'
+                || (selected?.status === 'insufficient_evidence' && body.includes('?')));
+            if (!canUseInitialBody) {
+              body = await this.synthesizeTeamResults(message, invocation.teamResults, signal);
+            }
+            const safeBody = body !== undefined && userFacingSafetyMatchCategory(body) === undefined
+              ? body
+              : undefined;
+            return turnFromTeamResults(message, invocation.teamResults, safeBody);
+          }
+          if (body === undefined) {
+            throw new Error('Orchestrator returned an empty response.');
+          }
+          const unsafeMatchCategory = userFacingSafetyMatchCategory(body);
+          if (unsafeMatchCategory !== undefined) {
+            logger.warn('orchestrator.response.withheld', {
+              fields: { matchCategory: unsafeMatchCategory },
+            });
+            body = 'I could not prepare a safe response. Please try again.';
           }
           return {
             kind: 'final',
-            response: responseFromDraft(message, draft, invocation.teamResults),
+            response: responseFromText(message, body, invocation.teamResults),
           };
         });
         if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -303,6 +341,25 @@ export class OrchestratorAgent {
       },
     };
   }
+
+  private async synthesizeTeamResults(
+    message: InboundChannelMessageV1,
+    teamResults: readonly TeamResultEnvelopeV1[],
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    try {
+      const result = await abortable(this.agent.generate(finalSynthesisPrompt(message, teamResults), {
+        stopWhen: stopAfterSemanticModelSteps(1),
+        toolChoice: 'none',
+        prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
+        abortSignal: signal,
+      }), signal);
+      return finalStepResponseText(result);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return undefined;
+    }
+  }
 }
 
 async function emitChannelEvent(
@@ -332,30 +389,41 @@ function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cle
   };
 }
 
-function parseJsonObject(text: unknown): unknown {
-  if (typeof text !== 'string') return undefined;
-  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) return undefined;
-  return JSON.parse(trimmed.slice(start, end + 1));
-}
-
 function inboundContextPrompt(message: InboundChannelMessageV1): string {
-  return [
-    'InboundChannelMessageV1 context:',
-    JSON.stringify(message),
-  ].join('\n');
+  return message.body;
 }
 
 function responseFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV1[],
+  synthesizedBody?: string,
 ): OrchestratorFinalResponseV1 {
   const teamResult = selectTeamResult(teamResults);
   if (teamResult === undefined) throw new Error('Missing team result for fallback response');
-  const body = responseBody(teamResult);
+  const body = synthesizedBody ?? responseBody(teamResult);
+  return responseFromText(message, body, [teamResult]);
+}
+
+function turnFromTeamResults(
+  message: InboundChannelMessageV1,
+  teamResults: readonly TeamResultEnvelopeV1[],
+  synthesizedBody?: string,
+): OrchestratorTurnResult {
+  const response = responseFromTeamResults(message, teamResults, synthesizedBody);
+  const teamResult = selectTeamResult(teamResults);
+  if (teamResult?.status === 'insufficient_evidence') {
+    return { kind: 'ask-user', response };
+  }
+  return { kind: 'final', response };
+}
+
+function responseFromText(
+  message: InboundChannelMessageV1,
+  body: string,
+  teamResults: readonly TeamResultEnvelopeV1[] = [],
+): OrchestratorFinalResponseV1 {
   assertUserSafeResponseBody(body);
+  const teamResult = selectTeamResult(teamResults);
   return OrchestratorFinalResponseSchemaV1.parse({
     schemaName: 'orchestrator-final-response',
     schemaVersion: 1,
@@ -363,10 +431,14 @@ function responseFromTeamResults(
     householdId: message.householdId,
     conversationId: message.conversationId,
     body,
-    policyBoundary: 'personalized_finance',
-    citations: citationsFor(teamResult),
-    assumptions: teamResult.assumptions,
-    freshness: teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
+    policyBoundary: teamResult === undefined ? 'informational_only' : 'personalized_finance',
+    citations: teamResult === undefined
+      ? [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }]
+      : citationsFor(teamResult),
+    assumptions: teamResult?.assumptions ?? [],
+    freshness: teamResult === undefined
+      ? ['current invocation only']
+      : teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
     disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
     unsupportedCapabilities: [],
     recommendationActions: [],
@@ -380,62 +452,52 @@ function responseFromTeamResults(
   });
 }
 
-function turnFromTeamResults(
-  message: InboundChannelMessageV1,
-  teamResults: readonly TeamResultEnvelopeV1[],
-): OrchestratorTurnResult {
-  const response = responseFromTeamResults(message, teamResults);
-  const teamResult = selectTeamResult(teamResults);
-  if (teamResult?.status === 'insufficient_evidence') {
-    return { kind: 'ask-user', response };
+function nonEmptyResponseText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const body = value.trim();
+  return body.length === 0 ? undefined : body;
+}
+
+function finalStepResponseText(result: unknown): string | undefined {
+  if (!isRecord(result)) return undefined;
+  if (!Array.isArray(result.steps) || result.steps.length === 0) {
+    return nonEmptyResponseText(result.text);
   }
-  return { kind: 'final', response };
+  let lastToolStep = -1;
+  for (let index = 0; index < result.steps.length; index += 1) {
+    if (hasToolCalls(result.steps[index])) lastToolStep = index;
+  }
+  for (let index = result.steps.length - 1; index > lastToolStep; index -= 1) {
+    const step = result.steps[index];
+    if (hasToolCalls(step) || !isRecord(step)) continue;
+    const body = nonEmptyResponseText(step.text);
+    if (body !== undefined) return body;
+  }
+  return undefined;
 }
 
-function responseFromDraft(
-  message: InboundChannelMessageV1,
-  draft: OrchestratorResponseDraft,
-  teamResults: readonly TeamResultEnvelopeV1[] = [],
-): OrchestratorFinalResponseV1 {
-  const body = draft.body;
-  assertUserSafeResponseBody(body);
-  return OrchestratorFinalResponseSchemaV1.parse({
-    schemaName: 'orchestrator-final-response',
-    schemaVersion: 1,
-    responseId: `response_${Date.now()}`,
-    householdId: message.householdId,
-    conversationId: message.conversationId,
-    body,
-    policyBoundary: draft.policyBoundary,
-    citations: citationsFromDraftOrTeamResults(teamResults),
-    assumptions: draft.assumptions,
-    freshness: freshnessFromDraftOrTeamResults(draft.freshness, teamResults),
-    disclaimer: draft.disclaimer,
-    unsupportedCapabilities: draft.unsupportedCapabilities,
-    recommendationActions: draft.recommendationActions,
-    delivery: {
-      channel: message.channel,
-      destination: destinationFor(message.channel, message.metadata.destination),
-      format: FINAL_REPLY_FORMAT,
-    },
-    responseHash: createHash('sha256').update(body, 'utf8').digest('hex'),
-    createdAt: new Date().toISOString(),
-  });
+function hasToolCalls(step: unknown): boolean {
+  return isRecord(step) && Array.isArray(step.toolCalls) && step.toolCalls.length > 0;
 }
 
-function citationsFromDraftOrTeamResults(teamResults: readonly TeamResultEnvelopeV1[]) {
-  const teamResult = selectTeamResult(teamResults);
-  if (teamResult !== undefined) return citationsFor(teamResult);
-  return [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }];
+function delegationCommentary(team: string, request: unknown): string {
+  const coverage = isRecord(request) && Array.isArray(request.coverage)
+    ? request.coverage.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (team === 'query' && coverage.some((value) =>
+    value === 'account list' || value === 'reporting.accounts')) {
+    return "I'll check your household accounts.";
+  }
+  if (team === 'query' && coverage.some((value) =>
+    value === 'categorized transactions' || value === 'reporting.categorized_transactions')) {
+    return "I'll check your household transactions.";
+  }
+  if (team === 'query') return "I'll check your household records.";
+  return "I'll check that for you.";
 }
 
-function freshnessFromDraftOrTeamResults(
-  draftFreshness: OrchestratorResponseDraft['freshness'],
-  teamResults: readonly TeamResultEnvelopeV1[],
-): string[] {
-  const teamResult = selectTeamResult(teamResults);
-  if (teamResult !== undefined) return teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness;
-  return draftFreshness.length === 0 ? ['current invocation only'] : draftFreshness;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function selectTeamResult(teamResults: readonly TeamResultEnvelopeV1[]): TeamResultEnvelopeV1 | undefined {
@@ -452,17 +514,84 @@ function statusRank(status: TeamResultEnvelopeV1['status']): number {
 }
 
 function responseBody(teamResult: TeamResultEnvelopeV1): string {
-  const heading = `${labelForTeam(teamResult.team)} status: ${teamResult.status}`;
-  const details = [teamResult.completionReason, ...teamResult.outstanding].filter((value) => value.length > 0);
-  return details.length === 0 ? heading : `${heading}\n\n${details.join('\n')}`;
+  if (teamResult.status === 'insufficient_evidence') {
+    const questions = clarificationQuestions(teamResult);
+    return questions.length === 0
+      ? 'I need a little more information before I can continue. What details can you clarify?'
+      : questions.join('\n\n');
+  }
+  if (teamResult.status === 'verified') {
+    return 'I found the requested information, but I could not safely summarize it. Please try again.';
+  }
+  return 'I could not complete that request safely. Please try again.';
+}
+
+class InternalIdentifierResponseError extends Error {
+  constructor(readonly matchCategory: UserFacingSafetyMatchCategory) {
+    super('Final response contains internal-only detail.');
+  }
 }
 
 function assertUserSafeResponseBody(body: string): void {
-  if (/\b(?:household|book|account)\s*(?:id|identifier)\b/i.test(body)
-    || /\b(?:hh|household|book|acct|account)_[a-z0-9_-]+\b/i.test(body)
-    || /\b[hb]\d{3,}\b/i.test(body)) {
-    throw new Error('Final response contains an internal identifier request.');
-  }
+  const matchCategory = userFacingSafetyMatchCategory(body);
+  if (matchCategory !== undefined) throw new InternalIdentifierResponseError(matchCategory);
+}
+
+type UserFacingSafetyMatchCategory =
+  | InternalIdentifierMatchCategory
+  | InternalImplementationDetailMatchCategory;
+
+function userFacingSafetyMatchCategory(value: string): UserFacingSafetyMatchCategory | undefined {
+  return internalIdentifierMatchCategory(value) ?? internalImplementationDetailMatchCategory(value);
+}
+
+function clarificationQuestions(teamResult: TeamResultEnvelopeV1): string[] {
+  const acceptedArtifactIds = new Set(teamResult.checkerVerdicts.flatMap((verdict) =>
+    verdict.verdict === 'accepted' ? [verdict.coveredArtifactId] : []));
+  return teamResult.makerArtifacts.flatMap((artifact) => {
+    if (!acceptedArtifactIds.has(artifact.artifactId)) return [];
+    const maker = isRecord(artifact.payload) ? artifact.payload : undefined;
+    const output = maker !== undefined && isRecord(maker.output) ? maker.output : undefined;
+    if (output === undefined || !Array.isArray(output.questions)) return [];
+    return output.questions.flatMap((question) => {
+      if (typeof question !== 'string') return [];
+      const safeQuestion = userFacingText(question);
+      return safeQuestion === undefined ? [] : [safeQuestion];
+    });
+  });
+}
+
+function finalSynthesisPrompt(
+  message: InboundChannelMessageV1,
+  teamResults: readonly TeamResultEnvelopeV1[],
+): string {
+  const results = teamResults.map((result) => {
+    const view = finalSynthesisTeamResultView(result);
+    return {
+      team: view.team,
+      outcome: synthesisOutcome(view.status),
+      facts: view.checkedClaims,
+      assumptions: view.assumptions,
+      uncertainty: view.uncertainty,
+      questions: view.outstanding.filter((value) => value.includes('?')),
+      data: view.checkedData,
+    };
+  });
+  return [
+    'Write the final reply to the user using only the safe checked context below.',
+    'Use concise natural language. Do not mention teams, makers, checkers, schemas, statuses, relation names, field keys, or implementation details.',
+    `User request: ${message.body}`,
+    `Safe checked context: ${JSON.stringify(results)}`,
+    'Return only the user-facing reply text.',
+  ].join('\n');
+}
+
+function synthesisOutcome(status: TeamResultEnvelopeV1['status']): string {
+  if (status === 'verified') return 'checked information is ready';
+  if (status === 'insufficient_evidence') return 'more information is needed from the user';
+  if (status === 'partial') return 'only part of the request could be completed';
+  if (status === 'conflicted') return 'the available information conflicts';
+  return 'the request could not be completed';
 }
 
 function citationsFor(teamResult: TeamResultEnvelopeV1) {
@@ -475,15 +604,10 @@ function citationsFor(teamResult: TeamResultEnvelopeV1) {
   }));
 }
 
-function labelForTeam(team: string): string {
-  if (team === 'accounting') return 'Accounting team';
-  if (team === 'query') return 'Query team';
-  return `${team} team`;
-}
-
 function turnFailureCategory(error: unknown): string {
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'timeout';
   if (error instanceof DOMException && error.name === 'AbortError') return 'cancelled';
+  if (error instanceof InternalIdentifierResponseError) return `internal_${error.matchCategory}`;
   if (error instanceof ZodError) return 'schema_validation';
   return 'runtime_failure';
 }

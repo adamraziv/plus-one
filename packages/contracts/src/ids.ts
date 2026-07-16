@@ -1,13 +1,5 @@
 import { z } from 'zod';
-
-const CROCKFORD_ULID = '[0-9A-HJKMNP-TV-Z]{26}';
-
-function opaqueIdSchema<const Brand extends string>(prefix: string) {
-  return z
-    .string()
-    .regex(new RegExp(`^${prefix}_${CROCKFORD_ULID}$`), `Expected ${prefix}_ followed by a ULID`)
-    .brand<Brand>();
-}
+import { opaqueIdentifierSchema } from './opaque-identifiers.js';
 
 export const DatabaseIdSchema = z
   .string()
@@ -15,17 +7,17 @@ export const DatabaseIdSchema = z
   .brand<'DatabaseId'>();
 export type DatabaseId = z.infer<typeof DatabaseIdSchema>;
 
-export const HouseholdIdSchema = opaqueIdSchema<'HouseholdId'>('hh');
-export const TaskIdSchema = opaqueIdSchema<'TaskId'>('task');
-export const RunIdSchema = opaqueIdSchema<'RunId'>('run');
-export const ArtifactIdSchema = opaqueIdSchema<'ArtifactId'>('artifact');
-export const CommandIdSchema = opaqueIdSchema<'CommandId'>('command');
-export const ReceiptIdSchema = opaqueIdSchema<'ReceiptId'>('receipt');
-export const JobIdSchema = opaqueIdSchema<'JobId'>('job');
-export const OccurrenceIdSchema = opaqueIdSchema<'OccurrenceId'>('occurrence');
-export const DeliveryIdSchema = opaqueIdSchema<'DeliveryId'>('delivery');
-export const ConversationIdSchema = opaqueIdSchema<'ConversationId'>('conversation');
-export const EvidencePackageIdSchema = opaqueIdSchema<'EvidencePackageId'>('evidence');
+export const HouseholdIdSchema = opaqueIdentifierSchema<'HouseholdId'>('household');
+export const TaskIdSchema = opaqueIdentifierSchema<'TaskId'>('task');
+export const RunIdSchema = opaqueIdentifierSchema<'RunId'>('run');
+export const ArtifactIdSchema = opaqueIdentifierSchema<'ArtifactId'>('artifact');
+export const CommandIdSchema = opaqueIdentifierSchema<'CommandId'>('command');
+export const ReceiptIdSchema = opaqueIdentifierSchema<'ReceiptId'>('receipt');
+export const JobIdSchema = opaqueIdentifierSchema<'JobId'>('job');
+export const OccurrenceIdSchema = opaqueIdentifierSchema<'OccurrenceId'>('occurrence');
+export const DeliveryIdSchema = opaqueIdentifierSchema<'DeliveryId'>('delivery');
+export const ConversationIdSchema = opaqueIdentifierSchema<'ConversationId'>('conversation');
+export const EvidencePackageIdSchema = opaqueIdentifierSchema<'EvidencePackageId'>('evidence');
 
 export type HouseholdId = z.infer<typeof HouseholdIdSchema>;
 export type TaskId = z.infer<typeof TaskIdSchema>;

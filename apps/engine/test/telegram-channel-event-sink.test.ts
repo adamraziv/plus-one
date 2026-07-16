@@ -60,6 +60,53 @@ describe('TelegramChannelEventSink', () => {
     });
   });
 
+  it('uses a delivered commentary bubble instead of adding a delegated status bubble', async () => {
+    const sendInterim = vi.fn(async () => ({ platformMessageId: '600' }));
+    const sendOrUpdateStatus = vi.fn(async () => ({ platformMessageId: '501' }));
+    const deleteMessage = vi.fn(async () => undefined);
+    const sink = new TelegramChannelEventSink({
+      transport: { send: vi.fn(), sendInterim, sendOrUpdateStatus, deleteMessage },
+    });
+
+    await sink.emit({ kind: 'assistant.commentary', target, body: "I'll check your household accounts." });
+    await sink.emit({ kind: 'tool.started', target, toolName: 'delegateTeam' });
+    await sink.emit({ kind: 'final.delivery-started', target });
+    await sink.emit({ kind: 'final.delivered', target, platformMessageId: '700' });
+
+    expect(sendInterim).toHaveBeenCalledOnce();
+    expect(sendOrUpdateStatus).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a delegated status when commentary delivery fails', async () => {
+    const sendInterim = vi.fn(async () => { throw new Error('Telegram unavailable'); });
+    const sendOrUpdateStatus = vi.fn(async () => ({ platformMessageId: '501' }));
+    const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendInterim, sendOrUpdateStatus } });
+
+    await expect(sink.emit({ kind: 'assistant.commentary', target, body: 'Checking now.' })).rejects.toThrow('Telegram unavailable');
+    await sink.emit({ kind: 'tool.started', target, toolName: 'delegateTeam' });
+
+    expect(sendOrUpdateStatus).toHaveBeenCalledWith({
+      destination: target.destination,
+      body: 'Checking your household records…',
+    });
+  });
+
+  it('clears commentary suppression after final delivery', async () => {
+    const sendInterim = vi.fn(async () => ({ platformMessageId: '600' }));
+    const sendOrUpdateStatus = vi.fn(async () => ({ platformMessageId: '501' }));
+    const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendInterim, sendOrUpdateStatus } });
+
+    await sink.emit({ kind: 'assistant.commentary', target, body: 'Checking now.' });
+    await sink.emit({ kind: 'final.delivered', target, platformMessageId: '700' });
+    await sink.emit({ kind: 'tool.started', target, toolName: 'delegateTeam' });
+
+    expect(sendOrUpdateStatus).toHaveBeenCalledWith({
+      destination: target.destination,
+      body: 'Checking your household records…',
+    });
+  });
+
   it('renders final failure notices through interim capability when present', async () => {
     const sendInterim = vi.fn(async () => ({ platformMessageId: '601' }));
     const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendInterim } });
@@ -74,6 +121,24 @@ describe('TelegramChannelEventSink', () => {
     expect(sendInterim).toHaveBeenCalledWith({
       destination: target.destination,
       body: 'I hit an internal error before I could send the final reply. Please try again.',
+      format: 'plain_text',
+    });
+  });
+
+  it('explains exhausted transient model failures as retryable provider load', async () => {
+    const sendInterim = vi.fn(async () => ({ platformMessageId: '601' }));
+    const sink = new TelegramChannelEventSink({ transport: { send: vi.fn(), sendInterim } });
+
+    await sink.emit({
+      kind: 'final.failed',
+      target,
+      status: 'failed',
+      reason: 'model_temporarily_unavailable',
+    });
+
+    expect(sendInterim).toHaveBeenCalledWith({
+      destination: target.destination,
+      body: 'The model provider is temporarily busy. Please try again in a moment.',
       format: 'plain_text',
     });
   });

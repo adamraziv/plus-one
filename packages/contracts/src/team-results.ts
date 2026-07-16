@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ArtifactEnvelopeSchemaV1, CheckerVerdictSchemaV1 } from './artifacts.js';
-import { HouseholdIdSchema, TaskIdSchema } from './ids.js';
+import { ArtifactIdSchema, HouseholdIdSchema, TaskIdSchema } from './ids.js';
 import { SkillIdentitySchemaV1 } from './json.js';
 import { TeamResultStatusSchemaV1 } from './runtime.js';
 import { StopConditionSchemaV1 } from './invocations.js';
@@ -8,8 +8,8 @@ import { StopConditionSchemaV1 } from './invocations.js';
 export const TeamClaimSchemaV1 = z.object({
   claimId: z.string().min(1).max(128),
   text: z.string().min(1).max(8_000),
-  evidenceArtifactIds: z.array(z.string().min(1)),
-  checkedMakerArtifactIds: z.array(z.string().min(1)).min(1),
+  evidenceArtifactIds: z.array(ArtifactIdSchema),
+  checkedMakerArtifactIds: z.array(ArtifactIdSchema).min(1),
 }).strict();
 
 export const TeamResultEnvelopeSchemaV1 = z.object({

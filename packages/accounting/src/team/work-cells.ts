@@ -3,8 +3,9 @@ import { ingestionWorkCellDefinition, reconciliationWorkCellDefinition } from '@
 import {
   AccountingClarificationSchemaV1,
   AccountingWorkResultSchemaV1,
-  ChartOfAccountsProposalSchemaV1,
+  ChartClarificationSchemaV1,
   ChartWorkRequestSchemaV1,
+  ChartWorkResultSchemaV1,
   JournalWorkRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
 } from './contracts.js';
@@ -28,6 +29,22 @@ const acceptedStop: WorkCellDefinition['evaluateStopCondition'] = ({ maker }) =>
   return {
     status: 'verified',
     reason: 'The checker accepted the exact mutation proposal.',
+    outstanding: [],
+  };
+};
+
+const chartStop: WorkCellDefinition['evaluateStopCondition'] = ({ maker }) => {
+  const clarification = ChartClarificationSchemaV1.safeParse(maker.output);
+  if (clarification.success) {
+    return {
+      status: 'insufficient_evidence',
+      reason: clarification.data.reason,
+      outstanding: [...clarification.data.questions],
+    };
+  }
+  return {
+    status: 'verified',
+    reason: 'The checker accepted the exact chart proposal.',
     outstanding: [],
   };
 };
@@ -79,9 +96,9 @@ export const chartOfAccountsWorkCell: WorkCellDefinition = {
   maker: byName('chart-maker') as WorkCellDefinition['maker'],
   checker: byName('chart-checker') as WorkCellDefinition['checker'],
   makerInputSchema: ChartWorkRequestSchemaV1,
-  makerOutputSchema: ChartOfAccountsProposalSchemaV1,
+  makerOutputSchema: ChartWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'chart-work-request', schemaVersion: 1 },
-  outputSchemaIdentity: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+  outputSchemaIdentity: { schemaName: 'chart-work-result', schemaVersion: 1 },
   checkerRubric: {
     rubricName: 'chart-of-accounts-rubric',
     rubricVersion: 1,
@@ -92,11 +109,7 @@ export const chartOfAccountsWorkCell: WorkCellDefinition = {
     ],
   },
   allowedSkillNames: ['chart-of-accounts'],
-  evaluateStopCondition: () => ({
-    status: 'verified',
-    reason: 'The checker accepted the exact chart proposal.',
-    outstanding: [],
-  }),
+  evaluateStopCondition: chartStop,
 };
 
 export const accountingWorkCells = [

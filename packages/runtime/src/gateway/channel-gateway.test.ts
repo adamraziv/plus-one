@@ -186,6 +186,30 @@ describe('ChannelGateway', () => {
     expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
   });
 
+  it('preserves exhausted transient model failures as temporarily unavailable', async () => {
+    const sink = { emit: vi.fn(async () => undefined) };
+    const gateway = new ChannelGateway({
+      inbound: { recordInboundMessage: vi.fn(async () => ({ inserted: true })) },
+      orchestrator: { run: vi.fn(async () => { throw new Error('Inference capacity queue is full'); }) },
+      delivery: { deliver: vi.fn() },
+      sink,
+      heartbeat: { typingEveryMs: 60_000 },
+    });
+
+    await expect(gateway.handleInbound(message)).resolves.toEqual({
+      status: 'failed',
+      error: 'model_temporarily_unavailable',
+      sent: false,
+    });
+    expect(sink.emit).toHaveBeenCalledWith({
+      kind: 'final.failed',
+      target: expect.any(Object),
+      status: 'failed',
+      reason: 'model_temporarily_unavailable',
+    });
+    expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
+  });
+
   it('does not create timer-driven status events while a delegated turn is running', async () => {
     const sink = { emit: vi.fn(async () => undefined) };
     const gateway = new ChannelGateway({

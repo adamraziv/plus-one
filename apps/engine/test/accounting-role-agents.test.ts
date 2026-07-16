@@ -10,14 +10,19 @@ import {
 import {
   AccountingJournalMutationProposalSchemaV1,
   accountingSkills,
+  ChartWorkRequestSchemaV1,
+  ChartWorkResultSchemaV1,
 } from '@plus-one/accounting';
 import {
   createAccountingRoleAgents,
+  createChartCheckerAgent,
+  createChartMakerAgent,
   createJournalCheckerAgent,
   createJournalMakerAgent,
   createTransactionCaptureCheckerAgent,
   createTransactionCaptureMakerAgent,
 } from '../src/agents/accounting/index.js';
+import { captureContractSubmission } from '../../../test/helpers/contract-agent-test-double.js';
 
 const models = {
   lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -148,9 +153,9 @@ describe('Accounting Mastra role agents', () => {
           schemaVersion: 1,
           missingFields: ['payment_account', 'occurred_on', 'category'],
           questions: [
-            'Which internal payment account should this use?',
+            'Which account did you pay from?',
             'On what date did the transaction occur?',
-            'Which internal category account should this use?',
+            'What category should I use for this transaction?',
           ],
           reason: 'The transaction cannot be posted without account, date, and category.',
         },
@@ -184,16 +189,19 @@ describe('Accounting Mastra role agents', () => {
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      object: {
-        verdict: 'accepted',
-        coveredArtifactId: makerArtifact.artifactId,
-        coveredArtifactHash: makerArtifact.artifactHash,
-        findings: [],
-      },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
     });
   });
 
@@ -231,16 +239,19 @@ describe('Accounting Mastra role agents', () => {
       stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      object: {
-        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
-        output: {
-          schemaName: 'accounting-clarification',
-          missingFields: ['payment_account', 'occurred_on', 'category'],
-        },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      output: {
+        schemaName: 'accounting-clarification',
+        missingFields: ['payment_account', 'occurred_on', 'category'],
       },
     });
   });
@@ -288,9 +299,13 @@ describe('Accounting Mastra role agents', () => {
       stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
 
-    const makerArtifact = MakerArtifactSchemaV1.parse(result.object);
+    const makerArtifact = MakerArtifactSchemaV1.parse(submission.submitted());
     expect(AccountingJournalMutationProposalSchemaV1.parse(makerArtifact.output)).toMatchObject({
       schemaName: 'accounting-journal-mutation-proposal',
       schemaVersion: 1,
@@ -301,45 +316,44 @@ describe('Accounting Mastra role agents', () => {
       },
     });
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      object: {
-        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
-        output: {
-          schemaName: 'accounting-journal-mutation-proposal',
-          schemaVersion: 1,
-          operation: 'post',
-          draft: {
-            draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-            version: 1,
-            journal: {
-              schemaName: 'post-journal-proposal',
-              schemaVersion: 1,
-              householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-              transactionCurrency: 'USD',
-              occurredOn: '2026-06-27',
-              effectiveOn: '2026-06-27',
-              postings: [
-                {
-                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
-                  direction: 'debit',
-                  transactionAmount: '10.00',
-                  accountNativeAmount: '10.00',
-                  accountNativeCurrency: 'USD',
-                },
-                {
-                  accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
-                  direction: 'credit',
-                  transactionAmount: '10.00',
-                  accountNativeAmount: '10.00',
-                  accountNativeCurrency: 'USD',
-                },
-              ],
-            },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      output: {
+        schemaName: 'accounting-journal-mutation-proposal',
+        schemaVersion: 1,
+        operation: 'post',
+        draft: {
+          draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          version: 1,
+          journal: {
+            schemaName: 'post-journal-proposal',
+            schemaVersion: 1,
+            householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+            transactionCurrency: 'USD',
+            occurredOn: '2026-06-27',
+            effectiveOn: '2026-06-27',
+            postings: [
+              {
+                accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+                direction: 'debit',
+                transactionAmount: '10.00',
+                accountNativeAmount: '10.00',
+                accountNativeCurrency: 'USD',
+              },
+              {
+                accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+                direction: 'credit',
+                transactionAmount: '10.00',
+                accountNativeAmount: '10.00',
+                accountNativeCurrency: 'USD',
+              },
+            ],
           },
         },
       },
@@ -450,16 +464,19 @@ describe('Accounting Mastra role agents', () => {
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      object: {
-        verdict: 'accepted',
-        coveredArtifactId: makerArtifact.artifactId,
-        coveredArtifactHash: makerArtifact.artifactHash,
-        findings: [],
-      },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
     });
   });
 
@@ -621,15 +638,18 @@ describe('Accounting Mastra role agents', () => {
       stopCondition: { code: 'checked-journal', description: 'Return one checked accounting result.' },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      object: {
-        output: {
-          schemaName: 'accounting-clarification',
-          missingFields: ['payment_account', 'occurred_on'],
-        },
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      output: {
+        schemaName: 'accounting-clarification',
+        missingFields: ['payment_account', 'occurred_on'],
       },
     });
   });
@@ -661,8 +681,8 @@ describe('Accounting Mastra role agents', () => {
           schemaVersion: 1,
           missingFields: ['payment_account', 'occurred_on'],
           questions: [
-            'Which internal account should be the source for this transfer?',
-            'Which internal account should be the destination for this transfer?',
+            'Which account is the money moving from?',
+            'Which account is the money moving to?',
             'On what date should this transfer be recorded?',
           ],
           reason: 'The transfer cannot be posted until the exact internal source account, destination account, and effective date are confirmed.',
@@ -696,16 +716,191 @@ describe('Accounting Mastra role agents', () => {
       requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
     });
 
-    const result = await agent.generate([{ role: 'user', content: JSON.stringify(task) }], {});
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task) }],
+      submission.options as never,
+    );
 
     expect(modelGenerate).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      object: {
-        verdict: 'accepted',
-        coveredArtifactId: makerArtifact.artifactId,
-        coveredArtifactHash: makerArtifact.artifactHash,
-        findings: [],
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
+    });
+  });
+
+  it('models chart work identities and missing user-owned fields explicitly', () => {
+    const accountId = 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+    expect(ChartWorkRequestSchemaV1.parse({
+      schemaName: 'chart-work-request',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      action: 'create_account',
+      accountId,
+      instruction: 'Add a bank account',
+      known: {},
+    })).toMatchObject({ action: 'create_account', accountId });
+
+    expect(ChartWorkResultSchemaV1.parse({
+      schemaName: 'chart-clarification',
+      schemaVersion: 1,
+      missingFields: ['name', 'accounting_class', 'native_currency'],
+      questions: [
+        'What should the account be called?',
+        'Is this an asset, liability, equity, income, or expense account?',
+        'What is its native currency?',
+      ],
+      reason: 'A safe account proposal requires user-owned accounting fields.',
+    }).schemaName).toBe('chart-clarification');
+  });
+
+  it('returns a chart clarification without calling the model when a new account lacks user-owned fields', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createChartMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'chart-of-accounts')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'chart-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'chart-work-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'chart-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        action: 'create_account',
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        instruction: 'Add a bank account.',
+        known: {},
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-chart-change', description: 'Return one checked chart change.' },
+    });
+
+    const submission = captureContractSubmission();
+    const result = await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(result).toEqual({ text: '', toolResults: [] });
+    expect(submission.submitted()).toMatchObject({
+      outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+      output: {
+        schemaName: 'chart-clarification',
+        missingFields: ['name', 'accounting_class', 'native_currency'],
       },
     });
+  });
+
+  it('accepts a chart clarification only for fields still unresolved in its maker input', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createChartCheckerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'chart-of-accounts')!;
+    const makerArtifact = ArtifactEnvelopeSchemaV1.parse({
+      artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: 'b'.repeat(64),
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'chart-clarification',
+          schemaVersion: 1,
+          missingFields: ['name', 'accounting_class', 'native_currency'],
+          questions: [
+            'What should the account be called?',
+            'Is this an asset, liability, equity, income, or expense account?',
+            'What is its native currency?',
+          ],
+          reason: 'A safe account proposal requires user-owned accounting fields.',
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: '2026-06-24T00:00:00.000Z',
+    });
+    const task = (known: Record<string, unknown>) => VerificationTaskSchemaV1.parse({
+      schemaName: 'verification-task',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      checkerRole: { roleName: 'chart-checker', roleVersion: 1 },
+      makerArtifact,
+      makerInput: {
+        schemaName: 'chart-work-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        action: 'create_account',
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        instruction: 'Add a bank account.',
+        known,
+      },
+      permittedEvidence: [],
+      selectedSkill: skill.identity,
+      rubric: { rubricName: 'chart-of-accounts-rubric', rubricVersion: 1, instructions: ['Check.'] },
+      policyLabels: ['personalized_finance'],
+      requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
+    });
+
+    const accepted = captureContractSubmission();
+    await agent.generate(
+      [{ role: 'user', content: JSON.stringify(task({})) }],
+      accepted.options as never,
+    );
+    expect(accepted.submitted()).toEqual({
+      verdict: 'accepted',
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
+    });
+
+    const revision = captureContractSubmission();
+    await agent.generate(
+      [{
+        role: 'user',
+        content: JSON.stringify(task({
+          name: 'Checking',
+          accountingClass: 'asset',
+          nativeCurrency: 'USD',
+        })),
+      }],
+      revision.options as never,
+    );
+    expect(modelGenerate).not.toHaveBeenCalled();
+    const revisedVerdict = CheckerVerdictSchemaV1.parse(revision.submitted());
+    expect(revisedVerdict.verdict).toBe('revision_requested');
+    expect(revisedVerdict.findings.some((finding) => finding.code === 'clarification_field_present')).toBe(true);
   });
 });

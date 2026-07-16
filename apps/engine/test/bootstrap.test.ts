@@ -389,5 +389,16 @@ describe('engine scaffold', () => {
     });
 
     expect(callOrder.slice(0, 2)).toEqual(['validate', 'pools']);
+    expect(validateModels).toHaveBeenCalledWith({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      modelIds: [
+        'openai/gpt-5',
+        'openai/gpt-5',
+        'openai/gpt-5-mini',
+        'openai/gpt-5',
+        'openai/gpt-5',
+      ],
+    });
   });
 });

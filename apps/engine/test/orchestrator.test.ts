@@ -2,22 +2,27 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { Agent } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
 import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
+  OpaqueIdentifierDefinitions,
+  QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV1,
   type TeamResultEnvelopeV1,
 } from '@plus-one/contracts';
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
+import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
 import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+const draftId = 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactHash = 'a'.repeat(64);
 const now = '2026-06-23T10:00:00.000Z';
 
@@ -112,13 +117,190 @@ function teamResult(team: 'accounting' | 'query' = 'query') {
   });
 }
 
+function finalSynthesisProjectionResult(relationName = 'reporting.categorized_transactions') {
+  return TeamResultEnvelopeSchemaV1.parse({
+    ...teamResult(),
+    claims: [
+      {
+        claimId: 'checking-account',
+        text: 'Checking is configured for this household.',
+        evidenceArtifactIds: [],
+        checkedMakerArtifactIds: [artifactId],
+      },
+      {
+        claimId: 'unsafe-claim',
+        text: 'Use account_private_001 to continue.',
+        evidenceArtifactIds: [],
+        checkedMakerArtifactIds: [artifactId],
+      },
+      {
+        claimId: 'unsafe-draft-claim',
+        text: `Use ${draftId} to continue.`,
+        evidenceArtifactIds: [],
+        checkedMakerArtifactIds: [artifactId],
+      },
+    ],
+    assumptions: [
+      'Amounts are shown in USD.',
+      `The household identifier is ${householdId}.`,
+    ],
+    uncertainty: [
+      'No additional uncertainty was reported.',
+      'The Book ID is internal-only.',
+    ],
+    outstanding: [
+      'You can review the checked result.',
+      'Ask for account_private_001 if clarification is needed.',
+      `The checked artifact is ${artifactId}.`,
+    ],
+    makerArtifacts: [{
+      ...teamResult().makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: QueryResultSchemaV1.parse({
+          schemaName: 'query-result',
+          schemaVersion: 1,
+          relationName,
+          grain: ['household', 'posting'],
+          rows: [{
+            account_id: 'account_private_001',
+            household_id: householdId,
+            effective_on: '2026-06-23',
+            account_name: 'Checking',
+            accounting_class: 'asset',
+            account_native_amount: '420.00',
+            account_native_currency: 'USD',
+            description: 'Use account_private_001 to continue.',
+            account_private_001: 'internal account-key payload',
+            account_secret: 'internal alphabetic account-key payload',
+            draft_private_001: 'internal checker payload',
+            draft_secret: 'internal alphabetic draft-key payload',
+          }],
+          fieldDefinitions: [
+            'account_id',
+            'household_id',
+            'effective_on',
+            'account_name',
+            'accounting_class',
+            'account_native_amount',
+            'account_native_currency',
+            'description',
+            'account_private_001',
+            'account_secret',
+            'draft_private_001',
+            'draft_secret',
+          ],
+          sourceReferences: [
+            `relation=${relationName}`,
+            `filter=household_id:eq:${householdId}`,
+          ],
+          freshness: 'latest available reporting projection',
+          coverageWarnings: [],
+        }),
+        claims: [{
+          claimId: 'checking-account',
+          text: 'Checking is configured for this household.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+  });
+}
+
+function emptyCurrentBalancesResult() {
+  const currentBalancesArtifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1M';
+  const currentBalancesArtifactHash = 'c'.repeat(64);
+  const currentBalances = QueryResultSchemaV1.parse({
+    schemaName: 'query-result',
+    schemaVersion: 1,
+    relationName: 'reporting.current_balances',
+    grain: ['household', 'account'],
+    rows: [],
+    fieldDefinitions: ['account_id', 'native_amount'],
+    sourceReferences: [
+      'relation=reporting.current_balances',
+      `filter=household_id:eq:${householdId}`,
+    ],
+    freshness: 'latest available reporting projection',
+    coverageWarnings: [],
+  });
+
+  return TeamResultEnvelopeSchemaV1.parse({
+    ...teamResult(),
+    claims: [{
+      claimId: 'current-balance-rows',
+      text: 'The checked current-balance projection returned no rows.',
+      evidenceArtifactIds: [],
+      checkedMakerArtifactIds: [currentBalancesArtifactId],
+    }],
+    freshness: ['reporting.current_balances refreshed 2026-06-23T10:00:00.000Z'],
+    coverage: ['balance snapshot'],
+    makerArtifacts: [{
+      artifactId: currentBalancesArtifactId,
+      householdId,
+      taskId,
+      artifactType: 'maker_output',
+      schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+      canonicalizationVersion: 'rfc8785-v1',
+      hashAlgorithm: 'sha256',
+      artifactHash: currentBalancesArtifactHash,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: currentBalances,
+        claims: [{
+          claimId: 'current-balance-rows',
+          text: 'The checked current-balance projection returned no rows.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+      createdAt: now,
+    }],
+    checkerVerdicts: [{
+      verdict: 'accepted',
+      coveredArtifactId: currentBalancesArtifactId,
+      coveredArtifactHash: currentBalancesArtifactHash,
+      findings: [],
+    }],
+    completionReason: 'The checked current-balance projection returned no rows.',
+    outstanding: [
+      'The account inventory remains established separately from the current-balance projection.',
+    ],
+  });
+}
+
 function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting') {
   return TeamResultEnvelopeSchemaV1.parse({
     ...teamResult(team),
     status: 'insufficient_evidence',
     claims: [],
-    completionReason: 'Need the payment account before recording this transaction.',
-    outstanding: ['Which internal payment account should this use?'],
+    makerArtifacts: [{
+      ...teamResult(team).makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'chart-clarification',
+          schemaVersion: 1,
+          missingFields: ['native_currency'],
+          questions: ['What is its native currency?'],
+          reason: 'A safe chart-of-accounts proposal requires the unresolved user-owned fields.',
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+    completionReason: 'A safe chart-of-accounts proposal requires the unresolved user-owned fields.',
+    outstanding: ['What is its native currency?', 'native_currency'],
   });
 }
 
@@ -142,19 +324,6 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
     businessQuestion,
     requiredCalculations: [],
     ...extra,
-  };
-}
-
-function directDraft(body: string) {
-  return {
-    body,
-    policyBoundary: 'informational_only' as const,
-    citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
-    assumptions: [],
-    freshness: ['current invocation only'],
-    disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-    unsupportedCapabilities: [],
-    recommendationActions: [],
   };
 }
 
@@ -183,13 +352,26 @@ function singleLoopOrchestrator(input: {
 }
 
 describe('OrchestratorAgent', () => {
+  it.each(Object.values(OpaqueIdentifierDefinitions))(
+    'recognizes every contract-owned opaque identifier family in user-facing safety checks',
+    (definition) => {
+      expect(internalIdentifierMatchCategory(
+        `Internal token: ${definition.prefix}_01JNZQ4A9B8C7D6E5F4G3H2J1K`,
+      )).toBe('identifier_token');
+    },
+  );
+
+  it('recognizes malformed tokens with a contract-owned opaque identifier prefix', () => {
+    expect(internalIdentifierMatchCategory('Internal token: draft_private_001')).toBe('identifier_token');
+  });
+
   it('logs turn lifecycle metadata while preserving inherited request context', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
     const logging = configureLogging({ homeDirectory });
     const inbound = message('What did we spend this month?');
     const generate = vi.fn(async (_prompt: unknown, options: { onStepFinish?: (step: unknown) => void }) => {
       options.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 8 }, toolCalls: [] });
-      return { object: directDraft('Private final response body') };
+      return { text: 'Private final response body' };
     });
     const orchestrator = singleLoopOrchestrator({
       generate: generate as (...args: unknown[]) => Promise<unknown>,
@@ -237,7 +419,12 @@ describe('OrchestratorAgent', () => {
   });
 
   it('limits model construction to the top-level orchestrator agent', () => {
-    const configs: Array<{ id: string | undefined; inputProcessors: unknown; tools: unknown; maxRetries: number | undefined }> = [];
+    const configs: Array<{
+      id: string | undefined;
+      inputProcessors: unknown;
+      tools: unknown;
+      maxRetries: number | undefined;
+    }> = [];
 
     new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -265,6 +452,40 @@ describe('OrchestratorAgent', () => {
     expect((processors[0] as TokenLimiter).getMaxTokens()).toBe(24_000);
   });
 
+  it('defines account routing semantics in its instructions', () => {
+    let orchestratorInstructions: string | undefined;
+
+    new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (typeof config.instructions !== 'string') throw new Error('Expected orchestrator instructions to be a string.');
+        orchestratorInstructions = config.instructions;
+        return { ...config, generate: vi.fn() } as never;
+      },
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead: vi.fn() },
+    });
+
+    expect(orchestratorInstructions).toContain(
+      'Account existence or account inventory questions use account list coverage.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Use balance snapshot only when the user explicitly asks for a balance, amount, value, or net worth.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'An empty reporting.current_balances result does not prove that no accounts exist.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Do not infer entity absence from an empty metric projection.',
+    );
+  });
+
   it('uses prepared thread context and persists the final user-facing reply', async () => {
     const sessionMemory: OrchestratorSessionMemoryPort = {
       prepareInput: vi.fn(async () => [
@@ -279,7 +500,7 @@ describe('OrchestratorAgent', () => {
         expect.objectContaining({ role: 'assistant' }),
         expect.objectContaining({ role: 'user' }),
       ]);
-      return { object: directDraft('Final clean answer.') };
+      return { text: 'Final clean answer.' };
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -300,9 +521,328 @@ describe('OrchestratorAgent', () => {
     });
   });
 
-  it('answers a direct message with one structured two-step-bounded orchestrator generation', async () => {
+  it('keeps the full checked team result for citations while exposing only a safe final-synthesis view to the model', async () => {
+    const result = finalSynthesisProjectionResult();
+    let delegated: TeamResultEnvelopeV1 | undefined;
+    let modelOutput: unknown;
+    const generate = vi.fn(async () => {
+      delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('Show our recent transactions.', { coverage: ['categorized transactions'] }),
+      });
+      const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput;
+      if (toModelOutput !== undefined) modelOutput = toModelOutput(delegated);
+      return { text: 'Checking is configured for this household.' };
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(async () => result),
+      teams: [queryTeam],
+    });
+
+    const response = await orchestrator.run({ message: message('Show our recent transactions.') });
+
+    expect(delegated).toMatchObject({
+      householdId,
+      taskId,
+      makerArtifacts: [expect.objectContaining({
+        artifactId,
+        artifactHash,
+        payload: expect.objectContaining({
+          output: expect.objectContaining({
+            rows: [expect.objectContaining({ account_id: 'account_private_001' })],
+          }),
+        }),
+      })],
+    });
+    expect(response.citations).toEqual(expect.arrayContaining([
+      { label: 'query:checking-account', artifactId },
+      { label: 'query:unsafe-claim', artifactId },
+    ]));
+    expect(typeof orchestrator.agentTools.delegateTeam.toModelOutput).toBe('function');
+    expect(modelOutput).toMatchObject({
+      type: 'json',
+      value: {
+        schemaName: 'final-synthesis-team-result',
+        schemaVersion: 1,
+        team: 'query',
+        status: 'verified',
+        checkedClaims: expect.arrayContaining([
+          'Checking is configured for this household.',
+          'Some checked details were withheld for privacy.',
+        ]),
+        assumptions: expect.arrayContaining(['Amounts are shown in USD.']),
+        uncertainty: expect.arrayContaining(['No additional uncertainty was reported.']),
+        outstanding: expect.arrayContaining(['You can review the checked result.']),
+        checkedData: [{
+          checkedClaim: 'Checking is configured for this household.',
+          rows: [{
+            'effective on': '2026-06-23',
+            'account name': 'Checking',
+            'accounting class': 'asset',
+            'account native amount': '420.00',
+            'account native currency': 'USD',
+            description: 'Some checked details were withheld for privacy.',
+          }],
+        }],
+      },
+    });
+    const serializedView = JSON.stringify(modelOutput);
+    expect(serializedView.includes(householdId)).toBe(false);
+    expect(serializedView.includes(taskId)).toBe(false);
+    expect(serializedView.includes(artifactId)).toBe(false);
+    expect(serializedView.includes(artifactHash)).toBe(false);
+    expect(serializedView.includes(draftId)).toBe(false);
+    expect(serializedView.includes('draft_private_001')).toBe(false);
+    expect(serializedView.includes('internal checker payload')).toBe(false);
+    expect(serializedView.includes('account_private_001')).toBe(false);
+    expect(serializedView.includes('internal account-key payload')).toBe(false);
+    expect(serializedView.includes('account_secret')).toBe(false);
+    expect(serializedView.includes('internal alphabetic account-key payload')).toBe(false);
+    expect(serializedView.includes('draft_secret')).toBe(false);
+    expect(serializedView.includes('internal alphabetic draft-key payload')).toBe(false);
+    expect(serializedView.includes('account_id')).toBe(false);
+    expect(serializedView.includes('household_id')).toBe(false);
+    expect(serializedView.includes('reporting.categorized_transactions')).toBe(false);
+    expect(serializedView.includes('single-maker-checker')).toBe(false);
+    expect(serializedView.includes('query-evidence')).toBe(false);
+    expect(serializedView.includes('query-answer')).toBe(false);
+    expect(serializedView.includes('Ready for orchestrator reconciliation.')).toBe(false);
+  });
+
+  it('does not grant categorized transaction field capability to another reporting relation', () => {
+    const orchestrator = singleLoopOrchestrator({
+      generate: vi.fn(async () => ({ text: 'Unused.' })),
+      runTeamLead: vi.fn(),
+      teams: [queryTeam],
+    });
+    const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput;
+    if (toModelOutput === undefined) throw new Error('Expected delegateTeam to provide model output.');
+
+    const modelOutput = toModelOutput(finalSynthesisProjectionResult('reporting.accounts'));
+    const serializedView = JSON.stringify(modelOutput);
+
+    expect(serializedView.includes('account_name')).toBe(false);
+    expect(serializedView.includes('account_native_amount')).toBe(false);
+    expect(serializedView.includes('account_native_currency')).toBe(false);
+    expect(serializedView.includes('draft_secret')).toBe(false);
+    expect(serializedView.includes('account_secret')).toBe(false);
+  });
+
+  it('maps a Mastra input-validation wrapper to a safe retry signal without consuming delegation', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    let modelOutput: unknown;
+    const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {
+        prepareStep(): Promise<{ activeTools: string[]; toolChoice: string }> | { activeTools: string[]; toolChoice: string };
+      };
+      const execute = orchestrator.agentTools.delegateTeam.execute as unknown as
+        (input: unknown, options: unknown) => Promise<unknown>;
+      const invalidResult = await execute({ team: 'query', request: 'account_private_001' }, {});
+      expect(invalidResult).toMatchObject({ error: true });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
+      });
+      const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput as
+        | ((output: unknown) => unknown)
+        | undefined;
+      if (toModelOutput === undefined) throw new Error('Expected delegateTeam to provide model output.');
+      modelOutput = toModelOutput(invalidResult);
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+      });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: [],
+        toolChoice: 'none',
+      });
+      return { text: 'The checked evidence includes one account row.' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
+
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(modelOutput).toEqual({
+      type: 'json',
+      value: {
+        schemaName: 'delegate-team-retry-signal',
+        schemaVersion: 1,
+        status: 'retry_required',
+        instruction: 'Retry delegateTeam with an exact registered team id and a JSON-object request matching that team\'s declared schema.',
+      },
+    });
+    const serializedModelOutput = JSON.stringify(modelOutput);
+    expect(serializedModelOutput).not.toContain('account_private_001');
+    expect(serializedModelOutput).not.toContain('validationErrors');
+    expect(serializedModelOutput).not.toContain('Tool input validation failed');
+    expect(serializedModelOutput).not.toContain('Provided arguments');
+  });
+
+  it('uses a real Mastra step sequence to retry invalid delegation before final synthesis', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const modelCalls: unknown[] = [];
+    const modelSteps = [
+      {
+        finishReason: 'tool-calls' as const,
+        content: [{
+          type: 'tool-call' as const,
+          toolCallId: 'invalid-delegation',
+          toolName: 'delegateTeam',
+          input: JSON.stringify({ team: 'query', request: draftId }),
+        }],
+      },
+      {
+        finishReason: 'tool-calls' as const,
+        content: [{
+          type: 'tool-call' as const,
+          toolCallId: 'valid-delegation',
+          toolName: 'delegateTeam',
+          input: JSON.stringify({
+            team: 'query',
+            request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+          }),
+        }],
+      },
+      {
+        finishReason: 'stop' as const,
+        content: [{ type: 'text' as const, text: 'Final synthesis after corrected delegation.' }],
+      },
+    ];
+    const scriptedModel = {
+      specificationVersion: 'v2' as const,
+      provider: 'test',
+      modelId: 'orchestrator-step-sequence',
+      supportedUrls: {},
+      doGenerate: vi.fn(async (options: unknown) => {
+        modelCalls.push(options);
+        const next = modelSteps.shift();
+        if (next === undefined) throw new Error('Model received more steps than the test script permits.');
+        return {
+          ...next,
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error('The orchestrator test uses non-streaming generation.');
+      },
+    };
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => new Agent({ ...config, model: scriptedModel as never }),
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toBe('Final synthesis after corrected delegation.');
+    expect(response.body).not.toContain('The checked evidence includes one account row.');
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(scriptedModel.doGenerate).toHaveBeenCalledTimes(3);
+    expect(modelCalls).toHaveLength(3);
+  });
+
+  it('passes only the user body into a non-memory model prompt', async () => {
+    const body = 'What are the balances in my accounts?';
+    let prompt: unknown;
+    const generate = vi.fn(async (value: unknown) => {
+      prompt = value;
+      return { text: 'I will check the balances.' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await orchestrator.run({ message: message(body) });
+
+    expect(typeof prompt === 'string').toBe(true);
+    if (typeof prompt !== 'string') throw new Error('Expected a text-only prompt.');
+    expect(prompt === body).toBe(true);
+    expect(prompt.includes(householdId)).toBe(false);
+    expect(prompt.includes(conversationId)).toBe(false);
+    expect(prompt.includes('telegram-chat-42')).toBe(false);
+  });
+
+  it('records only an identifier match category when final response safety withholds a token', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
+    const logging = configureLogging({ homeDirectory });
+    const generate = vi.fn(async () => ({ text: 'Please use account_private_001 to continue.' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    try {
+      await expect(orchestrator.run({ message: message('Can you help?') }))
+        .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('orchestrator.response.withheld');
+      expect(agentLog).toContain('matchCategory=identifier_token');
+      expect(agentLog).not.toContain('account_private_001');
+    } finally {
+      logging.close();
+    }
+  });
+
+  it('keeps checked account-list evidence separate from an empty current-balance projection during deterministic synthesis', async () => {
+    let orchestratorInstructions: string | undefined;
+    const preparedMessages = [
+      memoryMessage('assistant', 'Checked account-list evidence established that Checking and Groceries are configured.'),
+      memoryMessage('user', 'What are the balances in my accounts?'),
+    ];
+    const sessionMemory: OrchestratorSessionMemoryPort = {
+      prepareInput: vi.fn(async () => preparedMessages),
+      persistTurn: vi.fn(),
+      close: vi.fn(),
+    };
+    const currentBalancesResult = emptyCurrentBalancesResult();
+    const runTeamLead = vi.fn(async () => currentBalancesResult);
+    const generate = vi.fn(async (messages: unknown) => {
+      expect(messages).toEqual(preparedMessages);
+      const delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('What are the balances in my accounts?', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['balance snapshot'],
+        }),
+      });
+      expect(delegated.makerArtifacts[0]?.payload).toMatchObject({
+        output: { relationName: 'reporting.current_balances', rows: [] },
+      });
+      return { text: 'No current-balance rows were returned.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        if (typeof config.instructions !== 'string') throw new Error('Expected orchestrator instructions to be a string.');
+        orchestratorInstructions = config.instructions;
+        return { ...config, generate } as never;
+      },
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+    });
+
+    const response = await orchestrator.run({ message: message('What are the balances in my accounts?') });
+
+    expect(orchestratorInstructions).toContain(
+      'An empty reporting.current_balances result does not prove that no accounts exist.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Do not infer entity absence from an empty metric projection. State only that the requested metric projection returned no rows.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'Only reporting.accounts account-list evidence may support a claim that no accounts are configured.',
+    );
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({ coverage: ['balance snapshot'] }),
+    }));
+    expect(response.body).not.toMatch(/no accounts|no accounts set up|do not have accounts/i);
+    expect(response.body).toBe('No current-balance rows were returned.');
+  });
+
+  it('allows four semantic model steps for two validation retries, delegation, and final synthesis', async () => {
     const generate = vi.fn(async () => ({
-      object: directDraft('Plus One can help with household finance questions.'),
+      text: 'Plus One can help with household finance questions.',
     }));
     const configs: Array<{ id?: string; tools?: unknown }> = [];
     const orchestrator = new OrchestratorAgent({
@@ -321,13 +861,35 @@ describe('OrchestratorAgent', () => {
     expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
     expect(generate).toHaveBeenCalledTimes(1);
     expect(generate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      maxSteps: 2,
+      stopWhen: expect.any(Function),
+      maxProcessorRetries: 2,
+      errorProcessors: [expect.anything()],
+      toolChoice: 'auto',
       abortSignal: signal,
-      structuredOutput: expect.objectContaining({ jsonPromptInjection: true }),
     }));
+    const [, options] = generate.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(options).not.toHaveProperty('structuredOutput');
+    expect(options).not.toHaveProperty('maxRetries');
+    expect(options).not.toHaveProperty('maxSteps');
+    const stopWhen = options.stopWhen as (input: {
+      steps: Array<{ finishReason?: string }>;
+    }) => boolean;
+    expect(stopWhen({ steps: [{ finishReason: 'retry' }, { finishReason: 'tool-calls' }] })).toBe(false);
+    expect(stopWhen({ steps: [{ finishReason: 'tool-calls' }, { finishReason: 'stop' }] })).toBe(false);
+    expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'stop' },
+    ] })).toBe(false);
+    expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'stop' },
+    ] })).toBe(true);
   });
 
-  it('lets the single orchestrator generation delegate once and return a checked structured reply', async () => {
+  it('lets the single orchestrator generation delegate once and return checked reply text', async () => {
     const runTeamLead = vi.fn(async (input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
       void input;
       return teamResult();
@@ -340,7 +902,7 @@ describe('OrchestratorAgent', () => {
           coverage: ['account list'],
         }),
       });
-      return { object: directDraft('The checked evidence includes one account row.') };
+      return { text: 'The checked evidence includes one account row.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -349,6 +911,114 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledTimes(1);
     expect(runTeamLead).toHaveBeenCalledTimes(1);
     expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+  });
+
+  it('sends an application-authored delegation bubble and returns only final-step text', async () => {
+    const channelEvents = { emit: vi.fn(async (event: unknown) => { void event; }) };
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.', {
+          desiredGrain: ['household', 'account'],
+          coverage: ['account list'],
+        }),
+      });
+      return {
+        text: 'Let me check your household accounts for you!The checked evidence includes one account row.',
+        steps: [
+          { text: 'Let me check your household accounts for you!', toolCalls: [{ toolName: 'delegateTeam' }] },
+          { text: 'The checked evidence includes one account row.', toolCalls: [] },
+        ],
+      };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [queryTeam],
+      teamRuntime: { runTeamLead },
+      channelEvents,
+    });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
+
+    const emitted = channelEvents.emit.mock.calls.map(([event]) => event);
+    expect(emitted.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        kind: 'assistant.commentary',
+        body: "I'll check your household accounts.",
+      }),
+      expect.objectContaining({ kind: 'tool.started', toolName: 'delegateTeam' }),
+    ]);
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({ body: 'Let me check your household accounts for you!' }),
+    );
+  });
+
+  it('runs a dedicated synthesis pass when delegation consumes the last semantic step', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn()
+      .mockImplementationOnce(async () => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'query', request: queryDraft('List our accounts.', { coverage: ['account list'] }),
+        });
+        return {
+          text: 'Preamble that must never be a final response.',
+          steps: [
+            { text: 'Preamble that must never be a final response.', toolCalls: [{ toolName: 'delegateTeam' }] },
+          ],
+        };
+      })
+      .mockResolvedValueOnce({ text: 'I found one account in your household records.' });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(response.body).toBe('I found one account in your household records.');
+    expect(response.body).not.toContain('Preamble that must never be a final response.');
+    expect(response.body).not.toMatch(/reporting\.|QueryResultV1|checker|maker|team status|native_currency/i);
+  });
+
+  it('uses the last semantic step for a direct answer', async () => {
+    const generate = vi.fn(async () => ({
+      text: 'Earlier draft.Final direct answer.',
+      steps: [
+        { text: 'Earlier draft.', toolCalls: [] },
+        { text: 'Final direct answer.', toolCalls: [] },
+      ],
+    }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [] });
+
+    await expect(orchestrator.run({ message: message('hi') }))
+      .resolves.toMatchObject({ body: 'Final direct answer.' });
+  });
+
+  it('removes delegateTeam after the first delegation so finalization can only return text', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {
+        prepareStep(): Promise<{ activeTools: string[]; toolChoice: string }> | { activeTools: string[]; toolChoice: string };
+      };
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
+      });
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: [],
+        toolChoice: 'none',
+      });
+      return { text: 'The checked evidence includes one account row.' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
   });
 
   it('logs specialist completion timing without response content', async () => {
@@ -360,7 +1030,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('List our accounts.'),
       });
-      return { object: directDraft('Private checked answer body.') };
+      return { text: 'Private checked answer body.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -380,7 +1050,7 @@ describe('OrchestratorAgent', () => {
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
       await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -398,9 +1068,9 @@ describe('OrchestratorAgent', () => {
           request: queryDraft('List our accounts.'),
         });
       } catch {
-        return { object: directDraft('Unchecked fallback') };
+        return { text: 'Unchecked fallback' };
       }
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -421,9 +1091,9 @@ describe('OrchestratorAgent', () => {
           request: queryDraft('List our accounts.'),
         });
       } catch {
-        return { object: directDraft('Unchecked fallback') };
+        return { text: 'Unchecked fallback' };
       }
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -465,7 +1135,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('List our accounts.'),
       });
-      return { object: directDraft('unreachable') };
+      return { text: 'unreachable' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -482,7 +1152,7 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('List our accounts.', { desiredGrain: ['household', 'account'], coverage: ['account list'] }),
       });
-      return { object: directDraft('The checked evidence includes one account row.') };
+      return { text: 'The checked evidence includes one account row.' };
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -520,7 +1190,7 @@ describe('OrchestratorAgent', () => {
         request: queryDraft(body),
       });
       if (body === 'second') secondDelegated();
-      return { object: directDraft(`${body} checked reply`) };
+      return { text: `${body} checked reply` };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -550,17 +1220,17 @@ describe('OrchestratorAgent', () => {
           },
         },
       });
-      return { object: directDraft('The accounting team needs clarification before posting.') };
+      return { text: 'What currency should I use for this account?' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
     await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') })).resolves.toMatchObject({
       kind: 'ask-user',
-      response: { body: expect.stringContaining('Which internal payment account should this use?') },
+      response: { body: 'What currency should I use for this account?' },
     });
   });
 
-  it('fails clearly when a non-verified delegated turn has no valid typed final draft', async () => {
+  it('uses only the checked question when post-delegation text leaks internal result fields', async () => {
     const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -577,11 +1247,22 @@ describe('OrchestratorAgent', () => {
           },
         },
       });
-      return { text: 'not a typed final response' };
+      return {
+        text: [
+          'Accounting team status: insufficient_evidence',
+          'Checker accepted the result.',
+          'What is its native currency?',
+          'native_currency',
+        ].join('\n\n'),
+      };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
-    await expect(orchestrator.run({ message: message('add $10 of buying a burger') })).rejects.toThrow();
+    await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') }))
+      .resolves.toMatchObject({
+        kind: 'ask-user',
+        response: { body: 'What is its native currency?' },
+      });
   });
 
   it('uses checked team results instead of a direct answer when delegation is not verified', async () => {
@@ -591,19 +1272,20 @@ describe('OrchestratorAgent', () => {
         team: 'query',
         request: queryDraft('Show our transactions.'),
       });
-      return { object: directDraft('The query returned verified transactions.') };
+      return { text: 'The query returned verified transactions.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     const response = await orchestrator.run({ message: message('Show our transactions.') });
 
-    expect(response.body).toContain('Query team status: failed');
-    expect(response.body).toContain('grain mismatch');
+    expect(response.body).toBe('I could not complete that request safely. Please try again.');
+    expect(response.body).not.toContain('Query team status: failed');
+    expect(response.body).not.toContain('grain mismatch');
     expect(response.body).not.toContain('verified transactions');
     expect(response.citations).toEqual([{ label: 'query:team-result', sourceRef: 'team-result:failed' }]);
   });
 
-  it('fails clearly when a delegated turn has no valid typed final draft', async () => {
+  it('accepts delegated reply text and attaches checked team metadata', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -614,17 +1296,113 @@ describe('OrchestratorAgent', () => {
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
-    await expect(orchestrator.run({ message: message('List our accounts.') })).rejects.toThrow();
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({
+        body: 'not a typed final response',
+        policyBoundary: 'personalized_finance',
+        citations: [{ label: 'query:accounts-listed', artifactId }],
+      });
   });
 
-  it('uses checked team citations when the orchestrator draft contains only policy citations', async () => {
+  it('renders a checked result when post-delegation text is empty', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { text: '   ' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toBe('I found the requested information, but I could not safely summarize it. Please try again.');
+    expect(response.body).not.toContain('Ready for orchestrator reconciliation.');
+    expect(response.citations).toEqual([{ label: 'query:accounts-listed', artifactId }]);
+  });
+
+  it('renders a checked result when post-delegation model finalization fails', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      throw new Error('Inference capacity queue is full');
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({
+        body: 'I found the requested information, but I could not safely summarize it. Please try again.',
+        citations: [{ label: 'query:accounts-listed', artifactId }],
+      });
+    expect(runTeamLead).toHaveBeenCalledOnce();
+  });
+
+  it('withholds opaque identifiers from an unsafe deterministic fallback while retaining checked citations', async () => {
+    const unsafeResult = TeamResultEnvelopeSchemaV1.parse({
+      ...teamResult(),
+      claims: [
+        ...teamResult().claims,
+        {
+          claimId: 'unsafe-draft-claim',
+          text: `Use ${draftId} to continue.`,
+          evidenceArtifactIds: [],
+          checkedMakerArtifactIds: [artifactId],
+        },
+      ],
+      completionReason: `The checked artifact is ${artifactId}.`,
+      outstanding: [`Ask for ${draftId} if clarification is needed.`],
+    });
+    const runTeamLead = vi.fn(async () => unsafeResult);
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      throw new Error('Inference capacity queue is full');
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('List our accounts.') });
+
+    expect(response.body).toBe('I found the requested information, but I could not safely summarize it. Please try again.');
+    expect(response.body).not.toContain(draftId);
+    expect(response.body).not.toContain(artifactId);
+    expect(response.citations).toEqual(expect.arrayContaining([
+      { label: 'query:accounts-listed', artifactId },
+      { label: 'query:unsafe-draft-claim', artifactId },
+    ]));
+  });
+
+  it('renders a checked result when post-delegation API retries exhaust as a Mastra result', async () => {
+    const runTeamLead = vi.fn(async () => teamResult());
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('List our accounts.'),
+      });
+      return { text: '', finishReason: 'retry' };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('List our accounts.') }))
+      .resolves.toMatchObject({
+        body: 'I found the requested information, but I could not safely summarize it. Please try again.',
+        citations: [{ label: 'query:accounts-listed', artifactId }],
+      });
+  });
+
+  it('uses checked team citations for delegated reply text', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('List our accounts.', { desiredGrain: ['household', 'account'], coverage: ['account list'] }),
       });
-      return { object: directDraft('The Query team found one account.') };
+      return { text: 'The Query team found one account.' };
     });
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
@@ -634,9 +1412,9 @@ describe('OrchestratorAgent', () => {
     expect(response.delivery.format).toBe('mrkdwn');
   });
 
-  it('does not delegate when the orchestrator returns a direct structured response', async () => {
+  it('does not delegate when the orchestrator returns direct text', async () => {
     const runTeamLead = vi.fn();
-    const generate = vi.fn(async () => ({ object: directDraft('I can answer directly without a team.') }));
+    const generate = vi.fn(async () => ({ text: 'I can answer directly without a team.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
 
     const response = await orchestrator.run({ message: message('What can you do?') });
@@ -647,12 +1425,33 @@ describe('OrchestratorAgent', () => {
     expect(response.delivery.format).toBe('mrkdwn');
   });
 
-  it('fails instead of wrapping invalid no-team model output as plain text', async () => {
+  it('accepts ordinary no-team model text as a direct answer', async () => {
     const generate = vi.fn(async () => ({ text: 'I recorded it.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
 
-    await expect(orchestrator.run({ message: message('What can you do?') })).rejects.toThrow();
+    await expect(orchestrator.run({ message: message('What can you do?') }))
+      .resolves.toMatchObject({
+        body: 'I recorded it.',
+        policyBoundary: 'informational_only',
+        citations: [{ label: 'orchestrator-policy', sourceRef: 'runtime-instructions' }],
+      });
     expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an empty direct model response', async () => {
+    const generate = vi.fn(async () => ({ text: '   ' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('hello') }))
+      .rejects.toThrow('empty response');
+  });
+
+  it('classifies an exhausted direct Mastra API retry result as transient', async () => {
+    const generate = vi.fn(async () => ({ text: '', finishReason: 'retry' }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('hello') }))
+      .rejects.toMatchObject({ code: 'model_temporarily_unavailable', isRetryable: true });
   });
 
   it('rejects non-canonical delegate tool input before team execution', async () => {
@@ -670,13 +1469,21 @@ describe('OrchestratorAgent', () => {
     expect(runTeamLead).not.toHaveBeenCalled();
   });
 
-  it('rejects a final draft that asks the user for internal identifiers', async () => {
+  it('withholds final text that asks the user for internal identifiers', async () => {
     const runTeamLead = vi.fn();
-    const generate = vi.fn(async () => ({ object: directDraft('Please send your Household ID and Book ID.') }));
+    const generate = vi.fn(async () => ({ text: 'Please send your Household ID and Book ID.' }));
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('Can you help?') }))
-      .rejects.toThrow('internal identifier request');
+      .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
+  });
+
+  it('withholds final model text that contains a contract opaque identifier', async () => {
+    const generate = vi.fn(async () => ({ text: `Please use ${draftId} to continue.` }));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [queryTeam] });
+
+    await expect(orchestrator.run({ message: message('Can you help?') }))
+      .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
   });
 });
 

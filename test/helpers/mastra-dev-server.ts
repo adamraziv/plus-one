@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, rmdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, rmdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { startOpenAiCompatibleTestServer } from './openai-compatible-test-server.js';
 
 export interface MastraDevServerHandle {
   baseUrl: string;
@@ -17,9 +19,18 @@ export async function startMastraDevServer(input: {
 } = {}): Promise<MastraDevServerHandle> {
   const cwd = input.cwd ?? process.cwd();
   const releaseLock = await acquireDevServerLock(cwd, input.timeoutMs ?? 90_000);
-  const child = spawn('pnpm', ['dev:mastra'], {
+  const modelServer = await startOpenAiCompatibleTestServer().catch(async (error: unknown) => {
+    await releaseLock();
+    throw error;
+  });
+  const environmentFile = await createEnvironmentFile(cwd, modelServer.environment).catch(async (error: unknown) => {
+    await modelServer.close();
+    await releaseLock();
+    throw error;
+  });
+  const child = spawn('pnpm', ['dev:mastra', '--env', environmentFile.path], {
     cwd,
-    env: { ...process.env, ...input.env },
+    env: { ...process.env, ...modelServer.environment, ...input.env },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -39,15 +50,21 @@ export async function startMastraDevServer(input: {
     if (input.rejectOutput?.some((pattern) => pattern.test(cleanOutput))) {
       await stopChild(child);
       await releaseLock();
+      await modelServer.close();
+      await environmentFile.close();
       throw new Error(`Mastra dev server emitted rejected output.\n${output}`);
     }
     if (child.exitCode !== null) {
       await releaseLock();
+      await modelServer.close();
+      await environmentFile.close();
       throw new Error(`Mastra dev server exited before ready.\n${output}`);
     }
     if (Date.now() >= deadline) {
       await stopChild(child);
       await releaseLock();
+      await modelServer.close();
+      await environmentFile.close();
       throw new Error(`Mastra dev server did not become ready.\n${output}`);
     }
     await sleep(250);
@@ -57,6 +74,8 @@ export async function startMastraDevServer(input: {
   if (port === undefined) {
     await stopChild(child);
     await releaseLock();
+    await modelServer.close();
+    await environmentFile.close();
     throw new Error(`Mastra dev server did not report a Studio port.\n${output}`);
   }
 
@@ -66,7 +85,27 @@ export async function startMastraDevServer(input: {
     stop: async () => {
       await stopChild(child);
       await releaseLock();
+      await modelServer.close();
+      await environmentFile.close();
     },
+  };
+}
+
+async function createEnvironmentFile(cwd: string, environment: NodeJS.ProcessEnv): Promise<{
+  path: string;
+  close(): Promise<void>;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), 'plus-one-mastra-env-'));
+  const path = join(directory, '.env');
+  const content = Object.entries(environment)
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join('\n');
+  const baseEnvironment = await readFile(join(cwd, '.env'), 'utf8').catch(() => '');
+  await writeFile(path, `${baseEnvironment.trimEnd()}\n${content}\n`, { mode: 0o600 });
+  return {
+    path,
+    close: async () => rm(directory, { recursive: true, force: true }),
   };
 }
 
