@@ -6,6 +6,7 @@ import {
   TeamLeadInvocationSchemaV1,
   TeamLeadPlanSchemaV1,
   TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   VerificationTaskSchemaV1,
 } from './index.js';
 
@@ -33,6 +34,95 @@ const makerArtifact = {
   },
   createdAt: '2026-06-14T10:00:00.000Z',
 };
+
+const proposal = {
+  taskId: identity.taskId,
+  artifactId: makerArtifact.artifactId,
+  artifactHash: makerArtifact.artifactHash,
+};
+const command = {
+  schemaName: 'checked-command' as const,
+  schemaVersion: 1 as const,
+  commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  householdId: identity.householdId,
+  taskId: proposal.taskId,
+  checkedProposalId: proposal.artifactId,
+  checkedProposalHash: proposal.artifactHash,
+  commandType: 'apply_chart_of_accounts_change',
+  idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  payloadSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+  payload: {
+    schemaName: 'chart-of-accounts-proposal', schemaVersion: 1,
+    action: 'create_account', name: 'Bank ABC', accountingClass: 'asset',
+    normalBalance: 'debit', nativeCurrency: 'IDR',
+  },
+};
+
+function validTeamResultV2() {
+  return {
+    schemaName: 'team-result' as const,
+    schemaVersion: 2 as const,
+    ...identity,
+    team: 'accounting',
+    status: 'partial' as const,
+    claims: [{
+      claimId: 'claim-1', text: 'The chart proposal was checked.',
+      evidenceArtifactIds: [], checkedMakerArtifactIds: [makerArtifact.artifactId],
+    }],
+    assumptions: [], uncertainty: [], freshness: [], coverage: ['chart change'],
+    makerArtifacts: [makerArtifact],
+    checkerVerdicts: [{
+      verdict: 'accepted' as const,
+      coveredArtifactId: makerArtifact.artifactId,
+      coveredArtifactHash: makerArtifact.artifactHash,
+      findings: [],
+    }],
+    selectedSkill: skill,
+    strategyName: 'single-maker-checker',
+    stopCondition: { code: 'checked-chart', description: 'Return one checked chart proposal.' },
+    completionReason: 'The exact proposal passed checking.',
+    outstanding: [],
+    effect: { state: 'awaiting_confirmation' as const, proposal, command },
+  };
+}
+
+function validMutationReceipt(input: { command: typeof command; proposal: typeof proposal }) {
+  return {
+    schemaName: 'mutation-receipt' as const,
+    schemaVersion: 1 as const,
+    receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    commandId: input.command.commandId,
+    householdId: input.command.householdId,
+    taskId: input.proposal.taskId,
+    checkedProposalId: input.proposal.artifactId,
+    checkedProposalHash: input.proposal.artifactHash,
+    commandType: input.command.commandType,
+    idempotencyKey: input.command.idempotencyKey,
+    committedRecords: [{ recordType: 'accounting.account', recordId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K' }],
+    expectedState: input.command.payload,
+    expectedStateHash: 'b'.repeat(64),
+    committedAt: '2026-07-16T00:00:00.000Z',
+  };
+}
+
+function validMutationReadback(input: { receipt: ReturnType<typeof validMutationReceipt> }) {
+  return {
+    schemaName: 'mutation-readback' as const,
+    schemaVersion: 1 as const,
+    readbackId: 'readback_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    commandId: input.receipt.commandId,
+    receiptId: input.receipt.receiptId,
+    ok: true,
+    checks: [
+      { kind: 'identifiers' as const, status: 'passed' as const },
+      { kind: 'row_values' as const, status: 'passed' as const },
+      { kind: 'artifact_links' as const, status: 'passed' as const },
+      { kind: 'idempotency_receipt' as const, status: 'passed' as const },
+    ],
+    mismatches: [],
+    observedStateHash: 'c'.repeat(64),
+  };
+}
 
 describe('team execution contracts', () => {
   it('rejects prompted JSON strings at maker boundaries', () => {
@@ -113,5 +203,45 @@ describe('team execution contracts', () => {
       ...claim,
       checkedMakerArtifactIds: ['artifact_private_001'],
     }).success).toBe(false);
+  });
+});
+
+describe('team result effect proof', () => {
+  const base = validTeamResultV2();
+
+  it('accepts an awaiting-confirmation proposal only as partial', () => {
+    expect(TeamResultEnvelopeSchemaV2.parse({
+      ...base,
+      status: 'partial',
+      effect: { state: 'awaiting_confirmation', proposal, command },
+    }).effect.state).toBe('awaiting_confirmation');
+    expect(TeamResultEnvelopeSchemaV2.safeParse({
+      ...base,
+      status: 'verified',
+      effect: { state: 'awaiting_confirmation', proposal, command },
+    }).success).toBe(false);
+  });
+
+  it('rejects persisted proof whose receipt or read-back identity differs', () => {
+    const receipt = validMutationReceipt({ command, proposal });
+    const readback = validMutationReadback({ receipt });
+    expect(TeamResultEnvelopeSchemaV2.safeParse({
+      ...base,
+      status: 'verified',
+      effect: {
+        state: 'persisted', proposal, receipt,
+        readback: { ...readback, receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J9K' },
+      },
+    }).success).toBe(false);
+  });
+
+  it('accepts persistence only with matching receipt and successful read-back', () => {
+    const receipt = validMutationReceipt({ command, proposal });
+    const readback = validMutationReadback({ receipt });
+    expect(TeamResultEnvelopeSchemaV2.parse({
+      ...base,
+      status: 'verified',
+      effect: { state: 'persisted', proposal, receipt, readback },
+    }).effect.state).toBe('persisted');
   });
 });
