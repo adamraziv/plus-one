@@ -197,6 +197,41 @@ export class OrchestratorAgent {
     return result.response;
   }
 
+  async resolvePendingMutation(input: {
+    message: InboundChannelMessageV1;
+    pending: TeamResultEnvelopeV2;
+    signal?: AbortSignal;
+  }): Promise<OrchestratorTurnResult> {
+    const decision = confirmationDecision(input.message.body);
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      if (decision === 'approve') {
+        const result = await this.dependencies.teamRuntime.resumePendingMutation({
+          message: input.message,
+          pending: input.pending,
+          signal,
+        });
+        return turnFromTeamResults(input.message, [result]);
+      }
+      if (decision === 'reject') {
+        await this.dependencies.teamRuntime.cancelPendingMutation({
+          pending: input.pending,
+          signal,
+        });
+        return {
+          kind: 'final',
+          response: responseFromText(input.message, "Okay, I won’t make that change."),
+        };
+      }
+      let body = await this.synthesizeTeamResults(input.message, [input.pending], signal);
+      if (!confirmationResponseIsSafe(body, input.pending)) body = confirmationFallback(input.pending);
+      return turnFromTeamResults(input.message, [input.pending], body);
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
   registerMastra(mastra: Mastra): void {
     this.agent.__registerMastra(mastra);
   }

@@ -1,7 +1,9 @@
 import { createStep, createWorkflow, type Workflow } from '@mastra/core/workflows';
+import { z } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
 } from '@plus-one/contracts';
@@ -11,6 +13,18 @@ export const ORCHESTRATOR_LOOP_WORKFLOW_ID = 'orchestrator-loop';
 export const ORCHESTRATOR_LOOP_STEP_ID = 'orchestrator-turn';
 
 type OrchestratorLoopWorkflow = Workflow;
+
+export const OrchestratorSuspendPayloadSchemaV1 = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('clarification'),
+    response: OrchestratorFinalResponseSchemaV1,
+  }).strict(),
+  z.object({
+    kind: z.literal('mutation_confirmation'),
+    response: OrchestratorFinalResponseSchemaV1,
+    pendingMutation: TeamResultEnvelopeSchemaV2,
+  }).strict(),
+]);
 
 function placeholderWorkflow(): OrchestratorLoopWorkflow {
   return createWorkflow({
@@ -34,11 +48,11 @@ function finalResponseFromPayload(payload: unknown): OrchestratorFinalResponseV1
     && ORCHESTRATOR_LOOP_STEP_ID in payload
     ? (payload as Record<string, unknown>)[ORCHESTRATOR_LOOP_STEP_ID]
     : payload;
-  return OrchestratorFinalResponseSchemaV1.parse(candidate);
+  return OrchestratorSuspendPayloadSchemaV1.parse(candidate).response;
 }
 
 export function createOrchestratorLoopWorkflow(
-  orchestrator?: Pick<OrchestratorAgent, 'runTurn'>,
+  orchestrator?: Pick<OrchestratorAgent, 'runTurn' | 'resolvePendingMutation'>,
 ): OrchestratorLoopWorkflow {
   if (orchestrator === undefined) return placeholderWorkflow();
 
@@ -46,12 +60,27 @@ export function createOrchestratorLoopWorkflow(
     id: ORCHESTRATOR_LOOP_STEP_ID,
     inputSchema: InboundChannelMessageSchemaV1,
     outputSchema: OrchestratorFinalResponseSchemaV1,
-    suspendSchema: OrchestratorFinalResponseSchemaV1,
+    suspendSchema: OrchestratorSuspendPayloadSchemaV1,
     resumeSchema: InboundChannelMessageSchemaV1,
-    execute: async ({ inputData, resumeData, suspend, abortSignal }) => {
+    execute: async ({ inputData, resumeData, suspendData, suspend, abortSignal }) => {
       const message = InboundChannelMessageSchemaV1.parse(resumeData ?? inputData);
-      const result = await abortable(orchestrator.runTurn({ message, signal: abortSignal }), abortSignal) as OrchestratorTurnResult;
-      if (result.kind === 'ask-user') return suspend(result.response);
+      const suspended = OrchestratorSuspendPayloadSchemaV1.optional().parse(suspendData);
+      const result = suspended?.kind === 'mutation_confirmation'
+        ? await abortable(orchestrator.resolvePendingMutation({
+          message,
+          pending: suspended.pendingMutation,
+          signal: abortSignal,
+        }), abortSignal)
+        : await abortable(orchestrator.runTurn({ message, signal: abortSignal }), abortSignal) as OrchestratorTurnResult;
+      if (result.kind === 'ask-user') {
+        return suspend(result.pendingMutation === undefined
+          ? { kind: 'clarification', response: result.response }
+          : {
+              kind: 'mutation_confirmation',
+              response: result.response,
+              pendingMutation: result.pendingMutation,
+            });
+      }
       return result.response;
     },
   });

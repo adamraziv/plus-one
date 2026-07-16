@@ -2,10 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  type InboundChannelMessageV1,
 } from '@plus-one/contracts';
 import { createMastra } from '../../apps/engine/src/mastra.js';
 import { createRuntimeRoutes } from '../../apps/engine/src/runtime-routes.js';
-import { createOrchestratorLoopWorkflow } from '../../apps/engine/src/workflows/orchestrator-loop.js';
+import {
+  createOrchestratorLoopWorkflow,
+  runOrchestratorLoop,
+} from '../../apps/engine/src/workflows/orchestrator-loop.js';
+import {
+  pendingChartResultFixture as pendingTeamResult,
+  pendingEffectFixture,
+} from '../../apps/engine/test/helpers/pending-chart-result.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -117,4 +125,55 @@ describe('orchestrator durable loop acceptance', () => {
       'From checking account.',
     ]);
   });
+
+  it('restores the exact pending mutation snapshot after a Mastra restart', async () => {
+    context = await createPostgresTestContext('orchestrator_loop_mutation');
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?'),
+        pendingMutation: pendingTeamResult,
+      }),
+      resolvePendingMutation: vi.fn().mockResolvedValue({
+        kind: 'final',
+        response: response('Bank ABC was added and verified.'),
+      }),
+    };
+    const firstMastra = createMastra(
+      context.roleUrls.memory,
+      {},
+      [],
+      { 'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator as never) },
+    );
+    await runInbound(firstMastra, message('Add Bank ABC as an IDR asset account.', 'message-1'));
+    await firstMastra.getStorage()?.close?.();
+
+    mastra = createMastra(
+      context.roleUrls.memory,
+      {},
+      [],
+      { 'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator as never) },
+    );
+    const resumed = await runInbound(mastra, message('go ahead', 'message-2'));
+
+    expect(orchestrator.resolvePendingMutation).toHaveBeenCalledWith(expect.objectContaining({
+      pending: expect.objectContaining({
+        effect: expect.objectContaining({
+          state: 'awaiting_confirmation',
+          command: pendingEffectFixture.command,
+        }),
+      }),
+    }));
+    expect(resumed).toMatchObject({ body: 'Bank ABC was added and verified.' });
+  });
 });
+
+async function runInbound(
+  activeMastra: ReturnType<typeof createMastra>,
+  inbound: InboundChannelMessageV1,
+) {
+  return runOrchestratorLoop({
+    workflow: activeMastra.getWorkflow('orchestrator-loop'),
+    message: inbound,
+  });
+}
