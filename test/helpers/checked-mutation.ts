@@ -206,6 +206,8 @@ export function createExecutor(testContext: PostgresTestContext,
   handlers: readonly MutationCommandHandler[] = [createPostAccountingJournalHandler()],
   defaultRole: 'accounting' | 'planning' = 'accounting'): {
   executor: CheckedMutationExecutor;
+  commands: PostgresMutationCommandRepository;
+  ledger: PostgresVerificationLedgerRepository;
   close(): Promise<void>;
 } {
   const operations = new Pool({ connectionString: testContext.roleUrls.operations });
@@ -237,6 +239,8 @@ export function createExecutor(testContext: PostgresTestContext,
   });
   return {
     executor,
+    commands,
+    ledger,
     close: async () => {
       await planning.end();
       await accounting.end();
