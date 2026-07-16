@@ -28,16 +28,6 @@ export class AccountingJournalCommandAdapter implements CheckedMutationCommandAd
 
 export class ChartOfAccountsCommandAdapter implements CheckedMutationCommandAdapter {
   buildCommand(input: Parameters<CheckedMutationCommandAdapter['buildCommand']>[0]) {
-    if (input.confirmationId === undefined) {
-      throw new PlusOneError({
-        category: 'confirmation_required',
-        code: 'chart_confirmation_required',
-        message: 'Every chart change requires an external confirmation reference',
-        retry: 'after_state_resolution',
-        receiptLookupRequired: false,
-        details: {},
-      });
-    }
     const payload = ChartOfAccountsProposalSchemaV1.parse(input.payload);
     return CheckedCommandSchemaV1.parse({
       schemaName: 'checked-command' as const, schemaVersion: 1 as const,

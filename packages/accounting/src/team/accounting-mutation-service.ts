@@ -10,8 +10,31 @@ type WorkCellInput = CoordinatorExecuteInput['workCellInput'];
 
 export class AccountingMutationService {
   constructor(
-    private readonly coordinator: Pick<CheckedMutationWorkCellCoordinator, 'execute'>,
+    private readonly coordinator: Pick<CheckedMutationWorkCellCoordinator, 'execute' | 'prepare'>,
   ) {}
+
+  async prepareChart(input: {
+    workCellInput: WorkCellInput;
+    commandId: string;
+    idempotencyKey: string;
+  }) {
+    if (input.workCellInput.workCell.workCellId !== 'chart-of-accounts') {
+      throw new PlusOneError({
+        category: 'policy_rejected',
+        code: 'chart_mutation_cell_required',
+        message: 'Only chart-of-accounts may enter chart preparation',
+        retry: 'never',
+        receiptLookupRequired: false,
+        details: { workCellId: input.workCellInput.workCell.workCellId },
+      });
+    }
+    return this.coordinator.prepare({
+      workCellInput: input.workCellInput,
+      commandId: input.commandId,
+      idempotencyKey: input.idempotencyKey,
+      adapter: new ChartOfAccountsCommandAdapter(),
+    });
+  }
 
   async execute(input: {
     workCellId: 'transaction-capture' | 'journal' | 'chart-of-accounts';

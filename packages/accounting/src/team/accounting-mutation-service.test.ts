@@ -40,4 +40,30 @@ describe('AccountingMutationService', () => {
       confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     }));
   });
+
+  it('prepares only chart-of-accounts without executing it', async () => {
+    const prepare = vi.fn().mockResolvedValue({ status: 'verified' });
+    const service = new AccountingMutationService({ prepare } as never);
+    await service.prepareChart({
+      workCellInput: { workCell: { workCellId: 'chart-of-accounts' } } as never,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    });
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      adapter: expect.objectContaining({ constructor: expect.any(Function) }),
+    }));
+  });
+
+  it('rejects preparation for non-chart work cells', async () => {
+    const prepare = vi.fn();
+    const service = new AccountingMutationService({ prepare } as never);
+    await expect(service.prepareChart({
+      workCellInput: { workCell: { workCellId: 'journal' } } as never,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    })).rejects.toMatchObject({ code: 'chart_mutation_cell_required' });
+    expect(prepare).not.toHaveBeenCalled();
+  });
 });

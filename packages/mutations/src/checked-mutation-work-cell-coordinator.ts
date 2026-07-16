@@ -31,10 +31,19 @@ export interface CheckedMutationCommandAdapter {
   }): CheckedCommandV1;
 }
 
+export interface PreparedMutationWorkCellResult extends CheckedWorkCellResult {
+  status: 'verified';
+  completionState: 'checked_mutation_pending';
+  effectRequirement: Extract<CheckedWorkCellResult['effectRequirement'], { kind: 'checked_mutation' }>;
+  command: CheckedCommandV1;
+  mutation: { state: 'prepared'; command: CheckedCommandV1 };
+}
+
 export interface VerifiedMutationWorkCellResult extends CheckedWorkCellResult {
   status: 'verified';
   completionState: 'terminal';
-  mutation: { receipt: MutationReceiptV1; readback: ReadbackResultV1 };
+  effectRequirement: Extract<CheckedWorkCellResult['effectRequirement'], { kind: 'checked_mutation' }>;
+  mutation: { state: 'persisted'; receipt: MutationReceiptV1; readback: ReadbackResultV1 };
 }
 
 export class CheckedMutationWorkCellCoordinator {
@@ -45,6 +54,82 @@ export class CheckedMutationWorkCellCoordinator {
     ledger: Pick<VerificationLedgerPort, 'findTask'>;
   }) {}
 
+  async prepare(input: {
+    workCellInput: WorkCellInput;
+    commandId: string;
+    idempotencyKey: string;
+    adapter: CheckedMutationCommandAdapter;
+  }): Promise<PreparedMutationWorkCellResult> {
+    const checked = await this.dependencies.teamExecutor.executeWorkCell(input.workCellInput);
+    const makerArtifact = checked.makerArtifacts.at(-1);
+    const effectRequirement = checked.effectRequirement;
+    const acceptedMaker = checked.acceptedMaker;
+    if (checked.status !== 'verified'
+      || checked.completionState !== 'checked_mutation_pending'
+      || effectRequirement.kind !== 'checked_mutation'
+      || acceptedMaker === undefined
+      || makerArtifact === undefined
+      || canonicalizeJson(makerArtifact.payload) !== canonicalizeJson(acceptedMaker)) {
+      throw new PlusOneError({
+        category: 'constraint_violation',
+        code: 'checked_mutation_result_invalid',
+        message: 'Mutation preparation requires one exact deferred accepted maker artifact',
+        retry: 'never',
+        receiptLookupRequired: false,
+        details: { taskId: checked.taskId, completionState: checked.completionState },
+      });
+    }
+    const common: Parameters<CheckedMutationCommandAdapter['buildCommand']>[0] = {
+      commandId: input.commandId,
+      idempotencyKey: input.idempotencyKey,
+      householdId: checked.householdId,
+      taskId: checked.taskId,
+      checkedProposalId: makerArtifact.artifactId,
+      checkedProposalHash: makerArtifact.artifactHash,
+      payloadSchema: effectRequirement.proposalSchema,
+      payload: acceptedMaker.output,
+    };
+    const command = CheckedCommandSchemaV1.parse(input.adapter.buildCommand(common));
+    assertUnchangedCheckedCommand(common, command, checked.workCellId);
+    return {
+      ...checked,
+      status: 'verified',
+      completionState: 'checked_mutation_pending',
+      effectRequirement,
+      acceptedMaker,
+      command,
+      mutation: { state: 'prepared', command },
+    };
+  }
+
+  async executePrepared(input: {
+    prepared: PreparedMutationWorkCellResult;
+    confirmationId?: string;
+  }): Promise<VerifiedMutationWorkCellResult> {
+    if (input.prepared.effectRequirement.confirmation === 'required'
+      && input.confirmationId === undefined) {
+      throw new PlusOneError({
+        category: 'confirmation_required',
+        code: 'external_confirmation_required',
+        message: 'This checked mutation requires an exact external confirmation',
+        retry: 'after_state_resolution',
+        receiptLookupRequired: false,
+        details: { workCellId: input.prepared.workCellId },
+      });
+    }
+    const command = CheckedCommandSchemaV1.parse({
+      ...input.prepared.command,
+      ...(input.confirmationId === undefined ? {} : { confirmationId: input.confirmationId }),
+    });
+    const executed = await this.dependencies.mutationExecutor.execute(command);
+    await this.finalize(command);
+    return {
+      ...input.prepared,
+      completionState: 'terminal',
+      mutation: { state: 'persisted', receipt: executed.receipt, readback: executed.readback },
+    };
+  }
+
   async execute(input: {
     workCellInput: WorkCellInput;
     commandId: string;
@@ -52,64 +137,16 @@ export class CheckedMutationWorkCellCoordinator {
     confirmationId?: string;
     adapter: CheckedMutationCommandAdapter;
   }): Promise<VerifiedMutationWorkCellResult> {
-    const checked = await this.dependencies.teamExecutor.executeWorkCell({
-      ...input.workCellInput,
-    });
-    const makerArtifact = checked.makerArtifacts.at(-1);
-    if (checked.status !== 'verified'
-      || checked.completionState !== 'checked_mutation_pending'
-      || checked.acceptedMaker === undefined
-      || makerArtifact === undefined
-      || canonicalizeJson(makerArtifact.payload) !== canonicalizeJson(checked.acceptedMaker)) {
-      throw new PlusOneError({
-        category: 'constraint_violation',
-        code: 'checked_mutation_result_invalid',
-        message: 'Mutation coordination requires one exact deferred accepted maker artifact',
-        retry: 'never',
-        receiptLookupRequired: false,
-        details: { taskId: checked.taskId, completionState: checked.completionState },
-      });
-    }
-
-    const common: Parameters<CheckedMutationCommandAdapter['buildCommand']>[0] = {
+    const prepared = await this.prepare({
+      workCellInput: input.workCellInput,
       commandId: input.commandId,
       idempotencyKey: input.idempotencyKey,
+      adapter: input.adapter,
+    });
+    return this.executePrepared({
+      prepared,
       ...(input.confirmationId === undefined ? {} : { confirmationId: input.confirmationId }),
-      householdId: checked.householdId,
-      taskId: checked.taskId,
-      checkedProposalId: makerArtifact.artifactId,
-      checkedProposalHash: makerArtifact.artifactHash,
-      payloadSchema: checked.acceptedMaker.outputSchema,
-      payload: checked.acceptedMaker.output,
-    };
-    const command = CheckedCommandSchemaV1.parse(input.adapter.buildCommand(common));
-    if (command.commandId !== common.commandId
-      || command.idempotencyKey !== common.idempotencyKey
-      || command.householdId !== common.householdId
-      || command.taskId !== common.taskId
-      || command.checkedProposalId !== common.checkedProposalId
-      || command.checkedProposalHash !== common.checkedProposalHash
-      || canonicalizeJson(command.payloadSchema) !== canonicalizeJson(common.payloadSchema)
-      || canonicalizeJson(command.payload) !== canonicalizeJson(common.payload)
-      || command.confirmationId !== common.confirmationId) {
-      throw new PlusOneError({
-        category: 'validation_rejected',
-        code: 'mutation_adapter_changed_checked_identity',
-        message: 'A mutation adapter may select a command type but cannot change checked identity or payload',
-        retry: 'never',
-        receiptLookupRequired: false,
-        details: { taskId: checked.taskId, workCellId: checked.workCellId },
-      });
-    }
-
-    const executed = await this.dependencies.mutationExecutor.execute(command);
-    await this.finalize(command);
-    return {
-      ...checked,
-      status: 'verified',
-      completionState: 'terminal',
-      mutation: { receipt: executed.receipt, readback: executed.readback },
-    };
+    });
   }
 
   async resume(candidate: CheckedCommandV1): Promise<{
@@ -139,6 +176,31 @@ export class CheckedMutationWorkCellCoordinator {
       householdId: command.householdId,
       taskId: command.taskId,
       status: 'verified',
+    });
+  }
+}
+
+function assertUnchangedCheckedCommand(
+  common: Parameters<CheckedMutationCommandAdapter['buildCommand']>[0],
+  command: CheckedCommandV1,
+  workCellId: string,
+): void {
+  if (command.commandId !== common.commandId
+    || command.idempotencyKey !== common.idempotencyKey
+    || command.householdId !== common.householdId
+    || command.taskId !== common.taskId
+    || command.checkedProposalId !== common.checkedProposalId
+    || command.checkedProposalHash !== common.checkedProposalHash
+    || canonicalizeJson(command.payloadSchema) !== canonicalizeJson(common.payloadSchema)
+    || canonicalizeJson(command.payload) !== canonicalizeJson(common.payload)
+    || command.confirmationId !== common.confirmationId) {
+    throw new PlusOneError({
+      category: 'validation_rejected',
+      code: 'mutation_adapter_changed_checked_identity',
+      message: 'A mutation adapter may select a command type but cannot change checked identity or payload',
+      retry: 'never',
+      receiptLookupRequired: false,
+      details: { taskId: common.taskId, workCellId },
     });
   }
 }

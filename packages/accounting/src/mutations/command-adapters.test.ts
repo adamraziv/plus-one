@@ -28,7 +28,7 @@ describe('accounting command adapters', () => {
     }
   });
 
-  it('requires chart confirmation and preserves the exact payload object', () => {
+  it('allows chart preparation without confirmation and preserves the exact payload object', () => {
     const payload = {
       schemaName: 'chart-of-accounts-proposal' as const, schemaVersion: 1 as const,
       action: 'archive_account' as const,
@@ -36,11 +36,13 @@ describe('accounting command adapters', () => {
       bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' as never,
       accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K' as never,
     };
-    expect(() => new ChartOfAccountsCommandAdapter().buildCommand({
+    const prepared = new ChartOfAccountsCommandAdapter().buildCommand({
       ...common,
       payloadSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
       payload,
-    })).toThrow();
+    });
+    expect(prepared.confirmationId).toBeUndefined();
+    expect(prepared.payload).toEqual(payload);
     const command = new ChartOfAccountsCommandAdapter().buildCommand({
       ...common,
       confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K' as never,
