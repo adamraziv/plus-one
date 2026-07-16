@@ -34,6 +34,11 @@ const checked = {
   workCellId: 'transaction-capture',
   status: 'verified' as const,
   completionState: 'checked_mutation_pending' as const,
+  effectRequirement: {
+    kind: 'checked_mutation' as const,
+    proposalSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
+    confirmation: 'required' as const,
+  },
   makerArtifacts: [artifact],
   checkerVerdicts: [{
     verdict: 'accepted' as const,
@@ -94,9 +99,7 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       adapter,
     });
-    expect(teamExecutor.executeWorkCell).toHaveBeenCalledWith(expect.objectContaining({
-      completionMode: 'checked_mutation',
-    }));
+    expect(teamExecutor.executeWorkCell).toHaveBeenCalledWith({});
     expect(adapter.buildCommand).toHaveBeenCalledWith(expect.objectContaining({
       checkedProposalId: artifact.artifactId,
       checkedProposalHash: artifact.artifactHash,

@@ -59,6 +59,7 @@ describe('RoleContextBuilder', () => {
           makerInputSchema: undefined as never, makerOutputSchema: undefined as never,
           inputSchemaIdentity: { schemaName: 'lookup-input', schemaVersion: 1 },
           outputSchemaIdentity: { schemaName: 'lookup-output', schemaVersion: 1 },
+          effectPolicy: { kind: 'none' },
           checkerRubric: { rubricName: 'lookup-rubric', rubricVersion: 1, instructions: ['Check.'] },
           allowedSkillNames: ['verified-lookup'],
           evaluateStopCondition: () => ({ status: 'verified' as const, reason: 'ok', outstanding: [] }),

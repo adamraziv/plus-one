@@ -110,6 +110,7 @@ const queryWorkCell: WorkCellDefinition = {
   makerOutputSchema: QueryResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'evidence-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'query-result', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'query-evidence-rubric',
     rubricVersion: 1,
@@ -134,6 +135,7 @@ const analystWorkCell: WorkCellDefinition = {
   makerOutputSchema: AnalystCalculationArtifactSchemaV1,
   inputSchemaIdentity: { schemaName: 'analyst-task', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'analyst-calculation-artifact', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'query-analyst-rubric',
     rubricVersion: 1,

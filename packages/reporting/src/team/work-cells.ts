@@ -49,6 +49,7 @@ export const investmentEducationWorkCell: WorkCellDefinition = {
   makerOutputSchema: InvestmentEducationOutputSchemaV1,
   inputSchemaIdentity: { schemaName: 'investment-education-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'investment-education-output', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'investment-education-rubric',
     rubricVersion: 1,
@@ -80,6 +81,7 @@ export const retirementEducationWorkCell: WorkCellDefinition = {
   makerOutputSchema: RetirementEducationOutputSchemaV1,
   inputSchemaIdentity: { schemaName: 'retirement-education-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'retirement-education-output', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'retirement-education-rubric',
     rubricVersion: 1,
@@ -111,6 +113,7 @@ export const recordsFactsWorkCell: WorkCellDefinition = {
   makerOutputSchema: RecordsFactOutputSchemaV1,
   inputSchemaIdentity: { schemaName: 'records-fact-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'records-fact-output', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'records-facts-rubric',
     rubricVersion: 1,
@@ -160,6 +163,7 @@ export const reportingBriefWorkCell: WorkCellDefinition = {
   makerOutputSchema: ReportingBriefOutputSchemaV1,
   inputSchemaIdentity: { schemaName: 'reporting-brief-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'reporting-brief-output', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'reporting-brief-rubric',
     rubricVersion: 1,

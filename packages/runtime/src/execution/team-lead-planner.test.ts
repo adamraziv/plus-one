@@ -59,6 +59,7 @@ const cell = {
   makerOutputSchema: z.object({}).strict(),
   inputSchemaIdentity: { schemaName: 'query-result', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'query-result', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'query-rubric',
     rubricVersion: 1,

@@ -23,6 +23,13 @@ export const ingestionWorkCellDefinition: WorkCellDefinition = {
   makerOutputSchema: IngestionWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'ingestion-work-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'ingestion-work-result', schemaVersion: 1 },
+  effectPolicy: {
+    kind: 'checked_mutation',
+    proposals: [{
+      schema: { schemaName: 'confirm-import-batch-proposal', schemaVersion: 1 },
+      confirmation: 'required',
+    }],
+  },
   checkerRubric: {
     rubricName: 'ingestion-rubric',
     rubricVersion: 1,
@@ -50,6 +57,14 @@ export const reconciliationWorkCellDefinition: WorkCellDefinition = {
   makerOutputSchema: ReconciliationWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'reconciliation-work-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'reconciliation-work-result', schemaVersion: 1 },
+  effectPolicy: {
+    kind: 'checked_mutation',
+    proposals: [
+      { schema: { schemaName: 'reconciliation-proposal', schemaVersion: 1 }, confirmation: 'optional' },
+      { schema: { schemaName: 'period-close-proposal', schemaVersion: 1 }, confirmation: 'optional' },
+      { schema: { schemaName: 'period-reopen-proposal', schemaVersion: 1 }, confirmation: 'required' },
+    ],
+  },
   checkerRubric: {
     rubricName: 'reconciliation-rubric',
     rubricVersion: 1,

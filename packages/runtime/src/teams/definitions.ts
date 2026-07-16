@@ -7,6 +7,24 @@ import type { z } from 'zod';
 
 export type TeamRoleKind = 'lead' | 'maker' | 'checker';
 
+export type WorkCellEffectPolicy =
+  | { kind: 'none' }
+  | {
+      kind: 'checked_mutation';
+      proposals: readonly {
+        schema: SchemaIdentityV1;
+        confirmation: 'required' | 'optional' | 'forbidden';
+      }[];
+    };
+
+export type CheckedEffectRequirement =
+  | { kind: 'none' }
+  | {
+      kind: 'checked_mutation';
+      proposalSchema: SchemaIdentityV1;
+      confirmation: 'required' | 'optional' | 'forbidden';
+    };
+
 export interface AgentRoleDefinition {
   identity: RoleIdentityV1;
   kind: TeamRoleKind;
@@ -22,6 +40,7 @@ export interface WorkCellDefinition {
   makerOutputSchema: z.ZodType;
   inputSchemaIdentity: SchemaIdentityV1;
   outputSchemaIdentity: SchemaIdentityV1;
+  effectPolicy: WorkCellEffectPolicy;
   checkerRubric: CheckerRubricV1;
   allowedSkillNames: readonly string[];
   evaluateStopCondition(input: {
@@ -60,6 +79,7 @@ export interface CheckedWorkCellResult {
   workCellId: string;
   status: TeamResultStatusV1;
   completionState: 'terminal' | 'checked_mutation_pending';
+  effectRequirement: CheckedEffectRequirement;
   makerArtifacts: readonly ArtifactEnvelopeV1[];
   checkerVerdicts: readonly CheckerVerdictV1[];
   acceptedMaker?: MakerArtifactV1;

@@ -118,6 +118,7 @@ describe('Mastra team execution framework', () => {
         makerOutputSchema: z.object({ answer: z.string() }),
         inputSchemaIdentity: { schemaName: 'lookup-input', schemaVersion: 1 },
         outputSchemaIdentity: { schemaName: 'lookup-output', schemaVersion: 1 },
+        effectPolicy: { kind: 'none' },
         checkerRubric: { rubricName: 'lookup-rubric', rubricVersion: 1,
           instructions: ['Check the exact answer.'] },
         allowedSkillNames: ['verified-lookup'],

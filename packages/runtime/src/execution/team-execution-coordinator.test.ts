@@ -103,6 +103,7 @@ function checkedResult(taskId: string) {
     taskId, team: 'query', workCellId: 'analysis',
     status: 'verified' as const,
     completionState: 'terminal' as const,
+    effectRequirement: { kind: 'none' as const },
     makerArtifacts: [{ artifactId, householdId, taskId: parsedTaskId,
       artifactType: 'maker_output' as const, schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
       canonicalizationVersion: 'rfc8785-v1' as const, hashAlgorithm: 'sha256' as const, artifactHash,

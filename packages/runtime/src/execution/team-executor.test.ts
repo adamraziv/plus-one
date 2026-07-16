@@ -129,6 +129,11 @@ describe('TeamExecutor', () => {
   });
 
   it('leaves an accepted mutation work cell at checker_validated', async () => {
+    const mutationOutputSchema = z.object({
+      schemaName: z.literal('test-mutation-proposal'),
+      schemaVersion: z.literal(1),
+      answer: z.string(),
+    }).strict();
     const runtime = {
       createTask: vi.fn(),
       selectContract: vi.fn(),
@@ -152,8 +157,8 @@ describe('TeamExecutor', () => {
       .mockResolvedValueOnce({
         schemaName: 'maker-artifact',
         schemaVersion: 1,
-        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
-        output: { answer: '42' },
+        outputSchema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+        output: { schemaName: 'test-mutation-proposal', schemaVersion: 1, answer: '42' },
         claims: [{ claimId: 'c1', text: '42', evidenceArtifactIds: [] }],
         assumptions: [],
         uncertainty: [],
@@ -196,10 +201,26 @@ describe('TeamExecutor', () => {
     });
     const result = await executor.executeWorkCell({
       ...makeExecutionInput(),
-      completionMode: 'checked_mutation',
+      workCell: {
+        ...makeExecutionInput().workCell,
+        makerOutputSchema: mutationOutputSchema,
+        outputSchemaIdentity: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+        effectPolicy: {
+          kind: 'checked_mutation',
+          proposals: [{
+            schema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+            confirmation: 'required',
+          }],
+        },
+      },
     });
     expect(result.status).toBe('verified');
     expect(result.completionState).toBe('checked_mutation_pending');
+    expect(result.effectRequirement).toEqual({
+      kind: 'checked_mutation',
+      proposalSchema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+      confirmation: 'required',
+    });
     expect(runtime.complete).not.toHaveBeenCalled();
   });
 
@@ -278,10 +299,16 @@ describe('TeamExecutor', () => {
 
     const result = await executor.executeWorkCell({
       ...makeExecutionInput(),
-      completionMode: 'checked_mutation',
       workCell: {
         ...makeExecutionInput().workCell,
         makerOutputSchema: z.any(),
+        effectPolicy: {
+          kind: 'checked_mutation',
+          proposals: [{
+            schema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+            confirmation: 'required',
+          }],
+        },
         evaluateStopCondition: () => ({
           status: 'verified' as const,
           reason: 'Should be overridden by clarification handling.',
@@ -294,6 +321,7 @@ describe('TeamExecutor', () => {
     expect(result.completionState).toBe('terminal');
     expect(result.outstanding).toContain('Which account should be used?');
     expect(result.outstanding).not.toContain('payment_account');
+    expect(result.effectRequirement).toEqual({ kind: 'none' });
   });
 
   it('retries maker output that references evidence outside permittedEvidence before freezing it', async () => {
@@ -551,6 +579,7 @@ function makeExecutionInput() {
       outputSchemaIdentity: { schemaName: 'lookup-output', schemaVersion: 1 },
       checkerRubric: { rubricName: 'lookup-rubric', rubricVersion: 1, instructions: ['Check answer.'] },
       allowedSkillNames: ['verified-lookup'],
+      effectPolicy: { kind: 'none' as const },
       evaluateStopCondition: () => ({ status: 'verified' as const,
         reason: 'The exact checked answer is present.', outstanding: [] }),
     },

@@ -49,6 +49,14 @@ const chartStop: WorkCellDefinition['evaluateStopCondition'] = ({ maker }) => {
   };
 };
 
+const accountingJournalEffect = {
+  kind: 'checked_mutation' as const,
+  proposals: [{
+    schema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
+    confirmation: 'optional' as const,
+  }],
+};
+
 export const transactionCaptureWorkCell: WorkCellDefinition = {
   workCellId: 'transaction-capture',
   maker: byName('transaction-capture-maker') as WorkCellDefinition['maker'],
@@ -57,6 +65,7 @@ export const transactionCaptureWorkCell: WorkCellDefinition = {
   makerOutputSchema: AccountingWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'transaction-capture-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+  effectPolicy: accountingJournalEffect,
   checkerRubric: {
     rubricName: 'transaction-capture-rubric',
     rubricVersion: 1,
@@ -78,6 +87,7 @@ export const journalWorkCell: WorkCellDefinition = {
   makerOutputSchema: AccountingWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'journal-work-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+  effectPolicy: accountingJournalEffect,
   checkerRubric: {
     rubricName: 'journal-rubric',
     rubricVersion: 1,
@@ -99,6 +109,13 @@ export const chartOfAccountsWorkCell: WorkCellDefinition = {
   makerOutputSchema: ChartWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'chart-work-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'chart-work-result', schemaVersion: 1 },
+  effectPolicy: {
+    kind: 'checked_mutation',
+    proposals: [{
+      schema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+      confirmation: 'required',
+    }],
+  },
   checkerRubric: {
     rubricName: 'chart-of-accounts-rubric',
     rubricVersion: 1,

@@ -39,7 +39,6 @@ export class TeamExecutor {
     stopCondition: StopConditionV1;
     strategyName: string;
     abortSignal: AbortSignal;
-    completionMode?: 'terminal' | 'checked_mutation';
   }): Promise<CheckedWorkCellResult> {
     if (!input.workCell.allowedSkillNames.includes(input.selectedSkill.skillName)) {
       throw new PlusOneError({ category: 'policy_rejected', code: 'work_cell_skill_not_allowed',
@@ -233,8 +232,10 @@ export class TeamExecutor {
         });
         throw error;
       }
-      const completionState = input.completionMode === 'checked_mutation'
-        && terminal.status === 'verified'
+      const effectRequirement = verdict.verdict === 'accepted' && terminal.status === 'verified'
+        ? effectRequirementFor(input.workCell, makerOutput.output)
+        : { kind: 'none' as const };
+      const completionState = effectRequirement.kind === 'checked_mutation'
         ? 'checked_mutation_pending' as const
         : 'terminal' as const;
       if (completionState === 'terminal') {
@@ -245,6 +246,7 @@ export class TeamExecutor {
       return {
         householdId: input.householdId, taskId: input.taskId, team: input.team,
         workCellId: input.workCell.workCellId, status: terminal.status, completionState,
+        effectRequirement,
         makerArtifacts, checkerVerdicts,
         completionReason: terminal.reason, outstanding: terminal.outstanding,
         ...(verdict.verdict === 'accepted' ? { acceptedMaker: makerOutput } : {}),
@@ -327,11 +329,35 @@ function failedResult(
     workCellId: input.workCell.workCellId,
     status: 'failed',
     completionState: 'terminal',
+    effectRequirement: { kind: 'none' },
     makerArtifacts,
     checkerVerdicts,
     completionReason: plusOne?.message ?? 'Work cell execution failed.',
     outstanding: plusOne === undefined ? [] : [plusOne.code],
   };
+}
+
+function effectRequirementFor(
+  workCell: WorkCellDefinition,
+  output: JsonValue,
+): CheckedWorkCellResult['effectRequirement'] {
+  if (workCell.effectPolicy.kind === 'none'
+    || output === null
+    || typeof output !== 'object'
+    || Array.isArray(output)) return { kind: 'none' };
+  const schemaName = output.schemaName;
+  const schemaVersion = output.schemaVersion;
+  if (typeof schemaName !== 'string' || typeof schemaVersion !== 'number') return { kind: 'none' };
+  const proposal = workCell.effectPolicy.proposals.find((candidate) =>
+    candidate.schema.schemaName === schemaName
+    && candidate.schema.schemaVersion === schemaVersion);
+  return proposal === undefined
+    ? { kind: 'none' }
+    : {
+        kind: 'checked_mutation',
+        proposalSchema: proposal.schema,
+        confirmation: proposal.confirmation,
+      };
 }
 
 function assertMakerClaimsUsePermittedEvidence(

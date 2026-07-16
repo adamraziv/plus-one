@@ -46,7 +46,7 @@ export class CheckedMutationWorkCellCoordinator {
   }) {}
 
   async execute(input: {
-    workCellInput: Omit<WorkCellInput, 'completionMode'>;
+    workCellInput: WorkCellInput;
     commandId: string;
     idempotencyKey: string;
     confirmationId?: string;
@@ -54,7 +54,6 @@ export class CheckedMutationWorkCellCoordinator {
   }): Promise<VerifiedMutationWorkCellResult> {
     const checked = await this.dependencies.teamExecutor.executeWorkCell({
       ...input.workCellInput,
-      completionMode: 'checked_mutation',
     });
     const makerArtifact = checked.makerArtifacts.at(-1);
     if (checked.status !== 'verified'

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AccountingMutationService } from '@plus-one/accounting';
+import { AccountingMutationService, ChartOfAccountsProposalSchemaV1 } from '@plus-one/accounting';
 import { CheckedMutationWorkCellCoordinator } from '@plus-one/mutations';
 import {
   MutationReceiptSchemaV1,
+  MakerArtifactSchemaV1,
   ReadbackResultSchemaV1,
   type CheckedCommandV1,
   type JsonValue,
@@ -259,6 +260,7 @@ function chartClarificationChecked() {
 }
 
 function checkedResult(workCellId: string, maker: JsonValue) {
+  const parsedMaker = MakerArtifactSchemaV1.parse(maker);
   const artifactHash = hashArtifact(maker);
   const artifact = {
     artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -279,6 +281,12 @@ function checkedResult(workCellId: string, maker: JsonValue) {
     workCellId,
     status: 'verified' as const,
     completionState: 'checked_mutation_pending' as const,
+    effectRequirement: {
+      kind: 'checked_mutation' as const,
+      proposalSchema: parsedMaker.outputSchema,
+      confirmation: ChartOfAccountsProposalSchemaV1.safeParse(parsedMaker.output).success
+        ? 'required' as const : 'optional' as const,
+    },
     makerArtifacts: [artifact],
     checkerVerdicts: [{
       verdict: 'accepted' as const,

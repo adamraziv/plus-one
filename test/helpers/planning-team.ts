@@ -115,6 +115,11 @@ export function checkedPlanningResult(input: {
     workCellId: input.workCellId,
     status: 'verified',
     completionState: 'checked_mutation_pending',
+    effectRequirement: {
+      kind: 'checked_mutation',
+      proposalSchema: input.outputSchema,
+      confirmation: 'optional',
+    },
     makerArtifacts: [{
       artifactId,
       householdId: input.householdId,
