@@ -36,7 +36,7 @@ describe('accounting team mutation paths', () => {
     expect(mutationExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({
       commandType: 'apply_accounting_journal_mutation',
       checkedProposalId: result.makerArtifacts[0]!.artifactId,
-      payloadSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      payloadSchema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
     }));
     expect(runtime.complete).toHaveBeenCalledWith({ householdId, taskId, status: 'verified' });
   });
@@ -200,7 +200,7 @@ function journalChecked(
   const maker = {
     schemaName: 'maker-artifact' as const,
     schemaVersion: 1 as const,
-    outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+    outputSchema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
     output,
     claims: [{ claimId: 'checked-journal', text: 'Checked accounting mutation proposal.', evidenceArtifactIds: [] }],
     assumptions: [],
