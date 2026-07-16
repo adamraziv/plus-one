@@ -21,12 +21,12 @@ import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
   TeamLeadPlanSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type ArtifactEnvelopeV1,
   type CheckerVerdictV1,
   type JsonValue,
   type MakerArtifactV1,
-  type TeamResultEnvelopeV1,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import {
   AgentInvocationRunner,
@@ -361,8 +361,10 @@ async function runAccountingScenario(input: {
         stopCondition: plan.stopCondition,
       });
     }),
+    resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+    cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
   };
-  let teamResult: TeamResultEnvelopeV1 | undefined;
+  let teamResult: TeamResultEnvelopeV2 | undefined;
   const generate = vi.fn(async () => {
     if (teamResult === undefined) {
       teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -419,9 +421,9 @@ function expectNoImplementationDetails(body: string): void {
 async function executeDelegate(
   tool: typeof OrchestratorAgent.prototype.agentTools.delegateTeam,
   input: { team: string; request: unknown },
-): Promise<TeamResultEnvelopeV1> {
+): Promise<TeamResultEnvelopeV2> {
   const execute = tool.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
-  return TeamResultEnvelopeSchemaV1.parse(await execute(input, {}));
+  return TeamResultEnvelopeSchemaV2.parse(await execute(input, {}));
 }
 
 function skillFor(name: string): SkillRegistration {

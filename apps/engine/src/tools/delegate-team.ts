@@ -4,10 +4,10 @@ import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
   QueryResultSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type InboundChannelMessageV1,
   type JsonValue,
-  type TeamResultEnvelopeV1,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { internalImplementationDetailMatchCategory, type TeamDefinition } from '@plus-one/runtime';
 import { isUserFacingQueryField } from '../query-tools.js';
@@ -24,7 +24,16 @@ export interface OrchestratorTeamRuntime {
     team: TeamDefinition;
     request: JsonValue;
     signal: AbortSignal;
-  }): Promise<TeamResultEnvelopeV1>;
+  }): Promise<TeamResultEnvelopeV2>;
+  resumePendingMutation(input: {
+    message: InboundChannelMessageV1;
+    pending: TeamResultEnvelopeV2;
+    signal: AbortSignal;
+  }): Promise<TeamResultEnvelopeV2>;
+  cancelPendingMutation(input: {
+    pending: TeamResultEnvelopeV2;
+    signal: AbortSignal;
+  }): Promise<void>;
 }
 
 const UserFacingQueryValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
@@ -59,8 +68,8 @@ export type DelegateTeamRetrySignal = z.infer<typeof DelegateTeamRetrySignalSche
 
 export const WITHHELD_DETAIL = 'Some checked details were withheld for privacy.';
 
-export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV1): FinalSynthesisTeamResultView {
-  const acceptedArtifacts = new Map<string, TeamResultEnvelopeV1['makerArtifacts'][number]>();
+export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV2): FinalSynthesisTeamResultView {
+  const acceptedArtifacts = new Map<string, TeamResultEnvelopeV2['makerArtifacts'][number]>();
   for (const artifact of result.makerArtifacts) {
     const accepted = result.checkerVerdicts.some((verdict) =>
       verdict.verdict === 'accepted'
@@ -124,7 +133,7 @@ export function createDelegateTeamTool(input: {
       'Do not use this tool for payments, trades, tax filings, provider account changes, or external financial actions.',
     ].join(' '),
     inputSchema: DelegateTeamToolInputSchema,
-    outputSchema: TeamResultEnvelopeSchemaV1,
+    outputSchema: TeamResultEnvelopeSchemaV2,
     toModelOutput: (result: unknown) => {
       if (isValidationError(result)) {
         return {
@@ -139,7 +148,7 @@ export function createDelegateTeamTool(input: {
       }
       return {
         type: 'json',
-        value: finalSynthesisTeamResultView(TeamResultEnvelopeSchemaV1.parse(result)),
+        value: finalSynthesisTeamResultView(TeamResultEnvelopeSchemaV2.parse(result)),
       };
     },
     execute: async (inputData) => {
@@ -160,7 +169,7 @@ export function createDelegateTeamTool(input: {
         throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
       }
       try {
-        const result = TeamResultEnvelopeSchemaV1.parse(await input.teamRuntime.runTeamLead({
+        const result = TeamResultEnvelopeSchemaV2.parse(await input.teamRuntime.runTeamLead({
           message: InboundChannelMessageSchemaV1.parse(active.message),
           team,
           request: requestForRuntime(context.request),

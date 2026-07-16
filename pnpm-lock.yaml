@@ -91,6 +91,9 @@ importers:
       '@plus-one/ingestion':
         specifier: workspace:*
         version: link:../../packages/ingestion
+      '@plus-one/mutations':
+        specifier: workspace:*
+        version: link:../../packages/mutations
       '@plus-one/planning':
         specifier: workspace:*
         version: link:../../packages/planning

@@ -5,11 +5,11 @@ import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
   QueryResultSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   TeamLeadPlanSchemaV1,
   type ArtifactEnvelopeV1,
   type CheckerVerdictV1,
-  type TeamResultEnvelopeV1,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { querySkills, queryTeamDefinition } from '@plus-one/query';
 import {
@@ -266,6 +266,8 @@ describe('agent hierarchy acceptance', () => {
           stopCondition: plan.stopCondition,
         });
       }),
+      resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+      cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
     };
     const generate = vi.fn(async (messages) => {
       expect(messages).toContain('List accounts.');
@@ -314,9 +316,9 @@ describe('agent hierarchy acceptance', () => {
 async function executeDelegate(
   tool: typeof OrchestratorAgent.prototype.agentTools.delegateTeam,
   input: { team: string; request: unknown },
-): Promise<TeamResultEnvelopeV1> {
+): Promise<TeamResultEnvelopeV2> {
   const execute = tool.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
-  return TeamResultEnvelopeSchemaV1.parse(await execute(input, {}));
+  return TeamResultEnvelopeSchemaV2.parse(await execute(input, {}));
 }
 
 function queryResult(rows: Record<string, unknown>[]) {

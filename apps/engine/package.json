@@ -12,6 +12,7 @@
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
     "@plus-one/ingestion": "workspace:*",
+    "@plus-one/mutations": "workspace:*",
     "@plus-one/planning": "workspace:*",
     "@plus-one/query": "workspace:*",
     "@plus-one/reporting": "workspace:*",

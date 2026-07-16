@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
+  PostgresDomainCommandBridge,
+  PostgresMutationCommandRepository,
   PostgresArtifactRepository,
   PostgresVerificationLedgerRepository,
   type DatabasePools,
@@ -16,6 +18,13 @@ import {
   type InboundChannelMessageV1,
   type JsonValue,
 } from '@plus-one/contracts';
+import {
+  CheckedMutationExecutor,
+  CheckedMutationWorkCellCoordinator,
+  CommandRegistry,
+  CommandStateResolver,
+  SerializableMutationRunner,
+} from '@plus-one/mutations';
 import { ingestionSkills } from '@plus-one/ingestion';
 import { planningSkills } from '@plus-one/planning';
 import {
@@ -40,6 +49,7 @@ import {
   type TeamDefinition,
   type WorkCellDefinition,
 } from '@plus-one/runtime';
+import { createChartOfAccountsMutationHandler, AccountingMutationService } from '@plus-one/accounting';
 import type { AgentSystem } from './agent-catalog.js';
 import type { OrchestratorTeamRuntime } from './tools/delegate-team.js';
 import {
@@ -48,6 +58,7 @@ import {
 } from './accounting/accounting-lead-contracts.js';
 import { materializeAccountingLeadRequest } from './accounting/accounting-request-materializers.js';
 import { QueryLeadRequestDraftSchemaV1 } from './tools/delegate-team-schemas.js';
+import { DefaultChartMutationRuntime } from './accounting/chart-mutation-runtime.js';
 
 const skills = [
   ...querySkills,
@@ -91,6 +102,44 @@ export function createTeamRuntime(input: {
     executor,
     strategies,
     assembler: new TeamResultAssembler(),
+  });
+  const commands = new PostgresMutationCommandRepository(input.pools.operations);
+  const clientRouter = {
+    connect: (role: 'accounting' | 'planning') => input.pools[role].connect(),
+  };
+  const resolver = new CommandStateResolver({ commands, ledger });
+  const mutationRunner = new SerializableMutationRunner({
+    clients: clientRouter,
+    bridge: new PostgresDomainCommandBridge(),
+    findReceipt: (householdId, commandId) => commands.findReceiptByCommand(householdId, commandId),
+    sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    now: () => Date.now(),
+  });
+  const mutationExecutor = new CheckedMutationExecutor({
+    artifacts,
+    ledger,
+    commands,
+    resolver,
+    registry: new CommandRegistry([createChartOfAccountsMutationHandler()]),
+    runner: mutationRunner,
+    readClients: clientRouter,
+    newReadbackId: () => nextId('readback'),
+  });
+  const checkedMutations = new CheckedMutationWorkCellCoordinator({
+    teamExecutor: executor,
+    mutationExecutor,
+    runtime,
+    ledger,
+  });
+  const chartMutations = new DefaultChartMutationRuntime({
+    service: new AccountingMutationService(checkedMutations),
+    assembler: new TeamResultAssembler(),
+    commands,
+    coordinator: checkedMutations,
+    verification: runtime,
+    nextCommandId: () => nextId('command'),
+    nextIdempotencyKey: () => nextId('idem'),
+    nextConfirmationId: () => nextId('confirm'),
   });
 
   return {
@@ -140,6 +189,20 @@ export function createTeamRuntime(input: {
         abortSignal: runtimeInput.signal,
       }));
 
+      const resultMetadata = {
+        householdId: runtimeInput.message.householdId,
+        resultTaskId,
+        team: runtimeInput.team.team,
+        strategyName: plan.recommendedStrategyName,
+        selectedSkill: work[0]!.selectedSkill,
+        stopCondition: plan.stopCondition,
+      };
+      if (plan.work.length === 1 && plan.work[0]?.workCellId === 'chart-of-accounts') {
+        return chartMutations.prepare({
+          workCellInput: work[0]!,
+          resultMetadata,
+        });
+      }
       return coordinator.execute({
         team: runtimeInput.team,
         strategyName: plan.recommendedStrategyName,
@@ -148,6 +211,14 @@ export function createTeamRuntime(input: {
         work,
         stopCondition: plan.stopCondition,
       });
+    },
+    resumePendingMutation: async ({ message, pending, signal }) => {
+      if (signal.aborted) throw signal.reason ?? new DOMException('Mutation resume aborted.', 'AbortError');
+      return chartMutations.resume({ message, pending });
+    },
+    cancelPendingMutation: async ({ pending, signal }) => {
+      if (signal.aborted) throw signal.reason ?? new DOMException('Mutation cancellation aborted.', 'AbortError');
+      await chartMutations.cancel({ pending });
     },
   };
 }
@@ -370,7 +441,7 @@ function findSkill(predicate: (skill: SkillRegistration) => boolean): SkillRegis
   return skill;
 }
 
-function nextId(prefix: 'account' | 'accountmap' | 'artifact' | 'evidence' | 'run' | 'task'): string {
+function nextId(prefix: 'account' | 'accountmap' | 'artifact' | 'command' | 'confirm' | 'evidence' | 'idem' | 'readback' | 'run' | 'task'): string {
   return `${prefix}_${ulid()}`;
 }
 

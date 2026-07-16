@@ -5,10 +5,10 @@ import {
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   QueryResultSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type InboundChannelMessageV1,
   type QueryResultV1,
-  type TeamResultEnvelopeV1,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { QueryToolRegistry, ReadOnlySqlValidator, queryTeamDefinition } from '@plus-one/query';
 import { createAnalystSandboxTool } from '@plus-one/runtime';
@@ -225,7 +225,11 @@ function createLiveOrchestrator(input: {
   return new OrchestratorAgent({
     model: config.models.orchestrator,
     teams: [queryTeamDefinition],
-    teamRuntime: { runTeamLead: input.runTeamLead },
+    teamRuntime: {
+      runTeamLead: input.runTeamLead,
+      resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+      cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+    },
     ...(input.sessionMemory === undefined ? {} : { sessionMemory: input.sessionMemory }),
   });
 }
@@ -277,7 +281,7 @@ function conversationMessage(
   };
 }
 
-function checkedAccountListResult(): TeamResultEnvelopeV1 {
+function checkedAccountListResult(): TeamResultEnvelopeV2 {
   const accounts = QueryResultSchemaV1.parse({
     schemaName: 'query-result',
     schemaVersion: 1,
@@ -289,9 +293,9 @@ function checkedAccountListResult(): TeamResultEnvelopeV1 {
     freshness: 'latest available reporting projection',
     coverageWarnings: [],
   });
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
-    schemaVersion: 1,
+    schemaVersion: 2,
     householdId,
     taskId,
     team: 'query',
@@ -324,10 +328,11 @@ function checkedAccountListResult(): TeamResultEnvelopeV1 {
     stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     completionReason: 'Accepted account inventory is ready for synthesis.',
     outstanding: [],
+    effect: { state: 'none' },
   });
 }
 
-function accountInventoryAndEmptyBalancesResult(): TeamResultEnvelopeV1 {
+function accountInventoryAndEmptyBalancesResult(): TeamResultEnvelopeV2 {
   const accounts = QueryResultSchemaV1.parse({
     schemaName: 'query-result',
     schemaVersion: 1,
@@ -350,9 +355,9 @@ function accountInventoryAndEmptyBalancesResult(): TeamResultEnvelopeV1 {
     freshness: 'latest available reporting projection',
     coverageWarnings: [],
   });
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
-    schemaVersion: 1,
+    schemaVersion: 2,
     householdId,
     taskId,
     team: 'query',
@@ -413,6 +418,7 @@ function accountInventoryAndEmptyBalancesResult(): TeamResultEnvelopeV1 {
     stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     completionReason: synthesisFallbackMarker,
     outstanding: ['An empty current-balance projection does not determine account inventory.'],
+    effect: { state: 'none' },
   });
 }
 
