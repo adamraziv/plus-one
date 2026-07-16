@@ -435,7 +435,6 @@ describe('OrchestratorAgent', () => {
       nativeCurrency: 'IDR',
     });
     const prompts: string[] = [];
-    let orchestrator: OrchestratorAgent;
     const generate = vi.fn(async (prompt: unknown) => {
       prompts.push(JSON.stringify(prompt));
       if (generate.mock.calls.length === 1) {
@@ -463,7 +462,7 @@ describe('OrchestratorAgent', () => {
       }
       return { text: 'I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?' };
     });
-    orchestrator = singleLoopOrchestrator({
+    const orchestrator = singleLoopOrchestrator({
       generate,
       runTeamLead: vi.fn(async () => pending),
       teams: [accountingTeam],
