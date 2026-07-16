@@ -1,5 +1,6 @@
 import { createTool, isValidationError } from '@mastra/core/tools';
 import { z } from 'zod';
+import { ChartOfAccountsProposalSchemaV1 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
@@ -51,6 +52,15 @@ export const FinalSynthesisTeamResultViewSchema = z.object({
     checkedClaim: z.string(),
     rows: z.array(z.record(z.string(), UserFacingQueryValueSchema)),
   }).strict()),
+  proposedChange: z.object({
+    kind: z.literal('chart_of_accounts'),
+    action: z.enum(['create_account', 'update_account', 'archive_account', 'create_source_mapping', 'replace_source_mapping']),
+    accountName: z.string().optional(),
+    accountingClass: z.string().optional(),
+    normalBalance: z.string().optional(),
+    nativeCurrency: z.string().optional(),
+  }).strict().optional(),
+  effectState: z.enum(['none', 'awaiting_confirmation', 'unresolved', 'persisted']),
 }).strict();
 
 export type FinalSynthesisTeamResultView = z.infer<typeof FinalSynthesisTeamResultViewSchema>;
@@ -97,16 +107,34 @@ export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV2): Fina
       return [{ checkedClaim, rows }];
     });
   });
+  const proposedChange = result.effect.state === 'awaiting_confirmation'
+    ? (() => {
+      const proposal = ChartOfAccountsProposalSchemaV1.safeParse(result.effect.command.payload);
+      if (!proposal.success) return undefined;
+      return {
+        kind: 'chart_of_accounts' as const,
+        action: proposal.data.action,
+        accountName: 'name' in proposal.data ? proposal.data.name : undefined,
+        accountingClass: 'accountingClass' in proposal.data ? proposal.data.accountingClass : undefined,
+        normalBalance: 'normalBalance' in proposal.data ? proposal.data.normalBalance : undefined,
+        nativeCurrency: 'nativeCurrency' in proposal.data ? proposal.data.nativeCurrency : undefined,
+      };
+    })()
+    : undefined;
   return FinalSynthesisTeamResultViewSchema.parse({
     schemaName: 'final-synthesis-team-result',
     schemaVersion: 1,
     team: result.team,
     status: result.status,
-    checkedClaims: userFacingTexts(result.claims.map((claim) => claim.text)),
+    checkedClaims: result.effect.state === 'awaiting_confirmation'
+      ? []
+      : userFacingTexts(result.claims.map((claim) => claim.text)),
     assumptions: userFacingTexts(result.assumptions),
     uncertainty: userFacingTexts(result.uncertainty),
     outstanding: userFacingTexts(result.outstanding),
     checkedData,
+    ...(proposedChange === undefined ? {} : { proposedChange }),
+    effectState: result.effect.state,
   });
 }
 

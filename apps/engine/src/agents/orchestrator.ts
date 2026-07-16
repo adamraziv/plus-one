@@ -7,11 +7,11 @@ import { ZodError } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type ChannelKindV1,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
-  type TeamResultEnvelopeV1,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import {
   createTransientModelRetryProcessor,
@@ -74,14 +74,26 @@ const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
 
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
-  | { kind: 'ask-user'; response: OrchestratorFinalResponseV1 };
+  | { kind: 'ask-user'; response: OrchestratorFinalResponseV1; pendingMutation?: TeamResultEnvelopeV2 };
+
+export type ConfirmationDecision = 'approve' | 'reject' | 'unclear';
+
+export function confirmationDecision(body: string): ConfirmationDecision {
+  const normalized = body.trim().toLowerCase().replace(/[.!]+$/g, '');
+  if (/^(yes|y|ok|okay|sure|proceed|go ahead|please do|do it|sounds good|that works)$/.test(normalized)) {
+    return 'approve';
+  }
+  if (/^(no|n|cancel|stop|never mind|nevermind)(\b|$)/.test(normalized)
+    || /\b(do not|don't)\b/.test(normalized)) return 'reject';
+  return 'unclear';
+}
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
   private readonly activeInvocation = new AsyncLocalStorage<{
     message: InboundChannelMessageV1;
     signal: AbortSignal;
-    teamResults: TeamResultEnvelopeV1[];
+    teamResults: TeamResultEnvelopeV2[];
     delegationCount: number;
     delegationFailed: boolean;
     channelEvents?: ChannelEventSink;
@@ -119,7 +131,7 @@ export class OrchestratorAgent {
           if (active?.signal.aborted) {
             throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
           }
-          const result = TeamResultEnvelopeSchemaV1.parse(
+          const result = TeamResultEnvelopeSchemaV2.parse(
             await abortable(dependencies.teamRuntime.runTeamLead(input), active?.signal),
           );
           if (active?.signal.aborted) {
@@ -158,6 +170,8 @@ export class OrchestratorAgent {
           throw error;
         }
       },
+      resumePendingMutation: dependencies.teamRuntime.resumePendingMutation,
+      cancelPendingMutation: dependencies.teamRuntime.cancelPendingMutation,
     };
     this.agentTools = {
       delegateTeam: createDelegateTeamTool({
@@ -194,7 +208,7 @@ export class OrchestratorAgent {
     const invocation = {
       message,
       signal,
-      teamResults: [] as TeamResultEnvelopeV1[],
+      teamResults: [] as TeamResultEnvelopeV2[],
       delegationCount: 0,
       delegationFailed: false,
       ...(this.dependencies.channelEvents === undefined ? {} : { channelEvents: this.dependencies.channelEvents }),
@@ -276,10 +290,16 @@ export class OrchestratorAgent {
             const selected = selectTeamResult(invocation.teamResults);
             const canUseInitialBody = body !== undefined
               && userFacingSafetyMatchCategory(body) === undefined
-              && (selected?.status === 'verified'
-                || (selected?.status === 'insufficient_evidence' && body.includes('?')));
+              && (selected?.effect.state === 'persisted'
+                || (selected?.effect.state === 'none'
+                  && (selected.status === 'verified'
+                    || (selected.status === 'insufficient_evidence' && body.includes('?')))));
             if (!canUseInitialBody) {
               body = await this.synthesizeTeamResults(message, invocation.teamResults, signal);
+            }
+            if (selected?.effect.state === 'awaiting_confirmation'
+              && !confirmationResponseIsSafe(body, selected)) {
+              body = confirmationFallback(selected);
             }
             const safeBody = body !== undefined && userFacingSafetyMatchCategory(body) === undefined
               ? body
@@ -344,7 +364,7 @@ export class OrchestratorAgent {
 
   private async synthesizeTeamResults(
     message: InboundChannelMessageV1,
-    teamResults: readonly TeamResultEnvelopeV1[],
+    teamResults: readonly TeamResultEnvelopeV2[],
     signal: AbortSignal,
   ): Promise<string | undefined> {
     try {
@@ -395,7 +415,7 @@ function inboundContextPrompt(message: InboundChannelMessageV1): string {
 
 function responseFromTeamResults(
   message: InboundChannelMessageV1,
-  teamResults: readonly TeamResultEnvelopeV1[],
+  teamResults: readonly TeamResultEnvelopeV2[],
   synthesizedBody?: string,
 ): OrchestratorFinalResponseV1 {
   const teamResult = selectTeamResult(teamResults);
@@ -406,13 +426,15 @@ function responseFromTeamResults(
 
 function turnFromTeamResults(
   message: InboundChannelMessageV1,
-  teamResults: readonly TeamResultEnvelopeV1[],
+  teamResults: readonly TeamResultEnvelopeV2[],
   synthesizedBody?: string,
 ): OrchestratorTurnResult {
   const response = responseFromTeamResults(message, teamResults, synthesizedBody);
   const teamResult = selectTeamResult(teamResults);
-  if (teamResult?.status === 'insufficient_evidence') {
-    return { kind: 'ask-user', response };
+  if (teamResult?.status === 'insufficient_evidence' || teamResult?.effect.state === 'awaiting_confirmation') {
+    return teamResult.effect.state === 'awaiting_confirmation'
+      ? { kind: 'ask-user', response, pendingMutation: teamResult }
+      : { kind: 'ask-user', response };
   }
   return { kind: 'final', response };
 }
@@ -420,7 +442,7 @@ function turnFromTeamResults(
 function responseFromText(
   message: InboundChannelMessageV1,
   body: string,
-  teamResults: readonly TeamResultEnvelopeV1[] = [],
+  teamResults: readonly TeamResultEnvelopeV2[] = [],
 ): OrchestratorFinalResponseV1 {
   assertUserSafeResponseBody(body);
   const teamResult = selectTeamResult(teamResults);
@@ -500,12 +522,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function selectTeamResult(teamResults: readonly TeamResultEnvelopeV1[]): TeamResultEnvelopeV1 | undefined {
+function selectTeamResult(teamResults: readonly TeamResultEnvelopeV2[]): TeamResultEnvelopeV2 | undefined {
   return [...teamResults].sort((left, right) =>
     statusRank(left.status) - statusRank(right.status) || teamResults.lastIndexOf(right) - teamResults.lastIndexOf(left))[0];
 }
 
-function statusRank(status: TeamResultEnvelopeV1['status']): number {
+function statusRank(status: TeamResultEnvelopeV2['status']): number {
   if (status === 'verified') return 0;
   if (status === 'partial') return 1;
   if (status === 'insufficient_evidence') return 2;
@@ -513,7 +535,7 @@ function statusRank(status: TeamResultEnvelopeV1['status']): number {
   return 4;
 }
 
-function responseBody(teamResult: TeamResultEnvelopeV1): string {
+function responseBody(teamResult: TeamResultEnvelopeV2): string {
   if (teamResult.status === 'insufficient_evidence') {
     const questions = clarificationQuestions(teamResult);
     return questions.length === 0
@@ -524,6 +546,32 @@ function responseBody(teamResult: TeamResultEnvelopeV1): string {
     return 'I found the requested information, but I could not safely summarize it. Please try again.';
   }
   return 'I could not complete that request safely. Please try again.';
+}
+
+function confirmationResponseIsSafe(body: string | undefined, teamResult: TeamResultEnvelopeV2): boolean {
+  if (body === undefined || !body.includes('?')) return false;
+  if (/\b(created|saved|added|applied|recorded|completed|succeeded)\b/i.test(body)) return false;
+  const proposedChange = finalSynthesisTeamResultView(teamResult).proposedChange;
+  if (proposedChange?.action !== 'create_account') return true;
+  const requiredDetails = [
+    proposedChange.accountName,
+    proposedChange.accountingClass,
+    proposedChange.normalBalance,
+    proposedChange.nativeCurrency,
+  ];
+  return requiredDetails.every((detail) => detail !== undefined && body.toLowerCase().includes(detail.toLowerCase()));
+}
+
+function confirmationFallback(teamResult: TeamResultEnvelopeV2): string {
+  const proposedChange = finalSynthesisTeamResultView(teamResult).proposedChange;
+  if (proposedChange?.action === 'create_account'
+    && proposedChange.accountName !== undefined
+    && proposedChange.accountingClass !== undefined
+    && proposedChange.normalBalance !== undefined
+    && proposedChange.nativeCurrency !== undefined) {
+    return `I’ll add ${proposedChange.accountName} as an ${proposedChange.nativeCurrency} ${proposedChange.accountingClass} account with a normal ${proposedChange.normalBalance} balance. Would you like me to proceed?`;
+  }
+  return 'I have a checked proposal ready. Would you like me to proceed?';
 }
 
 class InternalIdentifierResponseError extends Error {
@@ -545,7 +593,7 @@ function userFacingSafetyMatchCategory(value: string): UserFacingSafetyMatchCate
   return internalIdentifierMatchCategory(value) ?? internalImplementationDetailMatchCategory(value);
 }
 
-function clarificationQuestions(teamResult: TeamResultEnvelopeV1): string[] {
+function clarificationQuestions(teamResult: TeamResultEnvelopeV2): string[] {
   const acceptedArtifactIds = new Set(teamResult.checkerVerdicts.flatMap((verdict) =>
     verdict.verdict === 'accepted' ? [verdict.coveredArtifactId] : []));
   return teamResult.makerArtifacts.flatMap((artifact) => {
@@ -563,7 +611,7 @@ function clarificationQuestions(teamResult: TeamResultEnvelopeV1): string[] {
 
 function finalSynthesisPrompt(
   message: InboundChannelMessageV1,
-  teamResults: readonly TeamResultEnvelopeV1[],
+  teamResults: readonly TeamResultEnvelopeV2[],
 ): string {
   const results = teamResults.map((result) => {
     const view = finalSynthesisTeamResultView(result);
@@ -575,9 +623,23 @@ function finalSynthesisPrompt(
       uncertainty: view.uncertainty,
       questions: view.outstanding.filter((value) => value.includes('?')),
       data: view.checkedData,
+      proposedChange: view.proposedChange,
+      effectState: view.effectState,
     };
   });
+  const awaitingConfirmation = results.some((result) => result.effectState === 'awaiting_confirmation');
+  const confirmationRules = [
+    'The checked context describes a proposed internal change that has not happened yet.',
+    'Restate every supplied material detail in concise natural language.',
+    'Use future tense. Ask one natural question about whether the user wants to proceed.',
+    'Do not tell the user to reply with a specific word or phrase.',
+    'Do not say created, saved, added, applied, recorded, completed, or succeeded in past tense.',
+    'Do not invent, omit, or alter supplied proposal details.',
+    'Example: create Bank ABC, asset, debit, IDR -> “I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?”',
+    'Example: archive Groceries -> “I’ll archive the Groceries account. Would you like me to proceed?”',
+  ].join('\n');
   return [
+    ...(awaitingConfirmation ? [confirmationRules] : []),
     'Write the final reply to the user using only the safe checked context below.',
     'Use concise natural language. Do not mention teams, makers, checkers, schemas, statuses, relation names, field keys, or implementation details.',
     `User request: ${message.body}`,
@@ -586,7 +648,7 @@ function finalSynthesisPrompt(
   ].join('\n');
 }
 
-function synthesisOutcome(status: TeamResultEnvelopeV1['status']): string {
+function synthesisOutcome(status: TeamResultEnvelopeV2['status']): string {
   if (status === 'verified') return 'checked information is ready';
   if (status === 'insufficient_evidence') return 'more information is needed from the user';
   if (status === 'partial') return 'only part of the request could be completed';
@@ -594,7 +656,7 @@ function synthesisOutcome(status: TeamResultEnvelopeV1['status']): string {
   return 'the request could not be completed';
 }
 
-function citationsFor(teamResult: TeamResultEnvelopeV1) {
+function citationsFor(teamResult: TeamResultEnvelopeV2) {
   if (teamResult.claims.length === 0) {
     return [{ label: `${teamResult.team}:team-result`, sourceRef: `team-result:${teamResult.status}` }];
   }

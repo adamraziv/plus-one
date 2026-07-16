@@ -27,7 +27,11 @@ describe('inbound route contract', () => {
     const [route] = createRuntimeRoutes({
       config: config as never,
       agentSystem: { teams: [accountingTeamDefinition] } as never,
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+        cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+      },
     });
     if (route === undefined || !('handler' in route)) throw new Error('Expected runtime route handler');
 
@@ -69,7 +73,11 @@ describe('inbound route contract', () => {
     const [route] = createRuntimeRoutes({
       config: config as never,
       agentSystem: { teams: [accountingTeamDefinition] } as never,
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+        cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+      },
     });
 
     expect(route).toMatchObject({

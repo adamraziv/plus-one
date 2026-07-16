@@ -9,14 +9,14 @@ import {
   MakerArtifactSchemaV1,
   OpaqueIdentifierDefinitions,
   QueryResultSchemaV1,
-  TeamResultEnvelopeSchemaV1,
-  type TeamResultEnvelopeV1,
+  TeamResultEnvelopeSchemaV2,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
-import { OrchestratorAgent } from '../src/agents/orchestrator.js';
+import { confirmationDecision, OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
 import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
-import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
+import { finalSynthesisTeamResultView, type OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -71,9 +71,9 @@ function message(body: string) {
 }
 
 function teamResult(team: 'accounting' | 'query' = 'query') {
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
-    schemaVersion: 1,
+    schemaVersion: 2,
     householdId,
     taskId,
     team,
@@ -114,11 +114,78 @@ function teamResult(team: 'accounting' | 'query' = 'query') {
     stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     completionReason: 'Ready for orchestrator reconciliation.',
     outstanding: [],
+    effect: { state: 'none' },
   });
 }
 
+function pendingChartTeamResult(input: {
+  name?: string;
+  accountingClass?: 'asset' | 'liability' | 'equity' | 'income' | 'expense';
+  normalBalance?: 'debit' | 'credit';
+  nativeCurrency?: string;
+  claimText?: string;
+} = {}) {
+  const base = teamResult('accounting');
+  const proposal = {
+    schemaName: 'chart-of-accounts-proposal' as const,
+    schemaVersion: 1 as const,
+    action: 'create_account' as const,
+    householdId,
+    bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    name: input.name ?? 'Bank ABC',
+    accountingClass: input.accountingClass ?? 'asset',
+    normalBalance: input.normalBalance ?? 'debit',
+    nativeCurrency: input.nativeCurrency ?? 'IDR',
+  };
+  const claimText = input.claimText ?? 'The chart proposal was checked.';
+  const makerArtifacts = [{
+    ...base.makerArtifacts[0]!,
+    payload: MakerArtifactSchemaV1.parse({
+      schemaName: 'maker-artifact',
+      schemaVersion: 1,
+      outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+      output: proposal,
+      claims: [{ claimId: 'chart-proposal', text: claimText, evidenceArtifactIds: [] }],
+      assumptions: [],
+      uncertainty: [],
+    }),
+  }];
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...base,
+    status: 'partial',
+    claims: [{
+      claimId: 'chart-proposal',
+      text: claimText,
+      evidenceArtifactIds: [],
+      checkedMakerArtifactIds: [artifactId],
+    }],
+    makerArtifacts,
+    completionReason: 'The exact chart proposal passed checking.',
+    effect: {
+      state: 'awaiting_confirmation',
+      proposal: { taskId, artifactId, artifactHash },
+      command: {
+        schemaName: 'checked-command',
+        schemaVersion: 1,
+        commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        householdId,
+        taskId,
+        checkedProposalId: artifactId,
+        checkedProposalHash: artifactHash,
+        commandType: 'apply_chart_of_accounts_change',
+        idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        payloadSchema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+        payload: proposal,
+      },
+    },
+  });
+}
+
+const addAccountMessage = message('Add Bank ABC as an IDR asset account.');
+
 function finalSynthesisProjectionResult(relationName = 'reporting.categorized_transactions') {
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     ...teamResult(),
     claims: [
       {
@@ -229,7 +296,7 @@ function emptyCurrentBalancesResult() {
     coverageWarnings: [],
   });
 
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     ...teamResult(),
     claims: [{
       claimId: 'current-balance-rows',
@@ -277,7 +344,7 @@ function emptyCurrentBalancesResult() {
 }
 
 function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting') {
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     ...teamResult(team),
     status: 'insufficient_evidence',
     claims: [],
@@ -305,7 +372,7 @@ function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting')
 }
 
 function failedTeamResult() {
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     ...teamResult(),
     status: 'failed',
     claims: [],
@@ -347,11 +414,91 @@ function singleLoopOrchestrator(input: {
     model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
     agentFactory: (config) => ({ ...config, generate: input.generate }) as never,
     teams: input.teams,
-    teamRuntime: { runTeamLead: input.runTeamLead },
+    teamRuntime: testTeamRuntime(input.runTeamLead),
   });
 }
 
+function testTeamRuntime(runTeamLead: OrchestratorTeamRuntime['runTeamLead']): OrchestratorTeamRuntime {
+  return {
+    runTeamLead,
+    resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+    cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+  };
+}
+
 describe('OrchestratorAgent', () => {
+  it('gives final synthesis checked proposal details and forbids past-tense persistence', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Bank ABC',
+      accountingClass: 'asset',
+      normalBalance: 'debit',
+      nativeCurrency: 'IDR',
+    });
+    const prompts: string[] = [];
+    let orchestrator: OrchestratorAgent;
+    const generate = vi.fn(async (prompt: unknown) => {
+      prompts.push(JSON.stringify(prompt));
+      if (generate.mock.calls.length === 1) {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'accounting',
+          request: {
+            schemaName: 'accounting-lead-request',
+            schemaVersion: 1,
+            intent: 'chart_of_accounts',
+            request: {
+              schemaName: 'chart-work-request-draft',
+              schemaVersion: 1,
+              action: 'create_account',
+              instruction: 'Add Bank ABC as an IDR asset account.',
+              known: {
+                accountName: 'Bank ABC',
+                accountingClass: 'asset',
+                normalBalance: 'debit',
+                nativeCurrency: 'IDR',
+              },
+            },
+          },
+        });
+        return { text: 'Bank ABC has been created successfully.' };
+      }
+      return { text: 'I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?' };
+    });
+    orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(async () => pending),
+      teams: [accountingTeam],
+    });
+
+    const turn = await orchestrator.runTurn({ message: addAccountMessage });
+
+    expect(turn.kind).toBe('ask-user');
+    expect(prompts.at(-1)).toContain('Bank ABC');
+    expect(prompts.at(-1)).toContain('future tense');
+    expect(prompts.at(-1)).toContain('Do not tell the user to reply with a specific word');
+    expect(turn.response.body).toBe(
+      'I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?',
+    );
+  });
+
+  it.each([
+    ['yes', 'approve'],
+    ['go ahead', 'approve'],
+    ['please do', 'approve'],
+    ['sounds good', 'approve'],
+    ['no, cancel it', 'reject'],
+    ['what does debit mean?', 'unclear'],
+  ] as const)('classifies %s as %s for a suspended proposal', (body, expected) => {
+    expect(confirmationDecision(body)).toBe(expected);
+  });
+
+  it('never exposes maker persistence claims while an effect is pending', () => {
+    const view = finalSynthesisTeamResultView(pendingChartTeamResult({
+      claimText: 'Bank ABC has been created successfully.',
+    }));
+    expect(view.checkedClaims).toEqual([]);
+    expect(view.proposedChange).toMatchObject({ accountName: 'Bank ABC' });
+  });
+
   it.each(Object.values(OpaqueIdentifierDefinitions))(
     'recognizes every contract-owned opaque identifier family in user-facing safety checks',
     (definition) => {
@@ -438,7 +585,7 @@ describe('OrchestratorAgent', () => {
         return { ...config, generate: vi.fn() } as never;
       },
       teams: [queryTeam],
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: testTeamRuntime(vi.fn()),
     });
 
     expect(configs.map(({ id }) => id)).toEqual(['orchestrator']);
@@ -463,7 +610,7 @@ describe('OrchestratorAgent', () => {
         return { ...config, generate: vi.fn() } as never;
       },
       teams: [queryTeam],
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: testTeamRuntime(vi.fn()),
     });
 
     expect(orchestratorInstructions).toContain(
@@ -507,7 +654,7 @@ describe('OrchestratorAgent', () => {
       agentFactory: (config) => ({ ...config, generate }) as never,
       sessionMemory,
       teams: [queryTeam],
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: testTeamRuntime(vi.fn()),
     });
 
     await expect(orchestrator.run({ message: message('Use checking for that transfer.') }))
@@ -523,7 +670,7 @@ describe('OrchestratorAgent', () => {
 
   it('keeps the full checked team result for citations while exposing only a safe final-synthesis view to the model', async () => {
     const result = finalSynthesisProjectionResult();
-    let delegated: TeamResultEnvelopeV1 | undefined;
+    let delegated: TeamResultEnvelopeV2 | undefined;
     let modelOutput: unknown;
     const generate = vi.fn(async () => {
       delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
@@ -734,7 +881,7 @@ describe('OrchestratorAgent', () => {
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => new Agent({ ...config, model: scriptedModel as never }),
       teams: [queryTeam],
-      teamRuntime: { runTeamLead },
+      teamRuntime: testTeamRuntime(runTeamLead),
     });
 
     const response = await orchestrator.run({ message: message('List our accounts.') });
@@ -819,7 +966,7 @@ describe('OrchestratorAgent', () => {
       },
       sessionMemory,
       teams: [queryTeam],
-      teamRuntime: { runTeamLead },
+      teamRuntime: testTeamRuntime(runTeamLead),
     });
 
     const response = await orchestrator.run({ message: message('What are the balances in my accounts?') });
@@ -852,7 +999,7 @@ describe('OrchestratorAgent', () => {
         return { ...config, generate } as never;
       },
       teams: [queryTeam],
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: testTeamRuntime(vi.fn()),
     });
     const signal = AbortSignal.timeout(1_000);
 
@@ -936,7 +1083,7 @@ describe('OrchestratorAgent', () => {
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
-      teamRuntime: { runTeamLead },
+      teamRuntime: testTeamRuntime(runTeamLead),
       channelEvents,
     });
 
@@ -1158,7 +1305,7 @@ describe('OrchestratorAgent', () => {
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       teams: [queryTeam],
-      teamRuntime: { runTeamLead },
+      teamRuntime: testTeamRuntime(runTeamLead),
       channelEvents,
     });
 
@@ -1342,7 +1489,7 @@ describe('OrchestratorAgent', () => {
   });
 
   it('withholds opaque identifiers from an unsafe deterministic fallback while retaining checked citations', async () => {
-    const unsafeResult = TeamResultEnvelopeSchemaV1.parse({
+    const unsafeResult = TeamResultEnvelopeSchemaV2.parse({
       ...teamResult(),
       claims: [
         ...teamResult().claims,
@@ -1460,7 +1607,7 @@ describe('OrchestratorAgent', () => {
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate: vi.fn() }) as never,
       teams: [queryTeam],
-      teamRuntime: { runTeamLead },
+      teamRuntime: testTeamRuntime(runTeamLead),
     });
 
     const execute = orchestrator.agentTools.delegateTeam.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
@@ -1490,7 +1637,7 @@ describe('OrchestratorAgent', () => {
 async function executeDelegate(
   tool: typeof OrchestratorAgent.prototype.agentTools.delegateTeam,
   input: { team: string; request: unknown },
-): Promise<TeamResultEnvelopeV1> {
+): Promise<TeamResultEnvelopeV2> {
   const execute = tool.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
-  return TeamResultEnvelopeSchemaV1.parse(await execute(input, {}));
+  return TeamResultEnvelopeSchemaV2.parse(await execute(input, {}));
 }

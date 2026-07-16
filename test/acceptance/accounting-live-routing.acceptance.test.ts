@@ -53,7 +53,11 @@ describe('accounting live routing acceptance', () => {
         },
       },
       agentSystem: { teams: [accountingTeamDefinition] } as never,
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+        cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+      },
     });
     const message = InboundChannelMessageSchemaV1.parse({
       schemaName: 'inbound-channel-message',

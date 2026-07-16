@@ -14,7 +14,11 @@ describe('createDelegateTeamTool', () => {
     const accounting = team('accounting', 'Prepare checked household ledger mutations.');
     const tool = createDelegateTeamTool({
       teams: new Map([[query.team, query], [accounting.team, accounting]]),
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+        cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+      },
       getActiveInvocation: () => undefined,
     });
 

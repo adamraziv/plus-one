@@ -91,7 +91,11 @@ describe('orchestrator durable loop acceptance', () => {
         },
       },
       agentSystem: { teams: [] } as never,
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+        cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+      },
       orchestrator: orchestrator as never,
       getMastra: () => mastra!,
     });

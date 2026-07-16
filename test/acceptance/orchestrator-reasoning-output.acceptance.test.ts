@@ -19,7 +19,11 @@ describe('orchestrator reasoning-safe live output', () => {
       const [route] = createRuntimeRoutes({
         config: runtime.config,
         agentSystem: runtime.agentSystem,
-        teamRuntime: { runTeamLead },
+        teamRuntime: {
+          runTeamLead,
+          resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+          cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+        },
       });
       if (route === undefined || !('handler' in route)) throw new Error('Expected runtime route handler');
 

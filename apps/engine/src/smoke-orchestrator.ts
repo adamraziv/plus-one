@@ -27,6 +27,8 @@ try {
       runTeamLead: async () => {
         throw new Error('Smoke questions should not require team delegation.');
       },
+      resumePendingMutation: async () => { throw new Error('Smoke questions should not resume mutations.'); },
+      cancelPendingMutation: async () => { throw new Error('Smoke questions should not cancel mutations.'); },
     },
   });
 
