@@ -143,32 +143,22 @@ class MemoryLedger implements VerificationLedgerPort {
 
 describe('accounting team acceptance', () => {
   it.each([
-    ['transaction_capture', 'transaction-capture', 'transaction-capture-maker'],
-    ['ingestion', 'ingestion', 'ingestion-maker'],
-    ['journal', 'journal', 'journal-maker'],
-    ['chart_of_accounts', 'chart-of-accounts', 'chart-maker'],
-    ['reconciliation', 'reconciliation', 'reconciliation-maker'],
-  ] as const)('runs orchestrator delegation through accounting %s maker/checker', async (intent, workCellId, makerId) => {
-    const result = await runAccountingScenario({
+    ['transaction_capture', 'transaction-capture'],
+    ['ingestion', 'ingestion'],
+    ['journal', 'journal'],
+    ['chart_of_accounts', 'chart-of-accounts'],
+    ['reconciliation', 'reconciliation'],
+  ] as const)('fails closed before synthesis when accounting %s has no registered mutation handler', async (intent, workCellId) => {
+    await expect(runAccountingScenario({
       intent,
       workCellId,
       makerOutputs: [makerOutputFor(workCellId, 'accepted')],
       checkerVerdicts: ['accepted'],
-    });
-
-    expect(result.calls).toEqual(['accounting-lead', makerId, makerId.replace('-maker', '-checker')]);
-    expect(result.response.body).toContain('The accounting request is ready.');
-    expectNoImplementationDetails(result.response.body);
-    expect(result.teamResult.status).toBe('verified');
-    expect(result.teamResult.makerArtifacts).toHaveLength(1);
-    expect(result.teamResult.checkerVerdicts).toHaveLength(1);
-    if (workCellId === 'chart-of-accounts') {
-      expect(result.response.body).toMatch(/external confirmation (?:is )?required/i);
-    }
+    })).rejects.toMatchObject({ code: 'checked_mutation_not_prepared' });
   });
 
-  it('revises maker output when checker requests a revision before accepting', async () => {
-    const result = await runAccountingScenario({
+  it('fails closed after a revised checked mutation remains unregistered', async () => {
+    await expect(runAccountingScenario({
       intent: 'transaction_capture',
       workCellId: 'transaction-capture',
       makerOutputs: [
@@ -176,19 +166,7 @@ describe('accounting team acceptance', () => {
         makerOutputFor('transaction-capture', 'accepted', 'revised'),
       ],
       checkerVerdicts: ['revision_requested', 'accepted'],
-    });
-
-    expect(result.calls).toEqual([
-      'accounting-lead',
-      'transaction-capture-maker',
-      'transaction-capture-checker',
-      'transaction-capture-maker',
-      'transaction-capture-checker',
-    ]);
-    expect(result.teamResult.status).toBe('verified');
-    expect(result.teamResult.checkerVerdicts.map((verdict) => verdict.verdict))
-      .toEqual(['revision_requested', 'accepted']);
-    expect(result.teamResult.claims[0]!.text).toContain('revised');
+    })).rejects.toMatchObject({ code: 'checked_mutation_not_prepared' });
   });
 
   it.each([

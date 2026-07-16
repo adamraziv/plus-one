@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rmdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startOpenAiCompatibleTestServer } from './openai-compatible-test-server.js';
@@ -28,9 +29,10 @@ export async function startMastraDevServer(input: {
     await releaseLock();
     throw error;
   });
+  const requestedPort = input.env?.PORT ?? String(await findFreePort());
   const child = spawn('pnpm', ['dev:mastra', '--env', environmentFile.path], {
     cwd,
-    env: { ...process.env, ...modelServer.environment, ...input.env },
+    env: { ...process.env, ...modelServer.environment, PORT: requestedPort, ...input.env },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -114,20 +116,41 @@ async function acquireDevServerLock(cwd: string, timeoutMs: number): Promise<() 
   const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
-      await mkdir(lockPath);
+      await writeFile(lockPath, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
       let released = false;
       return async () => {
         if (released) return;
         released = true;
-        await rmdir(lockPath).catch(() => undefined);
+        await rm(lockPath, { force: true, recursive: true });
       };
     } catch (error) {
       if (!isAlreadyExistsError(error)) throw error;
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for Mastra dev server test lock: ${lockPath}`);
       }
+      const ownerPid = await readLockOwner(lockPath);
+      if (ownerPid === undefined || !isProcessAlive(ownerPid)) {
+        await rm(lockPath, { force: true, recursive: true });
+        continue;
+      }
       await sleep(250);
     }
+  }
+}
+
+async function readLockOwner(lockPath: string): Promise<number | undefined> {
+  const content = await readFile(lockPath, 'utf8').catch(() => undefined);
+  if (content === undefined) return undefined;
+  const pid = Number(content.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM';
   }
 }
 
@@ -166,6 +189,20 @@ async function stopChild(child: ChildProcess): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function findFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address();
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error));
+  });
+  if (address === null || typeof address === 'string') throw new Error('Free port lookup returned no address');
+  return address.port;
 }
 
 function isReady(output: string): boolean {
