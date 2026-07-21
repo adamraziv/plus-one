@@ -20,7 +20,7 @@ export interface QueryRunner {
   query<R extends Record<string, unknown> = Record<string, unknown>>(
     text: string,
     values?: readonly unknown[],
-  ): Promise<{ rows: readonly R[]; fields?: readonly { name: string }[] }>;
+  ): Promise<{ rows: readonly R[]; fields?: readonly { name: string; dataTypeID?: number }[] }>;
   release?(): void;
 }
 
@@ -190,9 +190,10 @@ export class EvidenceHandle {
         details: { rowCount: response.rows.length, limit },
       });
     }
+    const rows = jsonSafeQueryRows(response.rows, response.fields);
     const fields = response.fields?.map((field) => field.name).sort()
       ?? (response.rows[0] === undefined ? [] : Object.keys(response.rows[0]).sort());
-    const serialized = JSON.stringify(response.rows);
+    const serialized = JSON.stringify(rows);
     if (serialized.length > this.config.maxOutputBytes) {
       throw new PlusOneError({
         category: 'policy_rejected',
@@ -208,7 +209,7 @@ export class EvidenceHandle {
       schemaVersion: 1,
       relationName,
       grain,
-      rows: response.rows,
+      rows,
       fieldDefinitions: fields,
       sourceReferences,
       freshness: 'latest available reporting projection',
@@ -251,10 +252,16 @@ export function pgRunner(pool: Pick<Pool, 'connect'>): QueryRunner {
     async query<R extends Record<string, unknown> = Record<string, unknown>>(
       text: string,
       values?: readonly unknown[],
-    ): Promise<{ rows: readonly R[]; fields?: readonly { name: string }[] }> {
+    ): Promise<{ rows: readonly R[]; fields?: readonly { name: string; dataTypeID?: number }[] }> {
       const connection = await acquire();
       const response = await connection.query<R>(text, values as unknown[] | undefined);
-      return { rows: response.rows, fields: response.fields.map((field) => ({ name: field.name })) };
+      return {
+        rows: response.rows,
+        fields: response.fields.map((field) => ({
+          name: field.name,
+          dataTypeID: field.dataTypeID,
+        })),
+      };
     },
     release(): void {
       if (client !== undefined) {
@@ -275,6 +282,38 @@ export function ensurePgRunner(value: unknown): QueryRunner {
     retry: 'never',
     receiptLookupRequired: false,
   });
+}
+
+const PostgresDateTypeId = 1082;
+
+function jsonSafeQueryRows(
+  rows: readonly Record<string, unknown>[],
+  fields?: readonly { name: string; dataTypeID?: number }[],
+): Record<string, unknown>[] {
+  const dataTypes = new Map(fields?.map((field) => [field.name, field.dataTypeID]));
+  return rows.map((row) => Object.fromEntries(
+    Object.entries(row).map(([name, value]) => [name, jsonSafeQueryValue(value, dataTypes.get(name))]),
+  ));
+}
+
+function jsonSafeQueryValue(value: unknown, dataTypeId?: number): unknown {
+  if (value instanceof Date) {
+    if (dataTypeId === PostgresDateTypeId) {
+      return [
+        String(value.getFullYear()).padStart(4, '0'),
+        String(value.getMonth() + 1).padStart(2, '0'),
+        String(value.getDate()).padStart(2, '0'),
+      ].join('-');
+    }
+    return value.toISOString();
+  }
+  if (Array.isArray(value)) return value.map((entry) => jsonSafeQueryValue(entry));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, jsonSafeQueryValue(entry)]),
+    );
+  }
+  return value;
 }
 
 export type { QuerySpecificationV1, EvidencePackageV1 };

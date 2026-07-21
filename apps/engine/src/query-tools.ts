@@ -8,7 +8,6 @@ import {
 } from '@plus-one/query';
 import { REQUIRED_REPORTING_RELATIONS } from '@plus-one/reporting';
 import { createAnalystSandboxTool } from '@plus-one/runtime';
-import type { RoleAgentTools } from './mastra/role-agent.js';
 import { createQueryTools } from './tools/query.js';
 
 const maxRows = 500;
@@ -146,7 +145,7 @@ export function isUserFacingQueryField(relationName: string, fieldName: string):
     definition.relationNames.includes(relationName) && definition.userFacingFields.includes(fieldName));
 }
 
-export function createDefaultQueryTools(pools: DatabasePools): RoleAgentTools {
+export function createDefaultQueryTools(pools: DatabasePools) {
   const validator = new ReadOnlySqlValidator();
   const registry = new QueryToolRegistry({
     allowedRelations: REQUIRED_REPORTING_RELATIONS,
