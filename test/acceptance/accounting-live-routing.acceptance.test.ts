@@ -82,7 +82,10 @@ describe('accounting live routing acceptance', () => {
       json: (body: unknown) => Response.json(body),
     } as never, async () => undefined);
 
-    expect(run).toHaveBeenCalledWith({ message });
+    expect(run).toHaveBeenCalledWith({
+      message,
+      signal: expect.any(AbortSignal),
+    });
     await expect(response.json()).resolves.toMatchObject({
       body: 'Accounting team status: verified',
     });
