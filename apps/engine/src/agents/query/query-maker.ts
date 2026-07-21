@@ -4,8 +4,10 @@ import {
   MakerInvocationSchemaV1,
   QueryResultSchemaV1,
 } from '@plus-one/contracts';
+import { queryToolNameForCoverage } from '@plus-one/query';
 import { splitQueryRoleTools } from './tools.js';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultQueryRoleAgentFactory,
   type QueryRoleAgent,
@@ -56,8 +58,7 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
       householdId: invocation.householdId,
     }, {}));
     const rowLabel = queryResult.rows.length === 1 ? 'row' : 'rows';
-    return {
-      object: MakerArtifactSchemaV1.parse({
+    const artifact = MakerArtifactSchemaV1.parse({
         schemaName: 'maker-artifact',
         schemaVersion: 1,
         outputSchema: invocation.outputSchema,
@@ -69,9 +70,12 @@ export function createQueryMakerAgent(input: QueryRoleAgentInput): QueryRoleAgen
         }],
         assumptions: [],
         uncertainty: [],
-      }),
-      toolResults: [{ payload: { toolName: toolId, result: queryResult } }],
-    };
+      });
+    return submitContractResult(
+      options,
+      artifact,
+      [{ payload: { toolName: toolId, result: queryResult } }],
+    );
   }) as typeof fallback.generate;
   return fallback;
 }
@@ -84,28 +88,6 @@ function parseMakerInvocation(messages: readonly { role: string; content: string
 function queryToolIdFor(invocation: ReturnType<typeof parseMakerInvocation>): string | undefined {
   const input = EvidenceRequestSchemaV1.safeParse(invocation.input);
   if (!input.success) return undefined;
-  const coverage = input.data.coverage[0];
-  if (coverage === 'account list' || coverage === 'reporting.accounts') return 'query_account_list';
-  if (coverage === 'balance snapshot' || coverage === 'reporting.current_balances'
-    || coverage === 'reporting.account_current_balances') {
-    return 'query_current_balances';
-  }
-  if (coverage === 'categorized transactions' || coverage === 'reporting.categorized_transactions') {
-    return 'query_categorized_transactions';
-  }
-  if (coverage === 'category spend monthly' || coverage === 'reporting.category_spend_monthly') {
-    return 'query_category_spend_monthly';
-  }
-  if (coverage === 'budget variance' || coverage === 'reporting.budget_variance') return 'query_budget_variance';
-  if (coverage === 'savings goal progress' || coverage === 'reporting.savings_goal_progress') {
-    return 'query_savings_goal_progress';
-  }
-  if (coverage === 'debt progress' || coverage === 'reporting.debt_progress') return 'query_debt_progress';
-  if (coverage === 'reconciliation status' || coverage === 'reporting.reconciliation_status') {
-    return 'query_reconciliation_status';
-  }
-  if (coverage === 'source freshness' || coverage === 'reporting.source_freshness') {
-    return 'query_source_freshness';
-  }
-  return undefined;
+  const toolName = queryToolNameForCoverage(input.data.coverage);
+  return toolName === undefined ? undefined : `query_${toolName}`;
 }

@@ -77,6 +77,8 @@ describe('migration discovery', () => {
       '0016_mastra_observational_memory_storage.sql',
       '0017_channel_conversation_active_lanes.sql',
       '0018_channel_pairing.sql',
+      '0019_mutation_command_concrete_payload_schema.sql',
+      '0020_idr_currency_metadata.sql',
     ]);
 
     for (const migration of migrations) {

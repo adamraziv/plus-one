@@ -39,7 +39,6 @@ export class TeamExecutor {
     stopCondition: StopConditionV1;
     strategyName: string;
     abortSignal: AbortSignal;
-    completionMode?: 'terminal' | 'checked_mutation';
   }): Promise<CheckedWorkCellResult> {
     if (!input.workCell.allowedSkillNames.includes(input.selectedSkill.skillName)) {
       throw new PlusOneError({ category: 'policy_rejected', code: 'work_cell_skill_not_allowed',
@@ -72,6 +71,7 @@ export class TeamExecutor {
     let makerOrdinal = 0;
     let checkerOrdinal = 0;
     let firstRound = true;
+    const rejectedArtifactHashes = new Set<string>();
 
     while (makerOrdinal < attemptLimit) {
       if (firstRound) {
@@ -129,6 +129,24 @@ export class TeamExecutor {
         schema: { schemaName: 'maker-artifact', schemaVersion: 1 }, payload: makerOutput,
       });
       makerArtifacts.push(makerArtifact);
+      if (rejectedArtifactHashes.has(makerArtifact.artifactHash)) {
+        const error = new PlusOneError({
+          category: 'checker_rejected',
+          code: 'revision_no_progress',
+          message: 'Revision reproduced the previously rejected maker artifact.',
+          retry: 'never',
+          receiptLookupRequired: false,
+          details: { taskId: input.taskId },
+        });
+        await this.dependencies.runtime.fail({
+          householdId: input.householdId,
+          taskId: input.taskId,
+          expectedFrom: 'maker_validated',
+          failureCategory: 'checker_rejected',
+          resumable: false,
+        });
+        return failedResult(input, makerArtifacts, checkerVerdicts, error);
+      }
       await this.dependencies.runtime.beginChecker(input);
 
       let verdict: CheckerVerdictV1 | undefined;
@@ -181,6 +199,7 @@ export class TeamExecutor {
       checkerVerdicts.push(verdict);
 
       if (verdict.verdict === 'revision_requested' && makerOrdinal < attemptLimit) {
+        rejectedArtifactHashes.add(makerArtifact.artifactHash);
         await this.dependencies.runtime.requestRevision(input);
         await this.dependencies.runtime.beginMaker(input);
         continue;
@@ -213,8 +232,10 @@ export class TeamExecutor {
         });
         throw error;
       }
-      const completionState = input.completionMode === 'checked_mutation'
-        && terminal.status === 'verified'
+      const effectRequirement = verdict.verdict === 'accepted' && terminal.status === 'verified'
+        ? effectRequirementFor(input.workCell, makerOutput.output)
+        : { kind: 'none' as const };
+      const completionState = effectRequirement.kind === 'checked_mutation'
         ? 'checked_mutation_pending' as const
         : 'terminal' as const;
       if (completionState === 'terminal') {
@@ -225,6 +246,7 @@ export class TeamExecutor {
       return {
         householdId: input.householdId, taskId: input.taskId, team: input.team,
         workCellId: input.workCell.workCellId, status: terminal.status, completionState,
+        effectRequirement,
         makerArtifacts, checkerVerdicts,
         completionReason: terminal.reason, outstanding: terminal.outstanding,
         ...(verdict.verdict === 'accepted' ? { acceptedMaker: makerOutput } : {}),
@@ -263,17 +285,10 @@ function acceptedClarification(output: unknown):
   const questions = Array.isArray((output as { questions?: unknown }).questions)
     ? (output as { questions: unknown[] }).questions.filter((value): value is string => typeof value === 'string')
     : [];
-  const missingFields = Array.isArray((output as { missingFields?: unknown }).missingFields)
-    ? (output as { missingFields: unknown[] }).missingFields.filter((value): value is string => typeof value === 'string')
-    : [];
-  const missingEvidence = Array.isArray((output as { missingEvidence?: unknown }).missingEvidence)
-    ? (output as { missingEvidence: unknown[] }).missingEvidence.filter((value): value is string => typeof value === 'string')
-    : [];
-  const outstanding = [...questions, ...missingFields, ...missingEvidence];
   return {
     status: 'insufficient_evidence',
     reason,
-    outstanding: outstanding.length === 0 ? [reason] : outstanding,
+    outstanding: questions.length === 0 ? [reason] : questions,
   };
 }
 
@@ -314,11 +329,35 @@ function failedResult(
     workCellId: input.workCell.workCellId,
     status: 'failed',
     completionState: 'terminal',
+    effectRequirement: { kind: 'none' },
     makerArtifacts,
     checkerVerdicts,
     completionReason: plusOne?.message ?? 'Work cell execution failed.',
     outstanding: plusOne === undefined ? [] : [plusOne.code],
   };
+}
+
+function effectRequirementFor(
+  workCell: WorkCellDefinition,
+  output: JsonValue,
+): CheckedWorkCellResult['effectRequirement'] {
+  if (workCell.effectPolicy.kind === 'none'
+    || output === null
+    || typeof output !== 'object'
+    || Array.isArray(output)) return { kind: 'none' };
+  const schemaName = output.schemaName;
+  const schemaVersion = output.schemaVersion;
+  if (typeof schemaName !== 'string' || typeof schemaVersion !== 'number') return { kind: 'none' };
+  const proposal = workCell.effectPolicy.proposals.find((candidate) =>
+    candidate.schema.schemaName === schemaName
+    && candidate.schema.schemaVersion === schemaVersion);
+  return proposal === undefined
+    ? { kind: 'none' }
+    : {
+        kind: 'checked_mutation',
+        proposalSchema: proposal.schema,
+        confirmation: proposal.confirmation,
+      };
 }
 
 function assertMakerClaimsUsePermittedEvidence(

@@ -185,6 +185,17 @@ export class CheckedMutationExecutor {
     ReturnType<ArtifactStore['getVerified']>
   >): void {
     const maker = MakerArtifactSchemaV1.safeParse(artifact.payload);
+    const embedded = maker.success
+      && maker.data.output !== null
+      && typeof maker.data.output === 'object'
+      && !Array.isArray(maker.data.output)
+      && typeof maker.data.output.schemaName === 'string'
+      && typeof maker.data.output.schemaVersion === 'number'
+      ? {
+          schemaName: maker.data.output.schemaName,
+          schemaVersion: maker.data.output.schemaVersion,
+        }
+      : undefined;
     if (artifact.artifactId !== command.checkedProposalId
       || artifact.householdId !== command.householdId
       || artifact.taskId !== command.taskId
@@ -192,8 +203,8 @@ export class CheckedMutationExecutor {
       || artifact.schema.schemaName !== 'maker-artifact'
       || artifact.schema.schemaVersion !== 1
       || !maker.success
-      || maker.data.outputSchema.schemaName !== command.payloadSchema.schemaName
-      || maker.data.outputSchema.schemaVersion !== command.payloadSchema.schemaVersion
+      || embedded?.schemaName !== command.payloadSchema.schemaName
+      || embedded.schemaVersion !== command.payloadSchema.schemaVersion
       || canonicalizeJson(maker.data.output) !== canonicalizeJson(command.payload)) {
       throw new PlusOneError({
         category: 'validation_rejected',

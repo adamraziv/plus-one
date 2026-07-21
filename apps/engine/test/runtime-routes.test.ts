@@ -20,6 +20,7 @@ const config = {
   models: {
     orchestrator: { id: 'test', endpoint: 'https://llm.example.test/v1', apiKey: 'key' },
   },
+  turnDeadlineMs: 30_000,
 } as never;
 
 describe('runtime routes', () => {

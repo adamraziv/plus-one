@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AccountingMutationService } from '@plus-one/accounting';
+import { AccountingMutationService, ChartOfAccountsProposalSchemaV1 } from '@plus-one/accounting';
 import { CheckedMutationWorkCellCoordinator } from '@plus-one/mutations';
 import {
   MutationReceiptSchemaV1,
+  MakerArtifactSchemaV1,
   ReadbackResultSchemaV1,
   type CheckedCommandV1,
   type JsonValue,
@@ -35,7 +36,7 @@ describe('accounting team mutation paths', () => {
     expect(mutationExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({
       commandType: 'apply_accounting_journal_mutation',
       checkedProposalId: result.makerArtifacts[0]!.artifactId,
-      payloadSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      payloadSchema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
     }));
     expect(runtime.complete).toHaveBeenCalledWith({ householdId, taskId, status: 'verified' });
   });
@@ -80,7 +81,26 @@ describe('accounting team mutation paths', () => {
     })).rejects.toMatchObject({ code: 'accounting_clarification_not_executable' });
     expect(clarification.mutationExecutor.execute).not.toHaveBeenCalled();
 
-    const failed = setup({ ...journalChecked('journal'), status: 'failed' } as unknown as ReturnType<typeof checkedResult>);
+    const chartClarification = setup(chartClarificationChecked());
+    await expect(chartClarification.service.prepareChart({
+      workCellInput: { workCell: { workCellId: 'chart-of-accounts' } } as never,
+      commandId,
+      idempotencyKey,
+    })).resolves.toMatchObject({
+      status: 'insufficient_evidence',
+      completionState: 'terminal',
+      outstanding: ['What should the account be called?'],
+    });
+    await expect(chartClarification.service.execute({
+      workCellId: 'chart-of-accounts',
+      workCellInput: {} as never,
+      commandId,
+      idempotencyKey,
+      confirmationId,
+    })).rejects.toMatchObject({ code: 'checked_mutation_result_invalid' });
+    expect(chartClarification.mutationExecutor.execute).not.toHaveBeenCalled();
+
+    const failed = setup({ ...journalChecked('journal'), status: 'failed' });
     await expect(failed.service.execute({
       workCellId: 'journal',
       workCellInput: {} as never,
@@ -89,9 +109,77 @@ describe('accounting team mutation paths', () => {
     })).rejects.toMatchObject({ code: 'checked_mutation_result_invalid' });
     expect(failed.mutationExecutor.execute).not.toHaveBeenCalled();
   });
+
+  it('waits for checker validation and durable read-back before returning a terminal mutation result', async () => {
+    const events: string[] = [];
+    let releaseChecker: (() => void) | undefined;
+    const checkerValidated = new Promise<void>((resolve) => {
+      releaseChecker = resolve;
+    });
+    const teamExecutor = {
+      executeWorkCell: vi.fn(async () => {
+        await checkerValidated;
+        events.push('checker_validated');
+        return journalChecked('journal');
+      }),
+    };
+    const mutationExecutor = {
+      execute: vi.fn(async (command: CheckedCommandV1) => {
+        events.push('mutation_executed');
+        return {
+          status: 'readback_verified' as const,
+          receipt: receiptFor(command),
+          readback: readbackFor(command),
+        };
+      }),
+    };
+    const runtime = {
+      complete: vi.fn(async () => {
+        events.push('terminal_complete');
+        return { status: 'verified' };
+      }),
+    };
+    const ledger = {
+      findTask: vi.fn(async () => {
+        events.push('readback_verified');
+        return { status: 'readback_verified' };
+      }),
+    };
+    const coordinator = new CheckedMutationWorkCellCoordinator({
+      teamExecutor: teamExecutor as never,
+      mutationExecutor: mutationExecutor as never,
+      runtime: runtime as never,
+      ledger: ledger as never,
+    });
+    const service = new AccountingMutationService(coordinator);
+
+    const execution = service.execute({
+      workCellId: 'journal',
+      workCellInput: {} as never,
+      commandId,
+      idempotencyKey,
+    });
+    await Promise.resolve();
+
+    expect(teamExecutor.executeWorkCell).toHaveBeenCalledOnce();
+    expect(mutationExecutor.execute).not.toHaveBeenCalled();
+    releaseChecker?.();
+
+    await expect(execution).resolves.toMatchObject({
+      status: 'verified',
+      completionState: 'terminal',
+      mutation: { readback: { ok: true } },
+    });
+    expect(events).toEqual([
+      'checker_validated',
+      'mutation_executed',
+      'readback_verified',
+      'terminal_complete',
+    ]);
+  });
 });
 
-function setup(checked: ReturnType<typeof checkedResult>) {
+function setup(checked: unknown) {
   const teamExecutor = { executeWorkCell: vi.fn().mockResolvedValue(checked) };
   const mutationExecutor = { execute: vi.fn(async (command: CheckedCommandV1) => ({
     status: 'readback_verified',
@@ -121,7 +209,7 @@ function journalChecked(
   const maker = {
     schemaName: 'maker-artifact' as const,
     schemaVersion: 1 as const,
-    outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+    outputSchema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
     output,
     claims: [{ claimId: 'checked-journal', text: 'Checked accounting mutation proposal.', evidenceArtifactIds: [] }],
     assumptions: [],
@@ -154,7 +242,35 @@ function chartChecked() {
   return checkedResult('chart-of-accounts', maker);
 }
 
+function chartClarificationChecked() {
+  const maker = {
+    schemaName: 'maker-artifact' as const,
+    schemaVersion: 1 as const,
+    outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
+    output: {
+      schemaName: 'chart-clarification',
+      schemaVersion: 1,
+      missingFields: ['name'],
+      questions: ['What should the account be called?'],
+      reason: 'An account name is required.',
+    },
+    claims: [{ claimId: 'chart-clarification', text: 'Account name is unresolved.', evidenceArtifactIds: [] }],
+    assumptions: [],
+    uncertainty: ['Missing name.'],
+  };
+  return {
+    ...checkedResult('chart-of-accounts', maker),
+    status: 'insufficient_evidence' as const,
+    completionState: 'terminal' as const,
+    effectRequirement: { kind: 'none' as const },
+    acceptedMaker: undefined,
+    completionReason: 'An account name is required.',
+    outstanding: ['What should the account be called?'],
+  };
+}
+
 function checkedResult(workCellId: string, maker: JsonValue) {
+  const parsedMaker = MakerArtifactSchemaV1.parse(maker);
   const artifactHash = hashArtifact(maker);
   const artifact = {
     artifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -175,6 +291,12 @@ function checkedResult(workCellId: string, maker: JsonValue) {
     workCellId,
     status: 'verified' as const,
     completionState: 'checked_mutation_pending' as const,
+    effectRequirement: {
+      kind: 'checked_mutation' as const,
+      proposalSchema: parsedMaker.outputSchema,
+      confirmation: ChartOfAccountsProposalSchemaV1.safeParse(parsedMaker.output).success
+        ? 'required' as const : 'optional' as const,
+    },
     makerArtifacts: [artifact],
     checkerVerdicts: [{
       verdict: 'accepted' as const,

@@ -3,7 +3,7 @@ import {
   type TeamLeadPlanV1,
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
-import { AccountingLeadRequestSchemaV1, type AccountingLeadRequestV1 } from './contracts.js';
+import { AccountingIntentSchemaV1, type AccountingIntentV1 } from './contracts.js';
 import { accountingRoles } from './roles.js';
 import { accountingWorkCells } from './work-cells.js';
 
@@ -31,20 +31,20 @@ const expectedCell = {
   reconciliation: 'reconciliation',
 } as const;
 
-export function validateAccountingLeadPlan(request: AccountingLeadRequestV1,
+export function validateAccountingLeadPlan(request: { intent: AccountingIntentV1 },
   candidate: unknown): TeamLeadPlanV1 {
-  const input = AccountingLeadRequestSchemaV1.parse(request);
+  const intent = AccountingIntentSchemaV1.parse(request.intent);
   const plan = TeamLeadPlanSchemaV1.parse(candidate);
   if (plan.recommendedStrategyName !== 'single-maker-checker'
     || plan.work.length !== 1
-    || plan.work[0]!.workCellId !== expectedCell[input.intent]) {
+    || plan.work[0]!.workCellId !== expectedCell[intent]) {
     throw new PlusOneError({
       category: 'policy_rejected',
       code: 'accounting_lead_plan_invalid',
       message: 'Accounting Lead must route one typed request to its matching work cell',
       retry: 'never',
       receiptLookupRequired: false,
-      details: { intent: input.intent },
+      details: { intent },
     });
   }
   return plan;

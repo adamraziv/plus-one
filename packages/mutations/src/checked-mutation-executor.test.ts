@@ -5,11 +5,15 @@ import { z } from 'zod';
 import { CheckedMutationExecutor } from './checked-mutation-executor.js';
 import { CommandRegistry } from './command-registry.js';
 
-const proposal = { amount: '20.00' };
+const proposal = {
+  schemaName: 'test-command-input' as const,
+  schemaVersion: 1 as const,
+  amount: '20.00',
+};
 const makerArtifactPayload = {
   schemaName: 'maker-artifact' as const,
   schemaVersion: 1 as const,
-  outputSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
+  outputSchema: { schemaName: 'chart-work-result', schemaVersion: 1 },
   output: proposal,
   claims: [{
     claimId: 'proposal-ready',
@@ -38,7 +42,11 @@ function setup(readbackOk = true) {
   const handler = {
     commandType: 'test_command',
     domainRole: 'accounting' as const,
-    inputSchema: z.object({ amount: z.string() }).strict(),
+    inputSchema: z.object({
+      schemaName: z.literal('test-command-input'),
+      schemaVersion: z.literal(1),
+      amount: z.string(),
+    }).strict(),
     inputSchemaIdentity: command.payloadSchema,
     confirmation: 'optional' as const,
     requiredReadbackChecks: [
@@ -150,6 +158,15 @@ describe('CheckedMutationExecutor', () => {
     const { executor, commands } = setup(true);
     await expect(executor.execute({ ...command, checkedProposalHash: 'f'.repeat(64) }))
       .rejects.toMatchObject({ code: 'checked_proposal_identity_mismatch' });
+    expect(commands.register).not.toHaveBeenCalled();
+  });
+
+  it('rejects a changed embedded leaf while accepting the unchanged leaf contract', async () => {
+    const { executor, commands } = setup(true);
+    await expect(executor.execute({
+      ...command,
+      payload: { ...proposal, schemaName: 'changed-command-input' },
+    })).rejects.toMatchObject({ code: 'checked_proposal_identity_mismatch' });
     expect(commands.register).not.toHaveBeenCalled();
   });
 });

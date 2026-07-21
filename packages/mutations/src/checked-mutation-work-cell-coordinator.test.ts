@@ -10,7 +10,7 @@ const maker = {
   schemaName: 'maker-artifact' as const,
   schemaVersion: 1 as const,
   outputSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
-  output: { amount: '20.00' },
+  output: { schemaName: 'test-command-input', schemaVersion: 1, amount: '20.00' },
   claims: [{ claimId: 'accepted', text: 'Checked proposal.', evidenceArtifactIds: [] }],
   assumptions: [],
   uncertainty: [],
@@ -34,6 +34,11 @@ const checked = {
   workCellId: 'transaction-capture',
   status: 'verified' as const,
   completionState: 'checked_mutation_pending' as const,
+  effectRequirement: {
+    kind: 'checked_mutation' as const,
+    proposalSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
+    confirmation: 'required' as const,
+  },
   makerArtifacts: [artifact],
   checkerVerdicts: [{
     verdict: 'accepted' as const,
@@ -45,6 +50,15 @@ const checked = {
   completionReason: 'accepted',
   outstanding: [],
 };
+const clarification = {
+  ...checked,
+  status: 'insufficient_evidence' as const,
+  completionState: 'terminal' as const,
+  effectRequirement: { kind: 'none' as const },
+  acceptedMaker: undefined,
+  completionReason: 'Required user-owned fields are missing.',
+  outstanding: ['What should the account be called?'],
+};
 const receipt = { receiptId: 'receipt_01JNZQ4A9B8C7D6E5F4G3H2J1K' };
 const readback = { readbackId: 'readback_01JNZQ4A9B8C7D6E5F4G3H2J1K', ok: true };
 
@@ -52,8 +66,8 @@ function setup(execute = vi.fn().mockResolvedValue({
   status: 'readback_verified',
   receipt,
   readback,
-})) {
-  const teamExecutor = { executeWorkCell: vi.fn().mockResolvedValue(checked) };
+}), checkedResult: unknown = checked) {
+  const teamExecutor = { executeWorkCell: vi.fn().mockResolvedValue(checkedResult) };
   const runtime = { complete: vi.fn().mockResolvedValue({ status: 'verified' }) };
   const ledger = { findTask: vi.fn().mockResolvedValue({ status: 'readback_verified' }) };
   const adapter: CheckedMutationCommandAdapter = {
@@ -92,11 +106,10 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       workCellInput: {} as never,
       commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       adapter,
     });
-    expect(teamExecutor.executeWorkCell).toHaveBeenCalledWith(expect.objectContaining({
-      completionMode: 'checked_mutation',
-    }));
+    expect(teamExecutor.executeWorkCell).toHaveBeenCalledWith({});
     expect(adapter.buildCommand).toHaveBeenCalledWith(expect.objectContaining({
       checkedProposalId: artifact.artifactId,
       checkedProposalHash: artifact.artifactHash,
@@ -124,9 +137,70 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       workCellInput: {} as never,
       commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       adapter,
     })).rejects.toBe(failure);
     expect(runtime.complete).not.toHaveBeenCalled();
+  });
+
+  it('prepares the exact checked command without executing it', async () => {
+    const { coordinator, adapter, execute } = setup();
+    const prepared = await coordinator.prepare({
+      workCellInput: {} as never,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      adapter,
+    });
+
+    expect(prepared.status).toBe('verified');
+    if (prepared.completionState !== 'checked_mutation_pending') {
+      throw new Error('Expected a prepared mutation.');
+    }
+    expect(prepared.completionState).toBe('checked_mutation_pending');
+    expect(prepared.command).toMatchObject({
+      checkedProposalId: artifact.artifactId,
+      checkedProposalHash: artifact.artifactHash,
+      payloadSchema: { schemaName: 'test-command-input', schemaVersion: 1 },
+      payload: maker.output,
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('returns a checked clarification without building a mutation command', async () => {
+    const { coordinator, adapter, execute } = setup(undefined, clarification);
+
+    await expect(coordinator.prepare({
+      workCellInput: {} as never,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      adapter,
+    })).resolves.toBe(clarification);
+
+    expect(adapter.buildCommand).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('executes a prepared command only after adding the supplied confirmation identity', async () => {
+    const { coordinator, adapter, execute } = setup();
+    const prepared = await coordinator.prepare({
+      workCellInput: {} as never,
+      commandId: 'command_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      idempotencyKey: 'idem_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      adapter,
+    });
+    expect(prepared.status).toBe('verified');
+    if (prepared.completionState !== 'checked_mutation_pending') {
+      throw new Error('Expected a prepared mutation.');
+    }
+    const result = await coordinator.executePrepared({
+      prepared,
+      confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    });
+
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    }));
+    expect(result.mutation.readback.ok).toBe(true);
   });
 
   it('resumes durable read-back evidence without rerunning the maker or checker', async () => {

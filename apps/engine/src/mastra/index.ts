@@ -1,3 +1,5 @@
 import { bootstrap } from '../bootstrap.js';
 
-export const mastra = (await bootstrap()).mastra;
+const runtime = await bootstrap();
+
+export const mastra = runtime.mastra;

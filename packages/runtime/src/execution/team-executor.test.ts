@@ -59,7 +59,81 @@ describe('TeamExecutor', () => {
       'revision', 'begin-maker', 'freeze-maker', 'begin-checker', 'freeze-checker']);
   });
 
+  it('stops a revision before rechecking an unchanged maker artifact', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      validateMaker: vi.fn(async (input) => ({
+        ...input,
+        artifactType: 'maker_output',
+        schema: { schemaName: 'maker-artifact', schemaVersion: 1 },
+        canonicalizationVersion: 'rfc8785-v1',
+        hashAlgorithm: 'sha256',
+        artifactHash: 'a'.repeat(64),
+        createdAt: '2026-06-14T10:00:00.000Z',
+      })),
+      beginChecker: vi.fn(),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const runner = { run: vi.fn()
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact', schemaVersion: 1,
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 }, output: { answer: '41' },
+        claims: [{ claimId: 'c1', text: '41', evidenceArtifactIds: [] }], assumptions: [], uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'revision_requested',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        coveredArtifactHash: 'a'.repeat(64), findings: [{ code: 'wrong', message: 'Recalculate.' }],
+      })
+      .mockResolvedValueOnce({
+        schemaName: 'maker-artifact', schemaVersion: 1,
+        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 }, output: { answer: '41' },
+        claims: [{ claimId: 'c1', text: '41', evidenceArtifactIds: [] }], assumptions: [], uncertainty: [],
+      })
+      .mockResolvedValueOnce({
+        verdict: 'revision_requested',
+        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        coveredArtifactHash: 'a'.repeat(64), findings: [{ code: 'wrong', message: 'Recalculate.' }],
+      }) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({ systemPrompt: 'maker', messages: [{ role: 'user', content: '{}' }],
+          parentMessages: [], memoryEnabled: false, activeTools: [], toolHistory: [] })),
+        forChecker: vi.fn(() => ({ systemPrompt: 'checker', messages: [{ role: 'user', content: '{}' }],
+          parentMessages: [], memoryEnabled: false, activeTools: [], toolHistory: [] })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({ maxAttempts: 2, teamDeadlineMs: 5_000, identity: {
+        policyName: 'test', policyVersion: 1 } })) } as never,
+      ids: { nextArtifactId: vi.fn()
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J9K')
+        .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K') },
+    });
+
+    const result = await executor.executeWorkCell(makeExecutionInput());
+
+    expect(result).toMatchObject({ status: 'failed', outstanding: ['revision_no_progress'] });
+    expect(runner.run).toHaveBeenCalledTimes(3);
+    expect(runtime.beginChecker).toHaveBeenCalledTimes(1);
+    expect(runtime.fail).toHaveBeenCalledWith(expect.objectContaining({
+      expectedFrom: 'maker_validated',
+      failureCategory: 'checker_rejected',
+    }));
+  });
+
   it('leaves an accepted mutation work cell at checker_validated', async () => {
+    const mutationOutputSchema = z.object({
+      schemaName: z.literal('test-mutation-proposal'),
+      schemaVersion: z.literal(1),
+      answer: z.string(),
+    }).strict();
     const runtime = {
       createTask: vi.fn(),
       selectContract: vi.fn(),
@@ -83,8 +157,8 @@ describe('TeamExecutor', () => {
       .mockResolvedValueOnce({
         schemaName: 'maker-artifact',
         schemaVersion: 1,
-        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
-        output: { answer: '42' },
+        outputSchema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+        output: { schemaName: 'test-mutation-proposal', schemaVersion: 1, answer: '42' },
         claims: [{ claimId: 'c1', text: '42', evidenceArtifactIds: [] }],
         assumptions: [],
         uncertainty: [],
@@ -127,10 +201,26 @@ describe('TeamExecutor', () => {
     });
     const result = await executor.executeWorkCell({
       ...makeExecutionInput(),
-      completionMode: 'checked_mutation',
+      workCell: {
+        ...makeExecutionInput().workCell,
+        makerOutputSchema: mutationOutputSchema,
+        outputSchemaIdentity: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+        effectPolicy: {
+          kind: 'checked_mutation',
+          proposals: [{
+            schema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+            confirmation: 'required',
+          }],
+        },
+      },
     });
     expect(result.status).toBe('verified');
     expect(result.completionState).toBe('checked_mutation_pending');
+    expect(result.effectRequirement).toEqual({
+      kind: 'checked_mutation',
+      proposalSchema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+      confirmation: 'required',
+    });
     expect(runtime.complete).not.toHaveBeenCalled();
   });
 
@@ -164,6 +254,7 @@ describe('TeamExecutor', () => {
           schemaVersion: 1,
           reason: 'Need the missing field.',
           questions: ['Which account should be used?'],
+          missingFields: ['payment_account'],
         },
         claims: [{ claimId: 'c1', text: 'Need clarification', evidenceArtifactIds: [] }],
         assumptions: [],
@@ -208,10 +299,16 @@ describe('TeamExecutor', () => {
 
     const result = await executor.executeWorkCell({
       ...makeExecutionInput(),
-      completionMode: 'checked_mutation',
       workCell: {
         ...makeExecutionInput().workCell,
         makerOutputSchema: z.any(),
+        effectPolicy: {
+          kind: 'checked_mutation',
+          proposals: [{
+            schema: { schemaName: 'test-mutation-proposal', schemaVersion: 1 },
+            confirmation: 'required',
+          }],
+        },
         evaluateStopCondition: () => ({
           status: 'verified' as const,
           reason: 'Should be overridden by clarification handling.',
@@ -223,6 +320,8 @@ describe('TeamExecutor', () => {
     expect(result.status).toBe('insufficient_evidence');
     expect(result.completionState).toBe('terminal');
     expect(result.outstanding).toContain('Which account should be used?');
+    expect(result.outstanding).not.toContain('payment_account');
+    expect(result.effectRequirement).toEqual({ kind: 'none' });
   });
 
   it('retries maker output that references evidence outside permittedEvidence before freezing it', async () => {
@@ -480,6 +579,7 @@ function makeExecutionInput() {
       outputSchemaIdentity: { schemaName: 'lookup-output', schemaVersion: 1 },
       checkerRubric: { rubricName: 'lookup-rubric', rubricVersion: 1, instructions: ['Check answer.'] },
       allowedSkillNames: ['verified-lookup'],
+      effectPolicy: { kind: 'none' as const },
       evaluateStopCondition: () => ({ status: 'verified' as const,
         reason: 'The exact checked answer is present.', outstanding: [] }),
     },

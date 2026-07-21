@@ -41,6 +41,13 @@ export const budgetPlanWorkCell: WorkCellDefinition = {
   makerOutputSchema: BudgetingWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'budget-plan-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'activate-budget-proposal', schemaVersion: 1 },
+  effectPolicy: {
+    kind: 'checked_mutation',
+    proposals: [{
+      schema: { schemaName: 'activate-budget-proposal', schemaVersion: 1 },
+      confirmation: 'optional',
+    }],
+  },
   checkerRubric: {
     rubricName: 'budget-plan-rubric',
     rubricVersion: 1,
@@ -62,6 +69,7 @@ export const budgetScenarioWorkCell: WorkCellDefinition = {
   makerOutputSchema: BudgetScenarioComparisonSchemaV1,
   inputSchemaIdentity: { schemaName: 'budget-scenario-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'budget-scenario-comparison', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'budget-scenarios-rubric',
     rubricVersion: 1,
@@ -87,6 +95,7 @@ export const cashFlowAnalysisWorkCell: WorkCellDefinition = {
   makerOutputSchema: CashFlowAnalysisOutputSchemaV1,
   inputSchemaIdentity: { schemaName: 'cash-flow-analysis-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'cash-flow-analysis-output', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
   checkerRubric: {
     rubricName: 'cash-flow-analysis-rubric',
     rubricVersion: 1,
@@ -115,6 +124,10 @@ const cashFlowMutationCell = (
   makerOutputSchema: CashFlowWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'cash-flow-analysis-request', schemaVersion: 1 },
   outputSchemaIdentity,
+  effectPolicy: {
+    kind: 'checked_mutation',
+    proposals: [{ schema: outputSchemaIdentity, confirmation: 'optional' }],
+  },
   checkerRubric: {
     rubricName: workCellId + '-rubric',
     rubricVersion: 1,

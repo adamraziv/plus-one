@@ -5,9 +5,17 @@ import {
   PostgresChannelPairingRepository,
   type DatabasePools,
 } from '@plus-one/database';
-import { TelegramPairingService } from '@plus-one/runtime/telegram/pairing-service';
+import { configureLogging, TelegramPairingService } from '@plus-one/runtime';
 import { loadConfig } from './config.js';
+import {
+  getGatewayDaemonStatus,
+  startGatewayDaemon,
+  stopGatewayDaemon,
+  type DaemonRuntimeDependencies,
+} from './daemon-runtime.js';
+import { runGatewayRuntime, type RunGatewayRuntimeDependencies } from './gateway-runtime.js';
 import { runLiveCli, type RunLiveCliDependencies } from './live-cli/index.js';
+import { runLogsCli, type RunLogsCliDependencies } from './logs-cli.js';
 import { handleTelegramPairingCommand } from './telegram/pairing-cli.js';
 
 type PairingService = Parameters<typeof handleTelegramPairingCommand>[0]['service'];
@@ -31,8 +39,17 @@ interface PlusOneCliDependencies {
   stdout?: Output;
   stderr?: Output;
   isInteractive?: boolean;
+  runGateway?: (dependencies: RunGatewayRuntimeDependencies) => Promise<number>;
+  runDaemonStart?: (dependencies: DaemonRuntimeDependencies) => Promise<number>;
+  runDaemonStop?: (dependencies: DaemonRuntimeDependencies) => Promise<number>;
+  runDaemonStatus?: (dependencies: DaemonRuntimeDependencies) => Promise<number>;
+  runForegroundGateway?: (dependencies: RunGatewayRuntimeDependencies) => Promise<number>;
   runLiveCli?: (dependencies: RunLiveCliDependencies) => Promise<number>;
+  runLogs?: (argv: string[], dependencies: RunLogsCliDependencies) => Promise<number>;
+  configureLogging?: typeof configureLogging;
 }
+
+const usage = 'Usage: plus-one [stop|status|live] | logs [agent|errors|gateway] [options] | telegram pairing approve <code> --household <household_id> | telegram pairing revoke <telegram_user_id> | telegram pairing list-pending\n';
 
 export async function runPlusOneCli(
   argv: string[] = process.argv.slice(2),
@@ -42,18 +59,53 @@ export async function runPlusOneCli(
   const stderr = dependencies.stderr ?? process.stderr;
   try {
     if (argv.length === 0) {
-      const interactive = dependencies.isInteractive
-        ?? Boolean((dependencies.stdin ?? process.stdin).isTTY && stdout.isTTY);
-      if (interactive) {
-        return (dependencies.runLiveCli ?? runLiveCli)({
-          environment: dependencies.environment ?? process.env,
-          stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
-          stdout,
-          stderr,
-        });
-      }
-      stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
-      return 1;
+      return await (dependencies.runDaemonStart ?? dependencies.runGateway ?? startGatewayDaemon)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === '--foreground' && argv.length === 1) {
+      return await (dependencies.runForegroundGateway ?? runGatewayRuntime)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'stop' && argv.length === 1) {
+      return await (dependencies.runDaemonStop ?? stopGatewayDaemon)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'status' && argv.length === 1) {
+      return await (dependencies.runDaemonStatus ?? getGatewayDaemonStatus)({
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'logs') {
+      return await (dependencies.runLogs ?? runLogsCli)(argv.slice(1), {
+        environment: dependencies.environment ?? process.env,
+        stdout,
+        stderr,
+      });
+    }
+
+    if (argv[0] === 'live') {
+      return await (dependencies.runLiveCli ?? runLiveCli)({
+        environment: dependencies.environment ?? process.env,
+        stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
+        stdout,
+        stderr,
+        ...(dependencies.configureLogging === undefined ? {} : { configureLogging: dependencies.configureLogging }),
+      });
     }
 
     if (argv[0] === 'telegram' && argv[1] === 'pairing') {
@@ -61,7 +113,7 @@ export async function runPlusOneCli(
       stdout.write(`${result}\n`);
       return 0;
     }
-    stderr.write('Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n');
+    stderr.write(usage);
     return 1;
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -81,9 +133,16 @@ async function runTelegramPairingCommand(
     });
   }
 
-  const config = loadConfig(dependencies.environment ?? process.env);
-  const pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
+  const environment = dependencies.environment ?? process.env;
+  const logging = (dependencies.configureLogging ?? configureLogging)({
+    environment,
+    mode: 'cli',
+    stderr: dependencies.stderr ?? process.stderr,
+  });
+  let pools: DatabasePools | undefined;
   try {
+    const config = loadConfig(environment);
+    pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
     return handleTelegramPairingCommand({
       argv,
       service: new TelegramPairingService({
@@ -92,7 +151,10 @@ async function runTelegramPairingCommand(
       approvedBy: dependencies.approvedBy ?? approvedBy(),
     });
   } finally {
-    await (dependencies.closePools ?? closeDatabasePools)(pools as DatabasePools);
+    if (pools !== undefined) {
+      await (dependencies.closePools ?? closeDatabasePools)(pools);
+    }
+    logging.close();
   }
 }
 

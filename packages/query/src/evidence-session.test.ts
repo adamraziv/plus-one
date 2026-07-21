@@ -18,6 +18,24 @@ const allowedRelations = [
   'reporting.source_freshness',
 ];
 
+const reportingGrains: Record<string, readonly string[]> = {
+  'reporting.accounts': ['household', 'account'],
+  'reporting.current_balances': ['household', 'account'],
+  'reporting.categorized_transactions': ['household', 'posting'],
+  'reporting.cash_flow_monthly': ['household', 'month', 'accounting class', 'currency'],
+  'reporting.source_freshness': ['household', 'source system'],
+};
+
+function reportingMetadataResponse<R extends Record<string, unknown>>(
+  text: string,
+  values?: readonly unknown[],
+): { rows: readonly R[] } | undefined {
+  if (!text.includes('FROM reporting.relation_metadata')) return undefined;
+  const relationName = values?.[0];
+  const grain = typeof relationName === 'string' ? reportingGrains[relationName] : undefined;
+  return { rows: grain === undefined ? [] : [{ grain } as unknown as R] };
+}
+
 function buildToolRegistry(): QueryToolRegistry {
   return new QueryToolRegistry({
     allowedRelations,
@@ -47,6 +65,7 @@ function buildSessionConfig(): { session: EvidenceSession; tools: QueryToolRegis
   const runner: QueryRunner = {
     async query<R extends Record<string, unknown> = Record<string, unknown>>(
       text: string,
+      values?: readonly unknown[],
     ): Promise<{ rows: readonly R[] }> {
       if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY') {
         return { rows: [] };
@@ -56,6 +75,8 @@ function buildSessionConfig(): { session: EvidenceSession; tools: QueryToolRegis
       }
       if (text === 'COMMIT') return { rows: [] };
       if (text === 'ROLLBACK') return { rows: [] };
+      const metadata = reportingMetadataResponse<R>(text, values);
+      if (metadata !== undefined) return metadata;
       return { rows: [{ account_id: 1, name: 'Cash' } as unknown as R] };
     },
   };
@@ -109,7 +130,7 @@ describe('EvidenceSession', () => {
     ]);
   });
 
-  it('uses reporting relation grain instead of table names', async () => {
+  it('uses the reporting metadata grain instead of a duplicated application map', async () => {
     const tools = buildToolRegistry();
     tools.register({
       toolName: 'categorized_transactions',
@@ -120,10 +141,15 @@ describe('EvidenceSession', () => {
       description: 'categorized transactions',
     });
     const runner = {
-      async query<R extends Record<string, unknown> = Record<string, unknown>>(text: string) {
+      async query<R extends Record<string, unknown> = Record<string, unknown>>(
+        text: string,
+        values?: readonly unknown[],
+      ) {
         if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY') return { rows: [] as readonly R[] };
         if (text.startsWith('SET LOCAL statement_timeout')) return { rows: [] as readonly R[] };
         if (text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] as readonly R[] };
+        const metadata = reportingMetadataResponse<R>(text, values);
+        if (metadata !== undefined) return metadata;
         return {
           rows: [] as readonly R[],
           fields: [{ name: 'posting_id' }, { name: 'journal_id' }, { name: 'account_id' }],
@@ -141,7 +167,55 @@ describe('EvidenceSession', () => {
     const result = await session.withSession(async (handle) =>
       handle.runTool('categorized_transactions', ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K']));
 
-    expect(result.grain).toEqual(['household', 'account', 'journal']);
+    expect(result.grain).toEqual(['household', 'posting']);
+  });
+
+  it('normalizes PostgreSQL dates and timestamps to JSON-safe strings', async () => {
+    const tools = buildToolRegistry();
+    tools.register({
+      toolName: 'categorized_transactions',
+      relationNames: ['reporting.categorized_transactions'],
+      sql: 'SELECT effective_on, posted_at FROM reporting.categorized_transactions WHERE household_id = $1 LIMIT 100',
+      parameters: ['$1'],
+      limit: 100,
+      description: 'categorized transactions',
+    });
+    const localDate = new Date(2026, 6, 16);
+    const timestamp = new Date('2026-07-16T12:34:56.000Z');
+    const runner: QueryRunner = {
+      async query<R extends Record<string, unknown> = Record<string, unknown>>(
+        text: string,
+        values?: readonly unknown[],
+      ) {
+        if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY') return { rows: [] as readonly R[] };
+        if (text.startsWith('SET LOCAL statement_timeout')) return { rows: [] as readonly R[] };
+        if (text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] as readonly R[] };
+        const metadata = reportingMetadataResponse<R>(text, values);
+        if (metadata !== undefined) return metadata;
+        return {
+          rows: [{ effective_on: localDate, posted_at: timestamp } as unknown as R],
+          fields: [
+            { name: 'effective_on', dataTypeID: 1082 },
+            { name: 'posted_at', dataTypeID: 1184 },
+          ],
+        };
+      },
+    };
+    const session = new EvidenceSession(runner, {
+      allowedRelations,
+      maxRows: 500,
+      maxOutputBytes: 1_000_000,
+      statementTimeoutMs: 5_000,
+      validator: new ReadOnlySqlValidator(),
+    }, tools);
+
+    const result = await session.withSession(async (handle) =>
+      handle.runTool('categorized_transactions', ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K']));
+
+    expect(result.rows).toEqual([{
+      effective_on: '2026-07-16',
+      posted_at: '2026-07-16T12:34:56.000Z',
+    }]);
   });
 
   it('keeps field definitions when a typed tool returns zero rows', async () => {
@@ -155,10 +229,15 @@ describe('EvidenceSession', () => {
       description: 'list accounts',
     });
     const runner = {
-      async query<R extends Record<string, unknown> = Record<string, unknown>>(text: string) {
+      async query<R extends Record<string, unknown> = Record<string, unknown>>(
+        text: string,
+        values?: readonly unknown[],
+      ) {
         if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY') return { rows: [] as readonly R[] };
         if (text.startsWith('SET LOCAL statement_timeout')) return { rows: [] as readonly R[] };
         if (text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] as readonly R[] };
+        const metadata = reportingMetadataResponse<R>(text, values);
+        if (metadata !== undefined) return metadata;
         return {
           rows: [] as readonly R[],
           fields: [{ name: 'account_id' }, { name: 'name' }],
@@ -239,6 +318,20 @@ describe('EvidenceSession', () => {
     expect(evidencePackage.analyst?.result.result).toEqual({ count: 1 });
   });
 
+  it('rejects an evidence package when its request grain conflicts with reporting metadata', async () => {
+    const { session } = buildSessionConfig();
+    const request = EvidenceRequestSchemaV1.parse({
+      ...sampleRequest,
+      desiredGrain: ['category'],
+      requiredCalculations: [],
+    });
+
+    await expect(session.withSession(async (handle) => handle.buildEvidencePackage({
+      request,
+      querySpecification: sampleFlexibleSpec,
+    }))).rejects.toMatchObject({ code: 'evidence_package_grain_mismatch' });
+  });
+
   it('rejects flexible SQL targeting more than one relation', async () => {
     const { session } = buildSessionConfig();
     const spec: QuerySpecificationV1 = {
@@ -252,11 +345,16 @@ describe('EvidenceSession', () => {
 
   it('rejects a row-count over the limit', async () => {
     const runner: QueryRunner = {
-      async query<R extends Record<string, unknown>>(text: string): Promise<{ rows: readonly R[] }> {
+      async query<R extends Record<string, unknown>>(
+        text: string,
+        values?: readonly unknown[],
+      ): Promise<{ rows: readonly R[] }> {
         if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' || text === 'COMMIT'
           || text === 'ROLLBACK' || text.startsWith('SET LOCAL statement_timeout')) {
           return { rows: [] };
         }
+        const metadata = reportingMetadataResponse<R>(text, values);
+        if (metadata !== undefined) return metadata;
         return { rows: Array.from({ length: 6 }, (_, i) => ({ account_id: i } as unknown as R)) };
       },
     };
@@ -283,12 +381,17 @@ describe('EvidenceSession', () => {
   it('rolls back the transaction when a tool throws', async () => {
     let sawRollback = false;
     const runner: QueryRunner = {
-      async query<R extends Record<string, unknown>>(text: string): Promise<{ rows: readonly R[] }> {
+      async query<R extends Record<string, unknown>>(
+        text: string,
+        values?: readonly unknown[],
+      ): Promise<{ rows: readonly R[] }> {
         if (text === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' || text === 'COMMIT') {
           return { rows: [] };
         }
         if (text === 'ROLLBACK') { sawRollback = true; return { rows: [] }; }
         if (text.startsWith('SET LOCAL statement_timeout')) return { rows: [] };
+        const metadata = reportingMetadataResponse<R>(text, values);
+        if (metadata !== undefined) return metadata;
         throw new Error('boom');
       },
     };

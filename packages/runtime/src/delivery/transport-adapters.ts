@@ -1,5 +1,7 @@
 import { PlusOneError } from '@plus-one/contracts';
+import { classifyTelegramApiFailure, TransportSendError } from '../gateway/send-result.js';
 import type { TransportAdapter, TransportSendInput } from './final-delivery-handler.js';
+import { toTelegramMarkdownV2 } from './telegram-markdown.js';
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -11,25 +13,147 @@ export class TelegramTransportAdapter implements TransportAdapter {
   ) {}
 
   async send(input: TransportSendInput): Promise<{ platformMessageId: string }> {
-    const chatId = input.destination.chatId;
-    if (typeof chatId !== 'string') throw this.error('telegram_chat_id_missing');
-    const apiBaseUrl = this.options.apiBaseUrl ?? 'https://api.telegram.org';
-    const response = await this.fetchFn(`${apiBaseUrl}/bot${this.token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: input.body }),
-    });
-    const payload = await response.json() as { ok?: boolean; result?: { message_id?: number | string } };
-    if (!response.ok || payload.ok !== true || payload.result?.message_id === undefined) {
-      throw this.error('telegram_send_failed');
+    const chatId = this.chatId(input.destination);
+    if (input.format === 'mrkdwn') {
+      try {
+        return await this.sendMessage({
+          chatId,
+          text: toTelegramMarkdownV2(input.body),
+          parseMode: 'MarkdownV2',
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+      } catch (error) {
+        if (!(error instanceof TransportSendError) || error.failure.category !== 'bad_format') throw error;
+        return this.sendMessage({
+          chatId,
+          text: input.body,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+      }
     }
-    return { platformMessageId: String(payload.result.message_id) };
+    return this.sendMessage({
+      chatId,
+      text: input.body,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
   }
 
-  private error(code: string): PlusOneError {
-    return new PlusOneError({ category: 'runtime_failure', code,
-      message: 'Telegram delivery failed', retry: 'after_backoff',
-      receiptLookupRequired: false, details: {} });
+  async sendTyping(input: { destination: Record<string, unknown> }): Promise<void> {
+    await this.request('sendChatAction', {
+      chat_id: this.chatId(input.destination),
+      action: 'typing',
+    });
+  }
+
+  async sendInterim(input: TransportSendInput): Promise<{ platformMessageId: string }> {
+    return this.send({ ...input, format: 'plain_text' });
+  }
+
+  async sendOrUpdateStatus(input: {
+    body: string;
+    destination: Record<string, unknown>;
+    statusMessageId?: string;
+  }): Promise<{ platformMessageId: string }> {
+    if (input.statusMessageId === undefined) {
+      return this.sendMessage({ chatId: this.chatId(input.destination), text: input.body });
+    }
+    return this.editMessage({
+      destination: input.destination,
+      platformMessageId: input.statusMessageId,
+      body: input.body,
+      format: 'plain_text',
+    });
+  }
+
+  async deleteMessage(input: {
+    destination: Record<string, unknown>;
+    platformMessageId: string;
+  }): Promise<void> {
+    await this.request('deleteMessage', {
+      chat_id: this.chatId(input.destination),
+      message_id: input.platformMessageId,
+    });
+  }
+
+  async editMessage(input: {
+    destination: Record<string, unknown>;
+    platformMessageId: string;
+    body: string;
+    format: 'plain_text' | 'mrkdwn';
+  }): Promise<{ platformMessageId: string }> {
+    const payload = await this.request('editMessageText', {
+      chat_id: this.chatId(input.destination),
+      message_id: input.platformMessageId,
+      text: input.format === 'mrkdwn' ? toTelegramMarkdownV2(input.body) : input.body,
+      ...(input.format === 'mrkdwn' ? { parse_mode: 'MarkdownV2' } : {}),
+    });
+    return { platformMessageId: String(payload.result?.message_id ?? input.platformMessageId) };
+  }
+
+  private chatId(destination: Record<string, unknown>): string {
+    const chatId = destination.chatId;
+    if (typeof chatId !== 'string') {
+      throw new TransportSendError({
+        category: 'unknown',
+        message: 'Telegram chat id is missing.',
+        retryable: false,
+        receiptLookupRequired: false,
+      });
+    }
+    return chatId;
+  }
+
+  private async sendMessage(input: {
+    chatId: string;
+    text: string;
+    parseMode?: 'MarkdownV2';
+    replyToMessageId?: string;
+    signal?: AbortSignal;
+  }): Promise<{ platformMessageId: string }> {
+    const payload = await this.request('sendMessage', {
+      chat_id: input.chatId,
+      text: input.text,
+      ...(input.parseMode === undefined ? {} : { parse_mode: input.parseMode }),
+      ...(input.replyToMessageId === undefined ? {} : { reply_to_message_id: input.replyToMessageId }),
+    }, input.signal);
+    const messageId = payload.result?.message_id;
+    if (messageId === undefined) {
+      throw new TransportSendError({
+        category: 'unknown',
+        message: 'Telegram sendMessage response did not include message_id.',
+        retryable: false,
+        receiptLookupRequired: false,
+      });
+    }
+    return { platformMessageId: String(messageId) };
+  }
+
+  private async request(
+    method: string,
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ result?: { message_id?: number | string } }> {
+    const apiBaseUrl = this.options.apiBaseUrl ?? 'https://api.telegram.org';
+    const response = await this.fetchFn(`${apiBaseUrl}/bot${this.token}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const payload = await response.json() as {
+      ok?: boolean;
+      result?: { message_id?: number | string };
+      description?: string;
+      parameters?: { retry_after?: number };
+    };
+    if (!response.ok || payload.ok !== true) {
+      throw new TransportSendError(classifyTelegramApiFailure({
+        status: response.status,
+        ...(payload.description === undefined ? {} : { description: payload.description }),
+        ...(payload.parameters?.retry_after === undefined ? {} : { retryAfterSeconds: payload.parameters.retry_after }),
+      }));
+    }
+    return payload;
   }
 }
 
@@ -50,6 +174,7 @@ export class SlackTransportAdapter implements TransportAdapter {
         text: input.body,
         mrkdwn: input.format === 'mrkdwn',
       }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     const payload = await response.json() as { ok?: boolean; ts?: string };
     if (!response.ok || payload.ok !== true || payload.ts === undefined) {

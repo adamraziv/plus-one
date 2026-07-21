@@ -42,6 +42,7 @@ describe('accounting live routing acceptance', () => {
         nodeEnv: 'test',
         host: '127.0.0.1',
         port: 4111,
+        turnDeadlineMs: 60_000,
         database: { poolUrls: {} } as never,
         models: {
           orchestrator: { id: 'openai/gpt-5', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -52,7 +53,11 @@ describe('accounting live routing acceptance', () => {
         },
       },
       agentSystem: { teams: [accountingTeamDefinition] } as never,
-      teamRuntime: { runTeamLead: vi.fn() },
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+        cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
+      },
     });
     const message = InboundChannelMessageSchemaV1.parse({
       schemaName: 'inbound-channel-message',
@@ -77,7 +82,10 @@ describe('accounting live routing acceptance', () => {
       json: (body: unknown) => Response.json(body),
     } as never, async () => undefined);
 
-    expect(run).toHaveBeenCalledWith({ message });
+    expect(run).toHaveBeenCalledWith({
+      message,
+      signal: expect.any(AbortSignal),
+    });
     await expect(response.json()).resolves.toMatchObject({
       body: 'Accounting team status: verified',
     });

@@ -11,6 +11,8 @@ import {
   type QuerySpecificationV1,
 } from '@plus-one/contracts';
 import { PlusOneError } from '@plus-one/contracts';
+import { satisfiesRequestedGrain } from './grain-satisfaction.js';
+import { readReportingRelationGrain } from './reporting-relation-metadata.js';
 import type { QueryToolRegistry } from './query-tool-registry.js';
 import type { ReadOnlySqlValidator } from './sql-validator.js';
 
@@ -18,7 +20,7 @@ export interface QueryRunner {
   query<R extends Record<string, unknown> = Record<string, unknown>>(
     text: string,
     values?: readonly unknown[],
-  ): Promise<{ rows: readonly R[]; fields?: readonly { name: string }[] }>;
+  ): Promise<{ rows: readonly R[]; fields?: readonly { name: string; dataTypeID?: number }[] }>;
   release?(): void;
 }
 
@@ -63,6 +65,8 @@ export class EvidenceSession {
 }
 
 export class EvidenceHandle {
+  private readonly relationGrains = new Map<string, string[]>();
+
   constructor(
     private readonly runner: QueryRunner,
     private readonly config: EvidenceSessionConfig,
@@ -113,6 +117,16 @@ export class EvidenceHandle {
 
   async buildEvidencePackage(input: EvidencePackageInput): Promise<EvidencePackageV1> {
     const result = await this.runFlexibleQuery(input.querySpecification);
+    if (!satisfiesRequestedGrain(result.grain, input.request.desiredGrain)) {
+      throw new PlusOneError({
+        category: 'validation_rejected',
+        code: 'evidence_package_grain_mismatch',
+        message: 'Evidence package request grain does not match the governed query result grain.',
+        retry: 'never',
+        receiptLookupRequired: false,
+        details: { relationName: result.relationName },
+      });
+    }
     if (input.request.requiredCalculations.length > 0 && input.analyst === undefined) {
       throw new PlusOneError({
         category: 'validation_rejected',
@@ -136,7 +150,7 @@ export class EvidenceHandle {
       status: 'verified',
       requestInterpretation: interpretation,
       dataScope: [`relation=${result.relationName}`],
-      grain: input.request.desiredGrain,
+      grain: result.grain,
       filters: input.querySpecification.filters,
       queryResults: [result],
       assumptions: ['Reporting rows are projections of authoritative ledger facts.'],
@@ -164,6 +178,7 @@ export class EvidenceHandle {
     description: string,
     sourceReferences: readonly string[] = [`relation=${relationName}`],
   ): Promise<QueryResultV1> {
+    const grain = await this.grainForRelation(relationName);
     const response = await this.runner.query<Record<string, unknown>>(sql, parameters);
     if (response.rows.length > limit) {
       throw new PlusOneError({
@@ -175,10 +190,10 @@ export class EvidenceHandle {
         details: { rowCount: response.rows.length, limit },
       });
     }
+    const rows = jsonSafeQueryRows(response.rows, response.fields);
     const fields = response.fields?.map((field) => field.name).sort()
       ?? (response.rows[0] === undefined ? [] : Object.keys(response.rows[0]).sort());
-    const grain = grainForRelation(relationName);
-    const serialized = JSON.stringify(response.rows);
+    const serialized = JSON.stringify(rows);
     if (serialized.length > this.config.maxOutputBytes) {
       throw new PlusOneError({
         category: 'policy_rejected',
@@ -194,12 +209,20 @@ export class EvidenceHandle {
       schemaVersion: 1,
       relationName,
       grain,
-      rows: response.rows,
+      rows,
       fieldDefinitions: fields,
       sourceReferences,
       freshness: 'latest available reporting projection',
       coverageWarnings: [],
     });
+  }
+
+  private async grainForRelation(relationName: string): Promise<string[]> {
+    const cached = this.relationGrains.get(relationName);
+    if (cached !== undefined) return cached;
+    const grain = await readReportingRelationGrain(this.runner, relationName);
+    this.relationGrains.set(relationName, grain);
+    return grain;
   }
 }
 
@@ -213,25 +236,6 @@ function sourceReferencesForToolCall(
     references.push(`filter=household_id:eq:${householdId}`);
   }
   return references;
-}
-
-function grainForRelation(relationName: string): string[] {
-  return {
-    'reporting.accounts': ['household', 'account'],
-    'reporting.current_balances': ['household', 'account'],
-    'reporting.account_daily_balances': ['household', 'account', 'date'],
-    'reporting.household_net_worth_daily': ['household', 'date'],
-    'reporting.journal_activity': ['household', 'journal'],
-    'reporting.categorized_transactions': ['household', 'account', 'journal'],
-    'reporting.category_spend_monthly': ['household', 'month', 'category'],
-    'reporting.cash_flow_monthly': ['household', 'month', 'accounting class', 'currency'],
-    'reporting.obligation_occurrences': ['household', 'obligation occurrence'],
-    'reporting.budget_variance': ['household', 'budget category', 'period'],
-    'reporting.savings_goal_progress': ['household', 'savings goal'],
-    'reporting.debt_progress': ['household', 'debt plan'],
-    'reporting.reconciliation_status': ['household', 'statement snapshot'],
-    'reporting.source_freshness': ['household', 'source system'],
-  }[relationName] ?? ['household', relationName.replace(/^reporting\./, '')];
 }
 
 const PoolLikeClientSchema = z.object({
@@ -248,10 +252,16 @@ export function pgRunner(pool: Pick<Pool, 'connect'>): QueryRunner {
     async query<R extends Record<string, unknown> = Record<string, unknown>>(
       text: string,
       values?: readonly unknown[],
-    ): Promise<{ rows: readonly R[]; fields?: readonly { name: string }[] }> {
+    ): Promise<{ rows: readonly R[]; fields?: readonly { name: string; dataTypeID?: number }[] }> {
       const connection = await acquire();
       const response = await connection.query<R>(text, values as unknown[] | undefined);
-      return { rows: response.rows, fields: response.fields.map((field) => ({ name: field.name })) };
+      return {
+        rows: response.rows,
+        fields: response.fields.map((field) => ({
+          name: field.name,
+          dataTypeID: field.dataTypeID,
+        })),
+      };
     },
     release(): void {
       if (client !== undefined) {
@@ -272,6 +282,38 @@ export function ensurePgRunner(value: unknown): QueryRunner {
     retry: 'never',
     receiptLookupRequired: false,
   });
+}
+
+const PostgresDateTypeId = 1082;
+
+function jsonSafeQueryRows(
+  rows: readonly Record<string, unknown>[],
+  fields?: readonly { name: string; dataTypeID?: number }[],
+): Record<string, unknown>[] {
+  const dataTypes = new Map(fields?.map((field) => [field.name, field.dataTypeID]));
+  return rows.map((row) => Object.fromEntries(
+    Object.entries(row).map(([name, value]) => [name, jsonSafeQueryValue(value, dataTypes.get(name))]),
+  ));
+}
+
+function jsonSafeQueryValue(value: unknown, dataTypeId?: number): unknown {
+  if (value instanceof Date) {
+    if (dataTypeId === PostgresDateTypeId) {
+      return [
+        String(value.getFullYear()).padStart(4, '0'),
+        String(value.getMonth() + 1).padStart(2, '0'),
+        String(value.getDate()).padStart(2, '0'),
+      ].join('-');
+    }
+    return value.toISOString();
+  }
+  if (Array.isArray(value)) return value.map((entry) => jsonSafeQueryValue(entry));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, jsonSafeQueryValue(entry)]),
+    );
+  }
+  return value;
 }
 
 export type { QuerySpecificationV1, EvidencePackageV1 };

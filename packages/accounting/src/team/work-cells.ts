@@ -3,8 +3,10 @@ import { ingestionWorkCellDefinition, reconciliationWorkCellDefinition } from '@
 import {
   AccountingClarificationSchemaV1,
   AccountingWorkResultSchemaV1,
-  ChartOfAccountsProposalSchemaV1,
+  ChartClarificationSchemaV1,
+  ChartNoChangeSchemaV1,
   ChartWorkRequestSchemaV1,
+  ChartWorkResultSchemaV1,
   JournalWorkRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
 } from './contracts.js';
@@ -32,6 +34,40 @@ const acceptedStop: WorkCellDefinition['evaluateStopCondition'] = ({ maker }) =>
   };
 };
 
+const chartStop: WorkCellDefinition['evaluateStopCondition'] = ({ maker }) => {
+  const clarification = ChartClarificationSchemaV1.safeParse(maker.output);
+  if (clarification.success) {
+    return {
+      status: 'insufficient_evidence',
+      reason: clarification.data.reason,
+      outstanding: [...clarification.data.questions],
+    };
+  }
+  const noChange = ChartNoChangeSchemaV1.safeParse(maker.output);
+  if (noChange.success) {
+    return {
+      status: 'verified',
+      reason: noChange.data.reason === 'matching_account_exists'
+        ? 'The requested account already exists with matching details.'
+        : 'An account with that name already exists with different details.',
+      outstanding: [],
+    };
+  }
+  return {
+    status: 'verified',
+    reason: 'The checker accepted the exact chart proposal.',
+    outstanding: [],
+  };
+};
+
+const accountingJournalEffect = {
+  kind: 'checked_mutation' as const,
+  proposals: [{
+    schema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
+    confirmation: 'optional' as const,
+  }],
+};
+
 export const transactionCaptureWorkCell: WorkCellDefinition = {
   workCellId: 'transaction-capture',
   maker: byName('transaction-capture-maker') as WorkCellDefinition['maker'],
@@ -40,6 +76,7 @@ export const transactionCaptureWorkCell: WorkCellDefinition = {
   makerOutputSchema: AccountingWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'transaction-capture-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+  effectPolicy: accountingJournalEffect,
   checkerRubric: {
     rubricName: 'transaction-capture-rubric',
     rubricVersion: 1,
@@ -61,6 +98,7 @@ export const journalWorkCell: WorkCellDefinition = {
   makerOutputSchema: AccountingWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'journal-work-request', schemaVersion: 1 },
   outputSchemaIdentity: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+  effectPolicy: accountingJournalEffect,
   checkerRubric: {
     rubricName: 'journal-rubric',
     rubricVersion: 1,
@@ -79,9 +117,16 @@ export const chartOfAccountsWorkCell: WorkCellDefinition = {
   maker: byName('chart-maker') as WorkCellDefinition['maker'],
   checker: byName('chart-checker') as WorkCellDefinition['checker'],
   makerInputSchema: ChartWorkRequestSchemaV1,
-  makerOutputSchema: ChartOfAccountsProposalSchemaV1,
+  makerOutputSchema: ChartWorkResultSchemaV1,
   inputSchemaIdentity: { schemaName: 'chart-work-request', schemaVersion: 1 },
-  outputSchemaIdentity: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+  outputSchemaIdentity: { schemaName: 'chart-work-result', schemaVersion: 1 },
+  effectPolicy: {
+    kind: 'checked_mutation',
+    proposals: [{
+      schema: { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 },
+      confirmation: 'required',
+    }],
+  },
   checkerRubric: {
     rubricName: 'chart-of-accounts-rubric',
     rubricVersion: 1,
@@ -92,11 +137,7 @@ export const chartOfAccountsWorkCell: WorkCellDefinition = {
     ],
   },
   allowedSkillNames: ['chart-of-accounts'],
-  evaluateStopCondition: () => ({
-    status: 'verified',
-    reason: 'The checker accepted the exact chart proposal.',
-    outstanding: [],
-  }),
+  evaluateStopCondition: chartStop,
 };
 
 export const accountingWorkCells = [

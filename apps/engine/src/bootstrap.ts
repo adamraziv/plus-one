@@ -8,11 +8,12 @@ import {
   type DatabasePools,
 } from '@plus-one/database';
 import {
+  ChannelGateway,
   ChannelCommandHandler,
+  DelegatingChannelEventSink,
   defaultConversationIdGenerator,
   defaultDeliveryIdGenerator,
   FinalDeliveryHandler,
-  OrchestratorIngress,
   TelegramPairingService,
   TelegramTransportAdapter,
 } from '@plus-one/runtime';
@@ -20,13 +21,14 @@ import { createAgentSystem } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
 import type { RoleAgentTools } from './mastra/role-agent.js';
-import { validateConfiguredModels } from './model-catalog.js';
+import { validateRuntimeModels } from './model-runtime-validation.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
 import { createOrchestratorSessionMemory } from './memory/orchestrator-session-memory.js';
 import { createDefaultQueryTools } from './query-tools.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createTeamRuntime } from './team-runtime.js';
 import { TelegramBotApiClient } from './telegram/telegram-bot-api.js';
+import { TelegramChannelEventSink } from './telegram/telegram-channel-event-sink.js';
 import { TelegramPollingReceiver } from './telegram/telegram-polling-receiver.js';
 import { TelegramUpdateProcessor } from './telegram/telegram-update-processor.js';
 import { createTelegramWebhookRoute } from './telegram/telegram-webhook.js';
@@ -44,7 +46,7 @@ interface BootstrapDependencies {
   createPools?: typeof createDatabasePools;
   verifyPools?: typeof verifyDatabasePools;
   closePools?: typeof closeDatabasePools;
-  validateModels?: typeof validateConfiguredModels;
+  validateModels?: typeof validateRuntimeModels;
   createMastraInstance?: typeof createMastra;
   createAgentSystemInstance?: typeof createAgentSystem;
   queryTools?: RoleAgentTools;
@@ -53,9 +55,19 @@ interface BootstrapDependencies {
   createTelegramPollingReceiver?: typeof createTelegramPollingReceiver;
 }
 
+export interface BootstrappedRuntime {
+  config: ReturnType<typeof loadConfig>;
+  mastra: ReturnType<typeof createMastra>;
+  pools: DatabasePools;
+  agentSystem: ReturnType<typeof createAgentSystem>;
+  startIntake(): Promise<void>;
+  stopIntake(): Promise<void>;
+  close(): Promise<void>;
+}
+
 export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   const config = loadConfig(dependencies.environment ?? process.env);
-  await (dependencies.validateModels ?? validateConfiguredModels)({
+  await (dependencies.validateModels ?? validateRuntimeModels)({
     endpoint: config.models.orchestrator.endpoint,
     apiKey: config.models.orchestrator.apiKey,
     modelIds: [
@@ -84,11 +96,13 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     connectionString: config.database.poolUrls.memory,
     model: config.models.orchestrator,
   });
+  const channelEvents = new DelegatingChannelEventSink();
   const orchestrator = new OrchestratorAgent({
     model: config.models.orchestrator,
     teams: agentSystem.teams,
     teamRuntime,
     sessionMemory,
+    channelEvents,
   });
   const deliveryRepository = new PostgresDeliveryRepository(pools.operations);
   const channelCommands = new ChannelCommandHandler({
@@ -99,6 +113,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
   };
   let telegramApi: TelegramBotApi | undefined;
+  let telegramGateway: ChannelGateway | undefined;
   let telegramProcessor: TelegramUpdateProcessor | undefined;
   const runtimeRoutes = createRuntimeRoutes({
     config,
@@ -119,38 +134,41 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
         const telegramTransport = new TelegramTransportAdapter(config.telegram.botToken, fetch, {
           ...(config.telegram.apiBaseUrl === undefined ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
         });
+        const telegramEvents = new TelegramChannelEventSink({ transport: telegramTransport });
+        channelEvents.setSink(telegramEvents);
         const telegramDelivery = new FinalDeliveryHandler({
           repository: deliveryRepository,
           transports: {
             telegram: telegramTransport,
             slack: {
               send: async () => {
-                throw new Error('Slack transport is not configured for Telegram webhook delivery.');
+                throw new Error('Slack transport is not configured for Telegram gateway delivery.');
               },
             },
           },
           ids: defaultDeliveryIdGenerator,
         });
+        telegramGateway = new ChannelGateway({
+          inbound: deliveryRepository,
+          commands: channelCommands,
+          orchestrator: {
+            run: async ({ message, signal }) => {
+              const workflow = mastra.getWorkflow('orchestrator-loop');
+              return runOrchestratorLoop({ workflow, message, signal });
+            },
+          },
+          delivery: telegramDelivery,
+          sink: channelEvents,
+          turnDeadlineMs: config.turnDeadlineMs,
+        });
+        const telegramGatewayForProcessor = telegramGateway;
 
         const processor = new TelegramUpdateProcessor({
           pairing: new TelegramPairingService({
             repository: new PostgresChannelPairingRepository(pools.operations),
           }),
           deliveryRepository,
-          inboundHandler: async (message) => {
-            const ingress = new OrchestratorIngress({
-              inbound: deliveryRepository,
-              commands: channelCommands,
-              orchestrator: {
-                run: async (candidate) => {
-                  const workflow = mastra.getWorkflow('orchestrator-loop');
-                  return runOrchestratorLoop({ workflow, message: candidate.message });
-                },
-              },
-              delivery: telegramDelivery,
-            });
-            return ingress.handleInbound(message);
-          },
+          inboundHandler: async (message) => telegramGatewayForProcessor.handleInbound(message),
           telegram: {
             sendMessage: async ({ chatId, text }) => telegramTransport
               .send({ destination: { chatId }, body: text, format: 'plain_text' }),
@@ -180,22 +198,38 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
 
   await (dependencies.verifyPools ?? verifyDatabasePools)(pools);
 
+  let intakeStarted = false;
+  let intakeStopped = false;
+  let closed = false;
   let stopTelegramPolling: (() => void) | undefined;
   let telegramPollingTask: Promise<void> | undefined;
-  let telegramPollingStopped = false;
 
-  if (config.telegram !== undefined && config.telegram.receiver.mode === 'webhook') {
-    if (telegramApi === undefined) throw new Error('Telegram API client was not initialized.');
-    await telegramApi.setWebhook({
-      url: config.telegram.receiver.webhookUrl,
-      secretToken: config.telegram.receiver.webhookSecret,
-      allowedUpdates: ['message'],
-      dropPendingUpdates: false,
-    });
-  }
+  const stopIntake = async (): Promise<void> => {
+    if (!intakeStarted || intakeStopped) return;
+    intakeStopped = true;
+    stopTelegramPolling?.();
+    await telegramPollingTask?.catch(() => undefined);
+  };
 
-  if (config.telegram !== undefined && config.telegram.receiver.mode === 'polling') {
+  const startIntake = async (): Promise<void> => {
+    if (intakeStarted) return;
+    if (closed) throw new Error('Cannot start intake after runtime close.');
+    intakeStarted = true;
+    intakeStopped = false;
+
+    if (config.telegram === undefined) return;
     if (telegramApi === undefined) throw new Error('Telegram API client was not initialized.');
+
+    if (config.telegram.receiver.mode === 'webhook') {
+      await telegramApi.setWebhook({
+        url: config.telegram.receiver.webhookUrl,
+        secretToken: config.telegram.receiver.webhookSecret,
+        allowedUpdates: ['message'],
+        dropPendingUpdates: false,
+      });
+      return;
+    }
+
     if (telegramProcessor === undefined) throw new Error('Telegram update processor was not initialized.');
     const polling = (dependencies.createTelegramPollingReceiver ?? createTelegramPollingReceiver)({
       api: telegramApi,
@@ -203,46 +237,40 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     });
     stopTelegramPolling = polling.abort;
     telegramPollingTask = polling.start();
-    try {
-      await Promise.race([polling.ready?.() ?? Promise.resolve(), telegramPollingTask]);
-    } catch (error) {
-      telegramPollingStopped = true;
-      stopTelegramPolling();
-      await telegramPollingTask.catch(() => undefined);
-      await mastra.shutdown();
-      await sessionMemory.close();
-      await (dependencies.closePools ?? closeDatabasePools)(pools);
-      throw error;
-    }
     telegramPollingTask.catch((error: unknown) => {
-      if (telegramPollingStopped) return;
+      if (intakeStopped || closed) return;
       setImmediate(() => {
-        if (telegramPollingStopped) return;
+        if (intakeStopped || closed) return;
         throw error;
       });
     });
-  }
+    try {
+      await Promise.race([polling.ready?.() ?? Promise.resolve(), telegramPollingTask]);
+    } catch (error) {
+      await stopIntake();
+      throw error;
+    }
+  };
+
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    await stopIntake();
+    await telegramGateway?.shutdown();
+    await mastra.shutdown();
+    await sessionMemory.close();
+    await (dependencies.closePools ?? closeDatabasePools)(pools);
+  };
 
   return {
     config,
     mastra,
     pools,
     agentSystem,
-    close: async (): Promise<void> => {
-      telegramPollingStopped = true;
-      stopTelegramPolling?.();
-      await telegramPollingTask?.catch(() => undefined);
-      await mastra.shutdown();
-      await sessionMemory.close();
-      await (dependencies.closePools ?? closeDatabasePools)(pools);
-    },
-  } satisfies {
-    config: ReturnType<typeof loadConfig>;
-    mastra: ReturnType<typeof createMastra>;
-    pools: DatabasePools;
-    agentSystem: ReturnType<typeof createAgentSystem>;
-    close: () => Promise<void>;
-  };
+    startIntake,
+    stopIntake,
+    close,
+  } satisfies BootstrappedRuntime;
 }
 
 function createTelegramBotApiClient(

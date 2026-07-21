@@ -1,18 +1,15 @@
 import { z } from 'zod';
 import { ArtifactIdSchema, HouseholdIdSchema, TaskIdSchema } from './ids.js';
 import { JsonValueSchema, SchemaIdentitySchemaV1 } from './json.js';
+import { opaqueIdentifierSchema } from './opaque-identifiers.js';
 import { UtcInstantSchema } from './time.js';
 
-function opaqueId(prefix: string) {
-  return z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
-}
-
-export const ConfirmationIdSchema = opaqueId('confirm').brand<'ConfirmationId'>();
-export const MutationCommandIdSchema = opaqueId('command').brand<'MutationCommandId'>();
-export const MutationReceiptIdSchema = opaqueId('receipt').brand<'MutationReceiptId'>();
-export const MutationReadbackIdSchema = opaqueId('readback').brand<'MutationReadbackId'>();
+export const ConfirmationIdSchema = opaqueIdentifierSchema<'ConfirmationId'>('confirmation');
+export const MutationCommandIdSchema = opaqueIdentifierSchema<'MutationCommandId'>('command');
+export const MutationReceiptIdSchema = opaqueIdentifierSchema<'MutationReceiptId'>('receipt');
+export const MutationReadbackIdSchema = opaqueIdentifierSchema<'MutationReadbackId'>('mutationReadback');
 export const CommandTypeSchema = z.string().regex(/^[a-z][a-z0-9_]{2,63}$/);
-export const IdempotencyKeySchema = z.string().regex(/^idem_[0-9A-HJKMNP-TV-Z]{26,120}$/);
+export const IdempotencyKeySchema = opaqueIdentifierSchema<'IdempotencyKey'>('idempotency');
 export const ArtifactHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 export const CommandStatusSchemaV1 = z.enum([

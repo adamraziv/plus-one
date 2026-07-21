@@ -22,14 +22,21 @@ describe('Mastra team execution framework', () => {
     await pool.query("INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone) VALUES ($1, 'USD', 'UTC')",
       ['hh_01JNZQ4A9B8C7D6E5F4G3H2J1K']);
 
-    const makerGenerate = vi.fn().mockResolvedValue({ object: {
+    const makerOutput = {
       schemaName: 'maker-artifact', schemaVersion: 1,
       outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
       output: { answer: '42' },
       claims: [{ claimId: 'answer', text: 'Six times seven is 42.', evidenceArtifactIds: [] }],
       assumptions: [], uncertainty: [],
-    } });
-    const checkerGenerate = vi.fn(async (messages: readonly { role: string; content: string }[]) => {
+    };
+    const makerGenerate = vi.fn(async (_messages: unknown, options: ContractGenerationOptions) => {
+      await submitContractResult(options, makerOutput);
+      return { text: '' };
+    });
+    const checkerGenerate = vi.fn(async (
+      messages: readonly { role: string; content: string }[],
+      options: ContractGenerationOptions,
+    ) => {
       expect(messages).toHaveLength(1);
       const task = JSON.parse(messages[0]!.content);
       expect(Object.keys(task).sort()).toEqual([
@@ -39,9 +46,13 @@ describe('Mastra team execution framework', () => {
       expect(task.parentMessages).toBeUndefined();
       expect(task.memory).toBeUndefined();
       expect(task.toolHistory).toBeUndefined();
-      return { object: { verdict: 'accepted',
+      await submitContractResult(options, {
+        verdict: 'accepted',
         coveredArtifactId: task.makerArtifact.artifactId,
-        coveredArtifactHash: task.makerArtifact.artifactHash, findings: [] } };
+        coveredArtifactHash: task.makerArtifact.artifactHash,
+        findings: [],
+      });
+      return { text: '' };
     });
 
     const agents = new AgentRegistry();
@@ -107,6 +118,7 @@ describe('Mastra team execution framework', () => {
         makerOutputSchema: z.object({ answer: z.string() }),
         inputSchemaIdentity: { schemaName: 'lookup-input', schemaVersion: 1 },
         outputSchemaIdentity: { schemaName: 'lookup-output', schemaVersion: 1 },
+        effectPolicy: { kind: 'none' },
         checkerRubric: { rubricName: 'lookup-rubric', rubricVersion: 1,
           instructions: ['Check the exact answer.'] },
         allowedSkillNames: ['verified-lookup'],
@@ -139,3 +151,21 @@ describe('Mastra team execution framework', () => {
     await pool.end();
   });
 });
+
+interface ContractGenerationOptions {
+  prepareStep(input: { stepNumber: number; steps: unknown[] }): {
+    tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+  } | Promise<{
+    tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+  }>;
+}
+
+async function submitContractResult(
+  options: ContractGenerationOptions,
+  result: unknown,
+): Promise<void> {
+  const prepared = await options.prepareStep({ stepNumber: 0, steps: [] });
+  const submitResult = prepared.tools?.submitResult?.execute;
+  if (submitResult === undefined) throw new Error('Expected submitResult transport tool.');
+  await submitResult(result);
+}

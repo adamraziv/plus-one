@@ -168,6 +168,7 @@ function chatMessage(
     ...(resourceId === undefined ? {} : { resourceId }),
     content: {
       format: 2,
+      ...(role === 'system' ? { content: text } : {}),
       parts: [{ type: 'text', text }],
     },
   };

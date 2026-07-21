@@ -1,11 +1,15 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { ApplicationScheduler, type SchedulerClaim } from './application-scheduler.js';
 import {
   DeliveryRecordSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   ScheduledRunSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
 } from '@plus-one/contracts';
+import { configureLogging } from '../logging/index.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const occurrenceId = 'occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -51,9 +55,9 @@ function deliveryRecord() {
 }
 
 function teamResult() {
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
-    schemaVersion: 1,
+    schemaVersion: 2,
     householdId,
     taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     team: 'query',
@@ -74,6 +78,7 @@ function teamResult() {
     stopCondition: { code: 'scheduled-brief', description: 'Produce a scheduled briefing.' },
     completionReason: 'Team result requires orchestrator reconciliation.',
     outstanding: ['orchestrator_reconciliation'],
+    effect: { state: 'none' },
   });
 }
 
@@ -82,6 +87,7 @@ function claim(overrides: {
   target?: SchedulerClaim['target'];
   maxRetries?: number;
   missedRunPolicy?: SchedulerClaim['missedRunPolicy'];
+  taskId?: string;
 } = {}): SchedulerClaim {
   const run = ScheduledRunSchemaV1.parse({
     schemaName: 'scheduled-run',
@@ -94,6 +100,7 @@ function claim(overrides: {
     scheduledFor: overrides.scheduledFor ?? now,
     status: 'claimed',
     attemptCount: 1,
+    ...(overrides.taskId === undefined ? {} : { taskId: overrides.taskId }),
     createdAt: now,
     updatedAt: now,
   });
@@ -110,6 +117,48 @@ function claim(overrides: {
 }
 
 describe('ApplicationScheduler', () => {
+  it('logs scheduler lifecycle metadata without scheduled content', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-scheduler-'));
+    const logging = configureLogging({ homeDirectory });
+    const repository = {
+      claimDueRuns: vi.fn(async () => [claim({ taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K' })]),
+      completeRun: vi.fn(async (_input) => ({ ...claim(), status: _input.status })),
+    };
+    const scheduler = new ApplicationScheduler({
+      repository,
+      targets: {
+        orchestrator: vi.fn(async () => finalResponse),
+        teamLead: vi.fn(async () => teamResult()),
+        orchestratorReconciler: { reconcile: vi.fn(async () => finalResponse) },
+      },
+      delivery: { deliver: vi.fn(async () => ({
+        status: 'delivered' as const,
+        sent: true as const,
+        delivery: deliveryRecord(),
+      })) },
+    });
+
+    try {
+      await scheduler.dispatchDue(now, 5);
+      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
+      expect(agentLog).toContain('scheduler.run.started');
+      expect(agentLog).toContain('scheduler.run.completed');
+      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('taskId=task_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('jobId=job_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('occurrenceId=occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+      expect(agentLog).toContain('targetKind=team_lead');
+      expect(agentLog).toContain('team=query');
+      expect(agentLog).toContain('retryCount=1');
+      expect(agentLog).toContain('status=succeeded');
+      expect(agentLog).toContain('durationMs=');
+      expect(agentLog).not.toContain(finalResponse.body);
+      expect(agentLog).not.toContain('telegram-chat-42');
+    } finally {
+      logging.close();
+    }
+  });
+
   it('routes team-lead results through orchestrator reconciliation before delivery', async () => {
     const repository = {
       claimDueRuns: vi.fn(async () => [claim()]),

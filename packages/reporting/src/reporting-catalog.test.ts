@@ -9,7 +9,7 @@ import {
 } from './index.js';
 
 describe('ReportingCatalog', () => {
-  it('lists every V1 relation with grain, metrics, freshness, and source semantics', () => {
+  it('uses reporting relation metadata returned by the database', async () => {
     expect(REQUIRED_REPORTING_RELATIONS).toEqual([
       'reporting.accounts',
       'reporting.current_balances',
@@ -27,17 +27,23 @@ describe('ReportingCatalog', () => {
       'reporting.source_freshness',
     ]);
 
-    for (const relationName of REQUIRED_REPORTING_RELATIONS) {
-      const metadata = ReportingRelationMetadataSchemaV1.parse(
-        ReportingCatalog.staticMetadata(relationName),
-      );
-      expect(metadata.relationName).toBe(relationName);
-      expect(metadata.grain.length).toBeGreaterThan(0);
-      expect(metadata.metrics.length).toBeGreaterThan(0);
-      expect(metadata.householdScoped).toBe(true);
-      expect(metadata.freshness).toMatch(/projection|ledger|source|planning/);
-      expect(metadata.sourceSemantics.length).toBeGreaterThan(0);
-    }
+    const catalog = new ReportingCatalog();
+    const metadata = await catalog.list({
+      query: async () => ({ rows: [
+        {
+          schemaName: 'reporting-relation-metadata', schemaVersion: 1,
+          relationName: 'reporting.categorized_transactions', grain: ['household', 'posting'],
+          metrics: ['categorized amounts'], householdScoped: true,
+          currencyBehavior: 'Account native currency.', freshness: 'ledger freshness',
+          sourceSemantics: 'Derived from posted postings and accounts.',
+        },
+      ] }),
+    } as never);
+
+    expect(ReportingRelationMetadataSchemaV1.parse(metadata[0])).toMatchObject({
+      relationName: 'reporting.categorized_transactions',
+      grain: ['household', 'posting'],
+    });
   });
 });
 

@@ -27,14 +27,14 @@ describe('Accounting Team journal mutation', () => {
     const seeded = await seedAccountingProposal(owner, {
       householdId: fixture.householdId, taskId: fixture.taskId,
       artifactId: fixture.artifactId,
-      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      outputSchema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
       proposal,
     });
     const command = new AccountingJournalCommandAdapter().buildCommand({
       commandId: fixture.commandId, idempotencyKey: fixture.idempotencyKey,
       householdId: fixture.householdId, taskId: fixture.taskId,
       checkedProposalId: fixture.artifactId, checkedProposalHash: seeded.artifactHash,
-      payloadSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      payloadSchema: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
       payload: proposal,
     });
     const harness = createExecutor(context, [createAccountingJournalMutationHandler()]);

@@ -65,11 +65,17 @@ describe('Plus One CLI', () => {
       operations: { query },
     } as never;
     const closePools = vi.fn(async () => {});
+    const configureLogging = vi.fn(() => ({
+      logDirectory: '/tmp/plus-one-test-logs',
+      flush: vi.fn(),
+      close: vi.fn(),
+    }));
 
     await expect(runPlusOneCli(['telegram', 'pairing', 'list-pending'], {
       environment,
       createPools: vi.fn(() => pools),
       closePools,
+      configureLogging,
       stdout: { write },
       stderr: { write: vi.fn() },
     })).resolves.toBe(0);
@@ -82,53 +88,129 @@ describe('Plus One CLI', () => {
     expect(write).toHaveBeenCalledWith('No pending Telegram pairing requests.\n');
   });
 
-  it('opens the live CLI when no arguments are supplied in an interactive terminal', async () => {
+  it('starts the gateway runtime when no arguments are supplied', async () => {
+    const runDaemonStart = vi.fn(async () => 0);
     const runLiveCli = vi.fn(async () => 0);
-    const stdout = { write: vi.fn() };
-    const stderr = { write: vi.fn() };
+    const stdout = { isTTY: false, write: vi.fn() };
+    const stderr = { isTTY: false, write: vi.fn() };
 
     await expect(runPlusOneCli([], {
-      isInteractive: true,
+      runDaemonStart,
       runLiveCli,
       stdout,
       stderr,
     })).resolves.toBe(0);
 
-    expect(runLiveCli).toHaveBeenCalledWith(expect.objectContaining({
-      stdout,
-      stderr,
-    }));
-    expect(stderr.write).not.toHaveBeenCalled();
+    expect(runDaemonStart).toHaveBeenCalledWith(expect.objectContaining({ stdout, stderr }));
+    expect(runLiveCli).not.toHaveBeenCalled();
   });
 
-  it('prints usage when no arguments are supplied outside an interactive terminal', async () => {
-    const write = vi.fn();
+  it('dispatches the logs command without starting application resources', async () => {
+    const runLogs = vi.fn(async () => 0);
+    const runGateway = vi.fn(async () => 0);
     const runLiveCli = vi.fn(async () => 0);
 
-    await expect(runPlusOneCli([], {
-      isInteractive: false,
+    await expect(runPlusOneCli(['logs', 'gateway'], {
+      runLogs,
+      runGateway,
       runLiveCli,
       stdout: { write: vi.fn() },
-      stderr: { write },
-    })).resolves.toBe(1);
+      stderr: { write: vi.fn() },
+    })).resolves.toBe(0);
 
+    expect(runLogs).toHaveBeenCalledWith(['gateway'], expect.objectContaining({
+      stdout: expect.any(Object), stderr: expect.any(Object),
+    }));
+    expect(runGateway).not.toHaveBeenCalled();
     expect(runLiveCli).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledWith(
-      'Usage: plus-one telegram pairing approve <code> --household <household_id> | revoke <telegram_user_id> | list-pending\n',
-    );
   });
 
-  it('does not emit ANSI output for non-interactive no-argument usage', async () => {
-    const stderrWrite = vi.fn();
+  it('keeps foreground gateway and daemon controls operational', async () => {
+    const runForegroundGateway = vi.fn(async () => 0);
+    const runDaemonStop = vi.fn(async () => 0);
+    const runDaemonStatus = vi.fn(async () => 0);
+    const output = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['--foreground'], {
+      runForegroundGateway,
+      stdout: output,
+      stderr: output,
+    })).resolves.toBe(0);
+    await expect(runPlusOneCli(['stop'], {
+      runDaemonStop,
+      stdout: output,
+      stderr: output,
+    })).resolves.toBe(0);
+    await expect(runPlusOneCli(['status'], {
+      runDaemonStatus,
+      stdout: output,
+      stderr: output,
+    })).resolves.toBe(0);
+
+    expect(runForegroundGateway).toHaveBeenCalledOnce();
+    expect(runDaemonStop).toHaveBeenCalledOnce();
+    expect(runDaemonStatus).toHaveBeenCalledOnce();
+  });
+
+  it('prints gateway startup errors instead of rejecting', async () => {
+    const error = new Error('Storage is unavailable');
+    const runGateway = vi.fn(async () => {
+      throw error;
+    });
+    const stderr = { write: vi.fn() };
 
     await expect(runPlusOneCli([], {
-      isInteractive: false,
-      stdout: { isTTY: false, write: vi.fn() },
-      stderr: { isTTY: false, write: stderrWrite },
+      runGateway,
+      stdout: { write: vi.fn() },
+      stderr,
     })).resolves.toBe(1);
 
-    const output = stderrWrite.mock.calls.map((call) => call[0]).join('');
-    expect(output).not.toContain('\u001b[');
+    expect(stderr.write).toHaveBeenCalledWith('Storage is unavailable\n');
+  });
+
+  it('rejects chat as a CLI command', async () => {
+    const runGateway = vi.fn(async () => 0);
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['chat', 'hello'], {
+      runGateway,
+      stdout: { write: vi.fn() },
+      stderr,
+    })).resolves.toBe(1);
+
+    expect(runGateway).not.toHaveBeenCalled();
+    expect(stderr.write).toHaveBeenCalledWith(expect.stringContaining('Usage: plus-one'));
+  });
+
+  it('opens the live CLI through the explicit live command', async () => {
+    const runGateway = vi.fn(async () => 0);
+    const runLiveCli = vi.fn(async () => 0);
+
+    await expect(runPlusOneCli(['live'], {
+      runGateway,
+      runLiveCli,
+      stdout: { isTTY: true, write: vi.fn() },
+      stderr: { write: vi.fn() },
+    })).resolves.toBe(0);
+
+    expect(runLiveCli).toHaveBeenCalledOnce();
+    expect(runGateway).not.toHaveBeenCalled();
+  });
+
+  it('prints live CLI startup errors instead of rejecting', async () => {
+    const error = new Error('Storage is unavailable');
+    const runLiveCli = vi.fn(async () => {
+      throw error;
+    });
+    const stderr = { write: vi.fn() };
+
+    await expect(runPlusOneCli(['live'], {
+      runLiveCli,
+      stdout: { isTTY: true, write: vi.fn() },
+      stderr,
+    })).resolves.toBe(1);
+
+    expect(stderr.write).toHaveBeenCalledWith('Storage is unavailable\n');
   });
 
   it('keeps direct Telegram pairing commands on the non-TUI path', async () => {

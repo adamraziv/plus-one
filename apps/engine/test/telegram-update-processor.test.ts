@@ -219,4 +219,29 @@ describe('TelegramUpdateProcessor', () => {
       text: 'Started a new thread.',
     });
   });
+
+  it('does not send a second Telegram reply for queued gateway results', async () => {
+    const sendMessage = vi.fn(async () => ({ platformMessageId: 'telegram-platform-2' }));
+    const inboundHandler = vi.fn(async () => ({ status: 'queued' }));
+    const processor = new TelegramUpdateProcessor({
+      pairing: {
+        findPrincipal: vi.fn(async () => pairedPrincipal),
+        createPairingRequest: vi.fn(),
+      },
+      deliveryRepository: {
+        resolveActiveConversation: vi.fn(async () => ({
+          conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        })),
+        startNewConversation: vi.fn(),
+      },
+      inboundHandler,
+      telegram: { sendMessage },
+      ids: {
+        nextConversationId: vi.fn(() => 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
+      },
+    });
+
+    await expect(processor.handle(privateTextUpdate('second message'))).resolves.toEqual({ status: 'queued' });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
 });

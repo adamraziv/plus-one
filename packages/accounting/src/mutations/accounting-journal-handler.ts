@@ -73,7 +73,7 @@ export function createAccountingJournalMutationHandler(dependencies: {
     commandType: 'apply_accounting_journal_mutation',
     domainRole: 'accounting',
     inputSchema: AccountingWorkResultSchemaV1,
-    inputSchemaIdentity: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+    inputSchemaIdentity: { schemaName: 'accounting-journal-mutation-proposal', schemaVersion: 1 },
     confirmation: 'optional',
     requiredReadbackChecks: [
       'identifiers', 'row_values', 'balances', 'artifact_links', 'idempotency_receipt',

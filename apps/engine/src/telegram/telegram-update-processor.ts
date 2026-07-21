@@ -21,6 +21,7 @@ export interface TelegramMessageUpdate {
 export type TelegramUpdateResult =
   | { status: 'ignored'; reason: 'unsupported_update' | 'non_private_chat' | 'unsupported_message_type' | 'missing_sender' }
   | { status: 'pairing-required' }
+  | { status: 'queued' }
   | unknown;
 
 interface ConversationRepository {

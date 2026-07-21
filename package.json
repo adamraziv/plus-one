@@ -12,15 +12,19 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "bin": {
+    "plus-one": "bin/plus-one.mjs"
+  },
   "scripts": {
-    "lint": "eslint . --max-warnings=0",
+    "lint": "tsx scripts/lint.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "test:unit": "vitest run --project unit",
-    "test:db": "vitest run --project database --no-file-parallelism",
-    "test:integration": "vitest run --project integration --passWithNoTests",
-    "test:acceptance": "vitest run --project acceptance --passWithNoTests",
-    "dev:mastra": "mastra dev --dir apps/engine/src/mastra",
+    "test:unit": "vitest --workspace vitest.workspace.ts run --project unit",
+    "test:db": "vitest --workspace vitest.workspace.ts run --project database --no-file-parallelism",
+    "test:integration": "vitest --workspace vitest.workspace.ts run --project integration --passWithNoTests",
+    "test:acceptance": "vitest --workspace vitest.workspace.ts run --project acceptance --passWithNoTests",
+    "dev:mastra": "tsc -p tsconfig.mastra.json --pretty false && tsx scripts/prepare-mastra-dev.ts --prepare && mastra dev --dir apps/engine/src/mastra",
     "plus-one": "tsx apps/engine/src/cli.ts",
+    "install:cli": "bash scripts/install-cli.sh",
     "smoke:orchestrator": "tsx apps/engine/src/smoke-orchestrator.ts",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
@@ -46,6 +50,7 @@
   "dependencies": {
     "@mastra/core": "1.47.0",
     "@mastra/memory": "1.21.2",
-    "@mastra/pg": "1.14.0"
+    "@mastra/pg": "1.14.0",
+    "tsx": "4.20.6"
   }
 }

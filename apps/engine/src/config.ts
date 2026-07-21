@@ -9,6 +9,7 @@ const EngineEnvironmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   ENGINE_HOST: z.string().min(1).default('127.0.0.1'),
   ENGINE_PORT: z.coerce.number().int().min(1).max(65_535).default(4111),
+  ORCHESTRATOR_TURN_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
   LLM_ENDPOINT: z.string().url().default('https://api.openai.com/v1'),
   LLM_API_KEY: z.string().min(1).optional(),
   ORCHESTRATOR_MODEL: ModelIdSchema.default('openai/gpt-5'),
@@ -58,6 +59,7 @@ export interface EngineConfig {
   nodeEnv: 'development' | 'test' | 'production';
   host: string;
   port: number;
+  turnDeadlineMs: number;
   database: DatabaseConfig;
   models: {
     orchestrator: EngineLlmModelConfig;
@@ -84,6 +86,7 @@ export function loadConfig(
     nodeEnv: engine.NODE_ENV,
     host: engine.ENGINE_HOST,
     port: engine.ENGINE_PORT,
+    turnDeadlineMs: engine.ORCHESTRATOR_TURN_TIMEOUT_MS,
     database: loadDatabaseConfig(environment),
     models: {
       orchestrator: model(engine.ORCHESTRATOR_MODEL, engine),

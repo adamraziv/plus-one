@@ -20,14 +20,13 @@ import {
   ArtifactEnvelopeSchemaV1,
   InboundChannelMessageSchemaV1,
   MakerArtifactSchemaV1,
-  OrchestratorFinalResponseSchemaV1,
   TeamLeadPlanSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type ArtifactEnvelopeV1,
   type CheckerVerdictV1,
   type JsonValue,
   type MakerArtifactV1,
-  type TeamResultEnvelopeV1,
+  type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import {
   AgentInvocationRunner,
@@ -46,6 +45,7 @@ import {
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
+import { submitContractResult } from '../helpers/contract-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const bookId = 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -143,31 +143,22 @@ class MemoryLedger implements VerificationLedgerPort {
 
 describe('accounting team acceptance', () => {
   it.each([
-    ['transaction_capture', 'transaction-capture', 'transaction-capture-maker'],
-    ['ingestion', 'ingestion', 'ingestion-maker'],
-    ['journal', 'journal', 'journal-maker'],
-    ['chart_of_accounts', 'chart-of-accounts', 'chart-maker'],
-    ['reconciliation', 'reconciliation', 'reconciliation-maker'],
-  ] as const)('runs orchestrator delegation through accounting %s maker/checker', async (intent, workCellId, makerId) => {
-    const result = await runAccountingScenario({
+    ['transaction_capture', 'transaction-capture'],
+    ['ingestion', 'ingestion'],
+    ['journal', 'journal'],
+    ['chart_of_accounts', 'chart-of-accounts'],
+    ['reconciliation', 'reconciliation'],
+  ] as const)('fails closed before synthesis when accounting %s has no registered mutation handler', async (intent, workCellId) => {
+    await expect(runAccountingScenario({
       intent,
       workCellId,
       makerOutputs: [makerOutputFor(workCellId, 'accepted')],
       checkerVerdicts: ['accepted'],
-    });
-
-    expect(result.calls).toEqual(['accounting-lead', makerId, makerId.replace('-maker', '-checker')]);
-    expect(result.response.body).toContain('Accounting team status: verified');
-    expect(result.teamResult.status).toBe('verified');
-    expect(result.teamResult.makerArtifacts).toHaveLength(1);
-    expect(result.teamResult.checkerVerdicts).toHaveLength(1);
-    if (workCellId === 'chart-of-accounts') {
-      expect(result.response.body).toContain('external confirmation required');
-    }
+    })).rejects.toMatchObject({ code: 'checked_mutation_not_prepared' });
   });
 
-  it('revises maker output when checker requests a revision before accepting', async () => {
-    const result = await runAccountingScenario({
+  it('fails closed after a revised checked mutation remains unregistered', async () => {
+    await expect(runAccountingScenario({
       intent: 'transaction_capture',
       workCellId: 'transaction-capture',
       makerOutputs: [
@@ -175,19 +166,7 @@ describe('accounting team acceptance', () => {
         makerOutputFor('transaction-capture', 'accepted', 'revised'),
       ],
       checkerVerdicts: ['revision_requested', 'accepted'],
-    });
-
-    expect(result.calls).toEqual([
-      'accounting-lead',
-      'transaction-capture-maker',
-      'transaction-capture-checker',
-      'transaction-capture-maker',
-      'transaction-capture-checker',
-    ]);
-    expect(result.teamResult.status).toBe('verified');
-    expect(result.teamResult.checkerVerdicts.map((verdict) => verdict.verdict))
-      .toEqual(['revision_requested', 'accepted']);
-    expect(result.teamResult.claims[0]!.text).toContain('revised');
+    })).rejects.toMatchObject({ code: 'checked_mutation_not_prepared' });
   });
 
   it.each([
@@ -204,7 +183,12 @@ describe('accounting team acceptance', () => {
 
     expect(result.teamResult.status).toBe(status);
     expect(result.teamResult.claims).toEqual([]);
-    expect(result.response.body).toContain('Accounting team status: ' + status);
+    expectNoImplementationDetails(result.response.body);
+    if (status === 'insufficient_evidence') {
+      expect(result.response.body).toBe('What additional details can you provide?');
+    } else {
+      expect(result.response.body).toBe('I could not complete that request safely. Please try again.');
+    }
   });
 
   it.each([
@@ -222,7 +206,8 @@ describe('accounting team acceptance', () => {
 
     expect(result.teamResult.status).toBe('insufficient_evidence');
     expect(result.teamResult.outstanding.length).toBeGreaterThan(0);
-    expect(result.response.body).toContain('Accounting team status: insufficient_evidence');
+    expect(result.response.body).toContain('?');
+    expectNoImplementationDetails(result.response.body);
   });
 });
 
@@ -237,10 +222,10 @@ async function runAccountingScenario(input: {
   const makerOutputs = [...input.makerOutputs];
   const checkerVerdicts = [...input.checkerVerdicts];
   const fakeAgent = (agentId: string) => ({
-    generate: vi.fn(async (messages: readonly { content: string }[]) => {
+    generate: vi.fn(async (messages: readonly { content: string }[], options: unknown) => {
       calls.push(agentId);
       if (agentId === 'accounting-lead') {
-        return { object: TeamLeadPlanSchemaV1.parse({
+        return submitContractResult(options, TeamLeadPlanSchemaV1.parse({
           schemaName: 'team-lead-plan',
           schemaVersion: 1,
           recommendedStrategyName: 'single-maker-checker',
@@ -248,19 +233,19 @@ async function runAccountingScenario(input: {
             missingPaymentAccount: input.missingPaymentAccount === true,
           }) }],
           stopCondition: { code: 'accounting-result', description: 'Return one checked accounting result.' },
-        }) };
+        }));
       }
-      if (agentId.endsWith('-maker')) return { object: makerOutputs.shift()! };
+      if (agentId.endsWith('-maker')) return submitContractResult(options, makerOutputs.shift()!);
       const verificationTask = JSON.parse(messages[0]!.content) as {
         makerArtifact: { artifactId: string; artifactHash: string };
       };
       const verdict = checkerVerdicts.shift()!;
-      return { object: CheckerVerdictSchemaV1.parse({
+      return submitContractResult(options, CheckerVerdictSchemaV1.parse({
         verdict,
         coveredArtifactId: verificationTask.makerArtifact.artifactId,
         coveredArtifactHash: verificationTask.makerArtifact.artifactHash,
         findings: verdict === 'accepted' ? [] : [{ code: 'needs-attention', message: 'Checker did not accept.' }],
-      }) };
+      }));
     }),
   } as never);
   const system = createAgentSystem({
@@ -354,49 +339,33 @@ async function runAccountingScenario(input: {
         stopCondition: plan.stopCondition,
       });
     }),
+    resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
+    cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
   };
-  let teamResult: TeamResultEnvelopeV1 | undefined;
+  let teamResult: TeamResultEnvelopeV2 | undefined;
   const generate = vi.fn(async () => {
-    teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
-      team: 'accounting',
-      request: {
-        schemaName: 'accounting-lead-request',
-        schemaVersion: 1,
-        intent: input.intent,
-        request: input.intent === 'transaction_capture'
-          ? {
-            schemaName: 'transaction-capture-request-draft',
-            schemaVersion: 1,
-            instruction: 'Handle accounting request.',
-            known: {},
-          }
-          : { householdId, bookId },
-      },
-    });
-    return { object: OrchestratorFinalResponseSchemaV1.parse({
-      schemaName: 'orchestrator-final-response',
-      schemaVersion: 1,
-      responseId: 'response-2026-06-23-001',
-      householdId,
-      conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-      body: 'Accounting team status: ' + teamResult.status
-        + (input.workCellId === 'chart-of-accounts' ? '; external confirmation required before commit.' : ''),
-      policyBoundary: 'personalized_finance',
-      citations: teamResult.claims.length === 0
-        ? [{ label: 'accounting:team-result', sourceRef: 'team-result:' + teamResult.status }]
-        : teamResult.claims.map((claim) => ({
-          label: 'accounting:' + claim.claimId,
-          artifactId: claim.checkedMakerArtifactIds[0]!,
-        })),
-      assumptions: [],
-      freshness: teamResult.freshness.length === 0 ? ['current invocation'] : teamResult.freshness,
-      disclaimer: 'Plus One is an AI assistant, not a licensed financial professional.',
-      unsupportedCapabilities: [],
-      recommendationActions: [],
-      delivery: { channel: 'telegram', destination: { chatId: 'telegram-chat-42' }, format: 'plain_text' },
-      responseHash: 'c'.repeat(64),
-      createdAt: now,
-    }) };
+    if (teamResult === undefined) {
+      teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: input.intent,
+          request: delegateRequestFor(input.intent),
+        },
+      });
+    }
+    if (teamResult.status === 'verified') {
+      return {
+        text: 'The accounting request is ready.'
+          + (input.workCellId === 'chart-of-accounts' ? ' External confirmation is required before it is saved.' : ''),
+      };
+    }
+    if (teamResult.status === 'insufficient_evidence') {
+      const question = teamResult.outstanding.find((value) => value.includes('?'));
+      return { text: question ?? 'What additional details can you provide?' };
+    }
+    return { text: 'I could not complete that request safely. Please try again.' };
   });
   const orchestrator = new OrchestratorAgent({
     model: models.orchestrator,
@@ -421,12 +390,18 @@ async function runAccountingScenario(input: {
   return { calls, response, teamResult: teamResult!, verificationLedger };
 }
 
+function expectNoImplementationDetails(body: string): void {
+  expect(body).not.toMatch(
+    /reporting\.|[A-Z][A-Za-z0-9]*(?:Schema)?V\d+|(?:maker|checker)|team status|\binternal\b|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+  );
+}
+
 async function executeDelegate(
   tool: typeof OrchestratorAgent.prototype.agentTools.delegateTeam,
   input: { team: string; request: unknown },
-): Promise<TeamResultEnvelopeV1> {
+): Promise<TeamResultEnvelopeV2> {
   const execute = tool.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
-  return TeamResultEnvelopeSchemaV1.parse(await execute(input, {}));
+  return TeamResultEnvelopeSchemaV2.parse(await execute(input, {}));
 }
 
 function skillFor(name: string): SkillRegistration {
@@ -458,7 +433,7 @@ function makerOutputFor(
 }
 
 function outputSchemaFor(workCellId: string) {
-  if (workCellId === 'chart-of-accounts') return { schemaName: 'chart-of-accounts-proposal', schemaVersion: 1 };
+  if (workCellId === 'chart-of-accounts') return { schemaName: 'chart-work-result', schemaVersion: 1 };
   if (workCellId === 'ingestion') return { schemaName: 'ingestion-work-result', schemaVersion: 1 };
   if (workCellId === 'reconciliation') return { schemaName: 'reconciliation-work-result', schemaVersion: 1 };
   return { schemaName: 'accounting-work-result', schemaVersion: 1 };
@@ -492,7 +467,15 @@ function makerInputFor(workCellId: string, options: { missingPaymentAccount?: bo
       schemaVersion: 1,
       householdId,
       bookId,
+      action: 'create_account',
+      accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
       instruction: 'Create a groceries expense account.',
+      known: {
+        name: 'Groceries',
+        accountingClass: 'expense',
+        normalBalance: 'debit',
+        nativeCurrency: 'USD',
+      },
     };
   }
   if (workCellId === 'journal') {
@@ -521,6 +504,50 @@ function makerInputFor(workCellId: string, options: { missingPaymentAccount?: bo
       occurredOn: '2026-06-23',
       categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
     },
+  };
+}
+
+function delegateRequestFor(intent: 'transaction_capture' | 'ingestion' | 'journal' | 'chart_of_accounts' | 'reconciliation') {
+  if (intent === 'transaction_capture') {
+    return {
+      schemaName: 'transaction-capture-request-draft' as const,
+      schemaVersion: 1 as const,
+      instruction: 'Handle accounting request.',
+      known: {},
+    };
+  }
+  if (intent === 'ingestion') {
+    return {
+      schemaName: 'ingestion-work-request-draft' as const,
+      schemaVersion: 1 as const,
+      instruction: 'Import the attached statement.',
+      sourceReference: {},
+    };
+  }
+  if (intent === 'journal') {
+    return {
+      schemaName: 'journal-work-request-draft' as const,
+      schemaVersion: 1 as const,
+      operation: 'post' as const,
+      instruction: 'Post the accounting entry.',
+    };
+  }
+  if (intent === 'chart_of_accounts') {
+    return {
+      schemaName: 'chart-work-request-draft' as const,
+      schemaVersion: 1 as const,
+      action: 'create_account' as const,
+      instruction: 'Create the requested account.',
+      known: {},
+    };
+  }
+  return {
+    schemaName: 'reconciliation-work-request-draft' as const,
+    schemaVersion: 1 as const,
+    instruction: 'Reconcile the requested statement.',
+    accountName: 'Checking',
+    statementReference: 'June statement',
+    requestedOperation: 'reconcile' as const,
   };
 }
 

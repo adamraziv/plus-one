@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { defineWorkspace } from 'vitest/config';
 
 const resolveConfig = {
@@ -16,8 +17,19 @@ const resolveConfig = {
   },
 };
 
+const preferTypeScriptSource = {
+  name: 'prefer-typescript-source',
+  enforce: 'pre' as const,
+  resolveId(source: string, importer: string | undefined) {
+    if (importer === undefined || !source.startsWith('.') || !source.endsWith('.js')) return null;
+    const candidate = resolve(dirname(importer), `${source.slice(0, -3)}.ts`);
+    return existsSync(candidate) ? candidate : null;
+  },
+};
+
 const databaseProject = {
   resolve: resolveConfig,
+  plugins: [preferTypeScriptSource],
   test: {
     name: 'database',
     include: ['test/database/**/*.test.ts'],
@@ -31,6 +43,7 @@ const databaseProject = {
 export default defineWorkspace([
   {
     resolve: resolveConfig,
+    plugins: [preferTypeScriptSource],
     test: {
       name: 'unit',
       include: ['apps/**/{src,test}/**/*.test.ts', 'packages/**/src/**/*.test.ts'],
@@ -40,6 +53,7 @@ export default defineWorkspace([
   databaseProject,
   {
     resolve: resolveConfig,
+    plugins: [preferTypeScriptSource],
     test: {
       name: 'integration',
       include: ['test/integration/**/*.test.ts'],
@@ -50,6 +64,7 @@ export default defineWorkspace([
   },
   {
     resolve: resolveConfig,
+    plugins: [preferTypeScriptSource],
     test: {
       name: 'acceptance',
       include: ['test/acceptance/**/*.test.ts'],

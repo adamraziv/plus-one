@@ -4,6 +4,14 @@ export type { ReadOnlySqlValidationInput, ReadOnlySqlValidationResult } from './
 export { QueryToolRegistry, QueryToolDefinitionSchema } from './query-tool-registry.js';
 export type { QueryToolDefinition, QueryToolRegistryOptions } from './query-tool-registry.js';
 export {
+  queryCoverageRoute,
+  queryRelationForCoverage,
+  queryToolNameForCoverage,
+} from './query-coverage.js';
+export { satisfiesRequestedGrain } from './grain-satisfaction.js';
+export { readReportingRelationGrain } from './reporting-relation-metadata.js';
+export type { ReportingRelationMetadataReader } from './reporting-relation-metadata.js';
+export {
   EvidenceSession, EvidenceHandle, pgRunner, ensurePgRunner,
 } from './evidence-session.js';
 export type { EvidenceSessionConfig, EvidencePackageInput, QueryRunner } from './evidence-session.js';

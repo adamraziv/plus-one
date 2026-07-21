@@ -5,7 +5,7 @@ import { Pool } from 'pg';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
-  TeamResultEnvelopeSchemaV1,
+  TeamResultEnvelopeSchemaV2,
   type ChannelKindV1,
 } from '@plus-one/contracts';
 import { PostgresDeliveryRepository, PostgresSchedulerRepository } from '@plus-one/database';
@@ -176,9 +176,9 @@ function finalResponse(overrides: Partial<{
 function teamResult() {
   const artifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J2K';
   const artifactHash = 'd'.repeat(64);
-  return TeamResultEnvelopeSchemaV1.parse({
+  return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
-    schemaVersion: 1,
+    schemaVersion: 2,
     householdId,
     taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     team: 'query',
@@ -220,6 +220,7 @@ function teamResult() {
     stopCondition: { code: 'scheduled-brief', description: 'Produce a scheduled briefing.' },
     completionReason: 'Ready for orchestrator reconciliation.',
     outstanding: [],
+    effect: { state: 'none' },
   });
 }
 

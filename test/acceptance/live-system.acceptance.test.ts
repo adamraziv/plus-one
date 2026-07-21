@@ -22,7 +22,7 @@ describe('live system smoke acceptance', () => {
 
     try {
       const informational = await orchestrator.run({
-        message: message('What can you help our household with?', 1),
+        message: message('hello', 1),
       });
       expect(informational.policyBoundary).toBe('informational_only');
       expect(informational.body.length).toBeGreaterThan(0);
@@ -32,7 +32,10 @@ describe('live system smoke acceptance', () => {
         message: message('Add $10 buying a burger', 2),
       });
       expect(accounting.policyBoundary).toBe('personalized_finance');
-      expect(accounting.body).toContain('Accounting team status: insufficient_evidence');
+      expect(accounting.body).toContain('?');
+      expect(accounting.body).not.toMatch(
+        /reporting\.|QueryResult(?:V\d+)?|(?:maker|checker)|(?:accounting|query) team|team status|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/i,
+      );
       expect(accounting.citations.map((citation) => citation.label)).toContain('accounting:team-result');
     } finally {
       await close();

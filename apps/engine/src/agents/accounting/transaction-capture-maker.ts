@@ -5,6 +5,7 @@ import {
   TransactionCaptureRequestSchemaV1,
 } from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
+import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
   defaultAccountingRoleAgentFactory,
   type AccountingRoleAgent,
@@ -42,7 +43,7 @@ export function createTransactionCaptureMakerAgent(input: AccountingRoleAgentInp
       ? undefined
       : clarificationArtifact(invocation) ?? deterministicProposalArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
-    return { object: artifact };
+    return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
   return fallback;
 }
@@ -69,7 +70,7 @@ function clarificationArtifact(invocation: NonNullable<ReturnType<typeof parseMa
     schemaName: 'accounting-clarification',
     schemaVersion: 1,
     missingFields: missing,
-    questions: missing.map(questionFor),
+    questions: missing.map((field) => questionFor(field, request.data)),
     reason: 'The transaction cannot be posted until required accounting fields are provided.',
   });
   return MakerArtifactSchemaV1.parse({
@@ -94,6 +95,8 @@ function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof
   const amount = request.data.known.amount!;
   const currency = request.data.known.currency!;
   const occurredOn = request.data.known.occurredOn!;
+  const categoryDirection = request.data.categoryAccountClass === 'income' ? 'credit' : 'debit';
+  const paymentDirection = categoryDirection === 'debit' ? 'credit' : 'debit';
   const output = AccountingJournalMutationProposalSchemaV1.parse({
     schemaName: 'accounting-journal-mutation-proposal',
     schemaVersion: 1,
@@ -119,7 +122,7 @@ function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof
         postings: [
           {
             accountId: request.data.known.categoryAccountId,
-            direction: 'debit',
+            direction: categoryDirection,
             transactionAmount: amount,
             accountNativeAmount: amount,
             accountNativeCurrency: request.data.categoryAccountCurrency,
@@ -127,7 +130,7 @@ function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof
           },
           {
             accountId: request.data.known.paymentAccountId,
-            direction: 'credit',
+            direction: paymentDirection,
             transactionAmount: amount,
             accountNativeAmount: amount,
             accountNativeCurrency: request.data.paymentAccountCurrency,
@@ -144,12 +147,25 @@ function deterministicProposalArtifact(invocation: NonNullable<ReturnType<typeof
     output,
     claims: [{
       claimId: 'transaction-capture-proposal',
-      text: 'Prepared a balanced transaction capture journal proposal.',
+      text: transactionProposalClaim(request.data),
       evidenceArtifactIds: [],
     }],
     assumptions: [],
     uncertainty: [],
   });
+}
+
+function transactionProposalClaim(
+  request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>,
+): string {
+  const amount = `${request.known.currency} ${request.known.amount}`;
+  const paymentAccount = request.paymentAccountName === undefined
+    ? ''
+    : ` from ${request.paymentAccountName}`;
+  const category = request.categoryName === undefined
+    ? ''
+    : ` under ${request.categoryName}`;
+  return `Prepared a ${amount} transaction${paymentAccount} on ${request.known.occurredOn}${category}.`;
 }
 
 function missingFields(request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>) {
@@ -166,7 +182,9 @@ function isDeterministicProposalReady(request: ReturnType<typeof TransactionCapt
   return missingFields(request).length === 0
     && request.periodId !== undefined
     && request.paymentAccountCurrency !== undefined
+    && request.paymentAccountClass !== undefined
     && request.categoryAccountCurrency !== undefined
+    && request.categoryAccountClass !== undefined
     && request.paymentAccountCurrency === request.known.currency
     && request.categoryAccountCurrency === request.known.currency;
 }
@@ -176,10 +194,26 @@ function idSuffix(taskId: string): string {
   return separator === -1 ? taskId : taskId.slice(separator + 1);
 }
 
-function questionFor(field: ReturnType<typeof missingFields>[number]): string {
+function questionFor(
+  field: ReturnType<typeof missingFields>[number],
+  request: ReturnType<typeof TransactionCaptureRequestSchemaV1.parse>,
+): string {
   if (field === 'amount') return 'What amount should be recorded?';
   if (field === 'currency') return 'What currency should be used?';
-  if (field === 'payment_account') return 'Which internal payment account should this use?';
+  if (field === 'payment_account') return 'Which account did you pay from?';
   if (field === 'occurred_on') return 'On what date did the transaction occur?';
-  return 'Which internal category account should this use?';
+  if (request.categoryName !== undefined && request.categoryCandidates !== undefined
+    && request.categoryCandidates.length > 0) {
+    return `I don’t have a "${request.categoryName}" category yet. Existing transaction categories include ${categoryNames(request.categoryCandidates)}. Should I use one of those, or add a new category?`;
+  }
+  if (request.categoryCandidates !== undefined && request.categoryCandidates.length > 0) {
+    return `Which transaction category should I use? Existing categories include ${categoryNames(request.categoryCandidates)}. You can also ask me to add a new category.`;
+  }
+  return 'What category should I use for this transaction, or would you like me to add a new one?';
+}
+
+function categoryNames(names: readonly string[]): string {
+  if (names.length < 2) return names[0] ?? '';
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`;
 }

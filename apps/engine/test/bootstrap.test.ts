@@ -36,7 +36,7 @@ describe('engine scaffold', () => {
       TELEGRAM_WEBHOOK_URL: 'https://plus-one.example.test/telegram/webhook',
       TELEGRAM_WEBHOOK_SECRET: 'telegram-secret',
     });
-    expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111 });
+    expect(config).toMatchObject({ nodeEnv: 'test', host: '127.0.0.1', port: 4111, turnDeadlineMs: 60_000 });
     expect(config.telegram).toEqual({
       botToken: 'telegram-token',
       receiver: {
@@ -180,15 +180,61 @@ describe('engine scaffold', () => {
     expect(operationsPool.connect).toHaveBeenCalledOnce();
   });
 
-  it('starts Telegram polling when only a bot token is configured', async () => {
+  it('defers Telegram polling until runtime intake starts', async () => {
     const startPolling = vi.fn(async () => undefined);
+    const ready = vi.fn(async () => undefined);
     const abortPolling = vi.fn();
+    const closePools = vi.fn(async () => undefined);
     const createTelegramPollingReceiver = vi.fn(() => ({
       start: startPolling,
+      ready,
       abort: abortPolling,
     }));
 
-    await bootstrap({
+    const runtime = await bootstrap({
+      environment: {
+        ...environment,
+        TELEGRAM_BOT_TOKEN: 'telegram-token',
+      },
+      createPools: () => ({ operations: {} }) as never,
+      verifyPools: vi.fn(async () => undefined),
+      closePools,
+      validateModels: vi.fn(async () => undefined),
+      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
+      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
+      createTelegramPollingReceiver,
+    });
+
+    expect(createTelegramPollingReceiver).not.toHaveBeenCalled();
+    expect(startPolling).not.toHaveBeenCalled();
+    await runtime.startIntake();
+    await runtime.startIntake();
+    expect(createTelegramPollingReceiver).toHaveBeenCalledWith(expect.objectContaining({
+      processor: expect.objectContaining({ handle: expect.any(Function) }),
+    }));
+    expect(startPolling).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledOnce();
+    await runtime.stopIntake();
+    await runtime.stopIntake();
+    await runtime.close();
+    await runtime.close();
+    expect(abortPolling).toHaveBeenCalledOnce();
+    expect(closePools).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces Telegram polling startup failures from startIntake', async () => {
+    const startupFailure = new Error('Telegram polling conflict: another process is polling this bot token.');
+    const createTelegramPollingReceiver = vi.fn(() => ({
+      start: vi.fn(async () => {
+        throw startupFailure;
+      }),
+      ready: vi.fn(async () => {
+        throw startupFailure;
+      }),
+      abort: vi.fn(),
+    }));
+
+    const runtime = await bootstrap({
       environment: {
         ...environment,
         TELEGRAM_BOT_TOKEN: 'telegram-token',
@@ -202,38 +248,13 @@ describe('engine scaffold', () => {
       createTelegramPollingReceiver,
     });
 
-    expect(createTelegramPollingReceiver).toHaveBeenCalledOnce();
-    expect(startPolling).toHaveBeenCalledOnce();
+    await expect(runtime.startIntake()).rejects.toThrow(
+      'Telegram polling conflict: another process is polling this bot token.',
+    );
+    await runtime.close();
   });
 
-  it('surfaces Telegram polling startup failures before returning', async () => {
-    const startupFailure = new Error('Telegram polling conflict: another process is polling this bot token.');
-    const createTelegramPollingReceiver = vi.fn(() => ({
-      start: vi.fn(async () => {
-        throw startupFailure;
-      }),
-      ready: vi.fn(async () => {
-        throw startupFailure;
-      }),
-      abort: vi.fn(),
-    }));
-
-    await expect(bootstrap({
-      environment: {
-        ...environment,
-        TELEGRAM_BOT_TOKEN: 'telegram-token',
-      },
-      createPools: () => ({ operations: {} }) as never,
-      verifyPools: vi.fn(async () => undefined),
-      closePools: vi.fn(async () => undefined),
-      validateModels: vi.fn(async () => undefined),
-      createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
-      createAgentSystemInstance: vi.fn(() => ({ teams: [], mastraAgents: {} }) as never),
-      createTelegramPollingReceiver,
-    })).rejects.toThrow('Telegram polling conflict: another process is polling this bot token.');
-  });
-
-  it('registers Telegram webhook mode and does not start polling when webhook URL is configured', async () => {
+  it('registers Telegram webhook mode only after intake starts', async () => {
     let apiRoutes: Array<{ path: string }> = [];
     const setWebhook = vi.fn(async () => undefined);
     const createTelegramBotApiClient = vi.fn(() => ({
@@ -248,7 +269,7 @@ describe('engine scaffold', () => {
       return mastra;
     });
 
-    await bootstrap({
+    const runtime = await bootstrap({
       environment: {
         ...environment,
         TELEGRAM_BOT_TOKEN: 'telegram-token',
@@ -266,6 +287,8 @@ describe('engine scaffold', () => {
     });
 
     expect(apiRoutes.some((route) => route.path === '/telegram/webhook')).toBe(true);
+    expect(setWebhook).not.toHaveBeenCalled();
+    await runtime.startIntake();
     expect(setWebhook).toHaveBeenCalledWith({
       url: 'https://plus-one.example.test/telegram/webhook',
       secretToken: 'telegram-secret',
@@ -273,6 +296,7 @@ describe('engine scaffold', () => {
       dropPendingUpdates: false,
     });
     expect(createTelegramPollingReceiver).not.toHaveBeenCalled();
+    await runtime.close();
   });
 
   it('passes configured Query tools into the agent system', async () => {
@@ -365,5 +389,16 @@ describe('engine scaffold', () => {
     });
 
     expect(callOrder.slice(0, 2)).toEqual(['validate', 'pools']);
+    expect(validateModels).toHaveBeenCalledWith({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      modelIds: [
+        'openai/gpt-5',
+        'openai/gpt-5',
+        'openai/gpt-5-mini',
+        'openai/gpt-5',
+        'openai/gpt-5',
+      ],
+    });
   });
 });

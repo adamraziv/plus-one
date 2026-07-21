@@ -35,6 +35,7 @@ export function createRuntimeRoutes(input: {
       method: 'POST',
       requiresAuth: false,
       handler: async (context) => {
+        const signal = AbortSignal.timeout(input.config.turnDeadlineMs);
         try {
           const message = InboundChannelMessageSchemaV1.parse(await context.req.json());
           const commandResult = ChannelCommandResultSchemaV1.optional().parse(
@@ -50,10 +51,10 @@ export function createRuntimeRoutes(input: {
           }
 
           if (input.getMastra === undefined) {
-            return context.json(await orchestrator.run({ message }));
+            return context.json(await orchestrator.run({ message, signal }));
           }
           const workflow = input.getMastra().getWorkflow('orchestrator-loop');
-          return context.json(await runOrchestratorLoop({ workflow, message }));
+          return context.json(await runOrchestratorLoop({ workflow, message, signal }));
         } catch (error) {
           if (error instanceof ZodError) {
             return context.json({
@@ -63,6 +64,12 @@ export function createRuntimeRoutes(input: {
                 message: issue.message,
               })),
             }, 400);
+          }
+          if (signal.aborted) {
+            return context.json({
+              error: 'orchestrator_timed_out',
+              retryable: true,
+            }, 504);
           }
           throw error;
         }

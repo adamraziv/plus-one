@@ -16,11 +16,13 @@ import {
   PostgresVerificationLedgerRepository,
 } from '@plus-one/database';
 import {
+  createPostAccountingJournalHandler,
+} from '@plus-one/accounting';
+import {
   CheckedMutationExecutor,
   CommandRegistry,
   CommandStateResolver,
   SerializableMutationRunner,
-  createPostAccountingJournalHandler,
   type MutationCommandHandler,
 } from '@plus-one/mutations';
 import { ArtifactStore, canonicalizeJson, hashArtifact } from '@plus-one/runtime';
@@ -32,7 +34,11 @@ import type { PostgresTestContext } from './postgres.js';
 export const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 export const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 export const proposalId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K';
-export const proposalPayload = { amount: '20.00' };
+export const proposalPayload = {
+  schemaName: 'test-command-input',
+  schemaVersion: 1,
+  amount: '20.00',
+};
 export const makerArtifactPayload = {
   schemaName: 'maker-artifact',
   schemaVersion: 1,
@@ -206,6 +212,8 @@ export function createExecutor(testContext: PostgresTestContext,
   handlers: readonly MutationCommandHandler[] = [createPostAccountingJournalHandler()],
   defaultRole: 'accounting' | 'planning' = 'accounting'): {
   executor: CheckedMutationExecutor;
+  commands: PostgresMutationCommandRepository;
+  ledger: PostgresVerificationLedgerRepository;
   close(): Promise<void>;
 } {
   const operations = new Pool({ connectionString: testContext.roleUrls.operations });
@@ -237,6 +245,8 @@ export function createExecutor(testContext: PostgresTestContext,
   });
   return {
     executor,
+    commands,
+    ledger,
     close: async () => {
       await planning.end();
       await accounting.end();
