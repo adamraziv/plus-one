@@ -1,5 +1,9 @@
 import { MakerArtifactSchemaV1, MakerInvocationSchemaV1 } from '@plus-one/contracts';
-import { ChartClarificationSchemaV1, ChartWorkRequestSchemaV1 } from '@plus-one/accounting';
+import {
+  ChartClarificationSchemaV1,
+  ChartNoChangeSchemaV1,
+  ChartWorkRequestSchemaV1,
+} from '@plus-one/accounting';
 import { toMastraModel } from '../../mastra/role-agent.js';
 import { submitContractResult } from '../../mastra/submit-contract-result.js';
 import {
@@ -36,7 +40,7 @@ export function createChartMakerAgent(input: AccountingRoleAgentInput): Accounti
     const invocation = parseMakerInvocation(messages as readonly { role: string; content: string }[]);
     const artifact = invocation === undefined
       ? undefined
-      : clarificationArtifact(invocation) ?? proposalArtifact(invocation);
+      : noChangeArtifact(invocation) ?? clarificationArtifact(invocation) ?? proposalArtifact(invocation);
     if (artifact === undefined) return fallbackGenerate(messages, options);
     return submitContractResult(options, artifact);
   }) as typeof fallback.generate;
@@ -54,6 +58,41 @@ function parseMakerInvocation(messages: readonly { role: string; content: string
   }
   const parsed = MakerInvocationSchemaV1.safeParse(payload);
   return parsed.success ? parsed.data : undefined;
+}
+
+function noChangeArtifact(invocation: NonNullable<ReturnType<typeof parseMakerInvocation>>) {
+  const request = ChartWorkRequestSchemaV1.safeParse(invocation.input);
+  if (!request.success
+    || request.data.action !== 'create_account'
+    || request.data.existingAccount === undefined) return undefined;
+  const existing = request.data.existingAccount;
+  const known = request.data.known;
+  const conflicts = [
+    known.accountingClass !== undefined && known.accountingClass !== existing.accountingClass,
+    known.normalBalance !== undefined && known.normalBalance !== existing.normalBalance,
+    known.nativeCurrency !== undefined && known.nativeCurrency !== existing.nativeCurrency,
+  ].some(Boolean);
+  const output = ChartNoChangeSchemaV1.parse({
+    schemaName: 'chart-no-change',
+    schemaVersion: 1,
+    reason: conflicts ? 'account_name_conflict' : 'matching_account_exists',
+    existingAccount: existing,
+  });
+  return MakerArtifactSchemaV1.parse({
+    schemaName: 'maker-artifact',
+    schemaVersion: 1,
+    outputSchema: invocation.outputSchema,
+    output,
+    claims: [{
+      claimId: 'chart-account-already-exists',
+      text: conflicts
+        ? `${existing.name} already exists with different account details. No new account was created.`
+        : `${existing.name} already exists as an ${existing.nativeCurrency} ${existing.accountingClass} account with a normal ${existing.normalBalance} balance. No new account was created.`,
+      evidenceArtifactIds: [],
+    }],
+    assumptions: [],
+    uncertainty: [],
+  });
 }
 
 function clarificationArtifact(invocation: NonNullable<ReturnType<typeof parseMakerInvocation>>) {

@@ -119,7 +119,9 @@ function isDeterministicProposalReady(request: ReturnType<typeof TransactionCapt
     && request.known.categoryAccountId !== undefined
     && request.periodId !== undefined
     && request.paymentAccountCurrency !== undefined
+    && request.paymentAccountClass !== undefined
     && request.categoryAccountCurrency !== undefined
+    && request.categoryAccountClass !== undefined
     && request.paymentAccountCurrency === request.known.currency
     && request.categoryAccountCurrency === request.known.currency;
 }
@@ -148,20 +150,26 @@ function matchesDeterministicProposal(
     || journal.postings.length !== 2) {
     return false;
   }
-  const debit = journal.postings.find((posting) => posting.direction === 'debit');
-  const credit = journal.postings.find((posting) => posting.direction === 'credit');
-  return debit !== undefined
-    && credit !== undefined
-    && debit.accountId === request.known.categoryAccountId
-    && debit.transactionAmount === request.known.amount
-    && debit.accountNativeAmount === request.known.amount
-    && debit.accountNativeCurrency === request.categoryAccountCurrency
-    && debit.tagIds.length === 0
-    && credit.accountId === request.known.paymentAccountId
-    && credit.transactionAmount === request.known.amount
-    && credit.accountNativeAmount === request.known.amount
-    && credit.accountNativeCurrency === request.paymentAccountCurrency
-    && credit.tagIds.length === 0;
+  const category = journal.postings.find(
+    (posting) => posting.accountId === request.known.categoryAccountId,
+  );
+  const payment = journal.postings.find(
+    (posting) => posting.accountId === request.known.paymentAccountId,
+  );
+  const categoryDirection = request.categoryAccountClass === 'income' ? 'credit' : 'debit';
+  const paymentDirection = categoryDirection === 'debit' ? 'credit' : 'debit';
+  return category !== undefined
+    && payment !== undefined
+    && category.direction === categoryDirection
+    && category.transactionAmount === request.known.amount
+    && category.accountNativeAmount === request.known.amount
+    && category.accountNativeCurrency === request.categoryAccountCurrency
+    && category.tagIds.length === 0
+    && payment.direction === paymentDirection
+    && payment.transactionAmount === request.known.amount
+    && payment.accountNativeAmount === request.known.amount
+    && payment.accountNativeCurrency === request.paymentAccountCurrency
+    && payment.tagIds.length === 0;
 }
 
 function idSuffix(taskId: string): string {

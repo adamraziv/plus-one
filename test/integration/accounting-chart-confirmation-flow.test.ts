@@ -296,6 +296,43 @@ describe('accounting chart confirmation flow', () => {
       normal_balance: 'credit',
       native_currency: 'IDR',
     }]);
+
+    const retry = await runtime.runTeamLead({
+      message: confirmationMessage('create TEST2 again'),
+      team: accountingTeamDefinition,
+      request: {
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'chart_of_accounts',
+        request: {
+          schemaName: 'chart-work-request-draft',
+          schemaVersion: 1,
+          action: 'create_account',
+          instruction: 'Create an IDR equity account called TEST2.',
+          known: {
+            accountName: '  TEST2  ',
+            accountingClass: 'equity',
+            nativeCurrency: 'IDR',
+          },
+        },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(retry).toMatchObject({
+      status: 'verified',
+      claims: [{
+        claimId: 'chart-account-already-exists',
+        text: 'test2 already exists as an IDR equity account with a normal credit balance. No new account was created.',
+      }],
+      effect: { state: 'none' },
+    });
+    expect((await owner.query(
+      `SELECT count(*)::int AS count FROM accounting.accounts WHERE lower(name) = 'test2'`,
+    )).rows).toEqual([{ count: 1 }]);
+    expect((await owner.query(
+      `SELECT count(*)::int AS count FROM operations.mutation_commands`,
+    )).rows).toEqual([{ count: 1 }]);
   });
 
   it('adds Bank ABC only after exact confirmation and read-back proof', async () => {

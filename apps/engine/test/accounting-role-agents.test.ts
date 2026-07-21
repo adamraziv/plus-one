@@ -256,6 +256,54 @@ describe('Accounting Mastra role agents', () => {
     });
   });
 
+  it('explains existing category choices when the requested category is unresolved', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createTransactionCaptureMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'transaction-capture')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      team: 'accounting',
+      role: { roleName: 'transaction-capture-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'transaction-capture-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'Record dining.',
+        categoryName: 'dining',
+        categoryCandidates: ['Food', 'Groceries'],
+        known: { amount: '50.00', currency: 'USD' },
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
+    });
+
+    const submission = captureContractSubmission();
+    await agent.generate([{ role: 'user', content: JSON.stringify(invocation) }], submission.options as never);
+
+    expect(submission.submitted()).toMatchObject({
+      output: {
+        questions: expect.arrayContaining([
+          'I don’t have a "dining" category yet. Existing transaction categories include Food and Groceries. Should I use one of those, or add a new category?',
+        ]),
+      },
+    });
+  });
+
   it('returns deterministic transaction-capture proposals without calling the model when required fields, period, and account currencies are present', async () => {
     const modelGenerate = vi.fn(async () => {
       throw new Error('model should not be called');
@@ -285,7 +333,11 @@ describe('Accounting Mastra role agents', () => {
         explicitInstruction: true,
         instruction: 'Record a USD 10.00 grocery purchase.',
         paymentAccountCurrency: 'USD',
+        paymentAccountClass: 'asset',
         categoryAccountCurrency: 'USD',
+        categoryAccountClass: 'expense',
+        paymentAccountName: 'Checking',
+        categoryName: 'Groceries',
         known: {
           amount: '10.00',
           currency: 'USD',
@@ -319,6 +371,11 @@ describe('Accounting Mastra role agents', () => {
     expect(result).toEqual({ text: '', toolResults: [] });
     expect(submission.submitted()).toMatchObject({
       outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      claims: [{
+        claimId: 'transaction-capture-proposal',
+        text: 'Prepared a USD 10.00 transaction from Checking on 2026-06-27 under Groceries.',
+        evidenceArtifactIds: [],
+      }],
       output: {
         schemaName: 'accounting-journal-mutation-proposal',
         schemaVersion: 1,
@@ -358,6 +415,76 @@ describe('Accounting Mastra role agents', () => {
         },
       },
     });
+  });
+
+  it('credits income and debits its destination in a deterministic transaction-capture proposal', async () => {
+    const modelGenerate = vi.fn(async () => {
+      throw new Error('model should not be called');
+    });
+    const agent = createTransactionCaptureMakerAgent({
+      models,
+      tools: {},
+      agentFactory: () => ({ generate: modelGenerate } as unknown as Agent),
+    });
+    const skill = accountingSkills.find((candidate) => candidate.identity.skillName === 'transaction-capture')!;
+    const invocation = MakerInvocationSchemaV1.parse({
+      schemaName: 'maker-invocation',
+      schemaVersion: 1,
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J4K',
+      team: 'accounting',
+      role: { roleName: 'transaction-capture-maker', roleVersion: 1 },
+      skill: skill.identity,
+      inputSchema: { schemaName: 'transaction-capture-request', schemaVersion: 1 },
+      outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+      input: {
+        schemaName: 'transaction-capture-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        explicitInstruction: true,
+        instruction: 'Record salary income deposited into Checking.',
+        paymentAccountCurrency: 'USD',
+        paymentAccountClass: 'asset',
+        categoryAccountCurrency: 'USD',
+        categoryAccountClass: 'income',
+        paymentAccountName: 'Checking',
+        categoryName: 'Salary Income',
+        known: {
+          amount: '2500.50',
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          occurredOn: '2026-07-18',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        },
+      },
+      permittedEvidence: [],
+      policyLabels: ['personalized_finance'],
+      stopCondition: { code: 'checked-transaction-capture', description: 'Return one checked accounting result.' },
+    });
+
+    const submission = captureContractSubmission();
+    await agent.generate(
+      [{ role: 'user', content: JSON.stringify(invocation) }],
+      submission.options as never,
+    );
+
+    expect(modelGenerate).not.toHaveBeenCalled();
+    const makerArtifact = MakerArtifactSchemaV1.parse(submission.submitted());
+    const proposal = AccountingJournalMutationProposalSchemaV1.parse(makerArtifact.output);
+    expect(proposal.operation).toBe('post');
+    if (proposal.operation !== 'post') throw new Error('Expected a post proposal.');
+    expect(proposal.draft.journal.postings).toMatchObject([
+      {
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        direction: 'credit',
+      },
+      {
+        accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        direction: 'debit',
+      },
+    ]);
   });
 
   it('accepts deterministic transaction-capture proposals without calling the model when they match the fully-known request', async () => {
@@ -448,7 +575,9 @@ describe('Accounting Mastra role agents', () => {
         explicitInstruction: true,
         instruction: 'Record a USD 10.00 grocery purchase.',
         paymentAccountCurrency: 'USD',
+        paymentAccountClass: 'asset',
         categoryAccountCurrency: 'USD',
+        categoryAccountClass: 'expense',
         known: {
           amount: '10.00',
           currency: 'USD',
@@ -575,7 +704,9 @@ describe('Accounting Mastra role agents', () => {
         explicitInstruction: true,
         instruction: 'Record a USD 10.00 grocery purchase.',
         paymentAccountCurrency: 'USD',
+        paymentAccountClass: 'asset',
         categoryAccountCurrency: 'USD',
+        categoryAccountClass: 'expense',
         known: {
           amount: '10.00',
           currency: 'USD',

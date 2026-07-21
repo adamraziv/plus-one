@@ -7,13 +7,16 @@ import {
   type DatabasePools,
 } from '@plus-one/database';
 import {
+  AccountingJournalCommandAdapter,
   accountingSkills,
+  createAccountingJournalMutationHandler,
   validateAccountingLeadPlan,
 } from '@plus-one/accounting';
 import {
   AccountIdSchema,
   AccountSourceMappingIdSchema,
   EvidenceRequestSchemaV1,
+  PeriodIdSchema,
   TeamLeadPlanSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
@@ -120,7 +123,10 @@ export function createTeamRuntime(input: {
     ledger,
     commands,
     resolver,
-    registry: new CommandRegistry([createChartOfAccountsMutationHandler()]),
+    registry: new CommandRegistry([
+      createAccountingJournalMutationHandler(),
+      createChartOfAccountsMutationHandler(),
+    ]),
     runner: mutationRunner,
     readClients: clientRouter,
     newReadbackId: () => nextId('readback'),
@@ -153,6 +159,7 @@ export function createTeamRuntime(input: {
           artifacts,
           allocateAccountId: () => AccountIdSchema.parse(nextId('account')),
           allocateAccountMappingId: () => AccountSourceMappingIdSchema.parse(nextId('accountmap')),
+          allocatePeriodId: () => PeriodIdSchema.parse(nextId('period')),
         })
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
@@ -203,6 +210,22 @@ export function createTeamRuntime(input: {
           resultMetadata,
         });
       }
+      if (plan.work.length === 1
+        && (plan.work[0]?.workCellId === 'transaction-capture' || plan.work[0]?.workCellId === 'journal')) {
+        const prepared = await checkedMutations.prepare({
+          workCellInput: work[0]!,
+          commandId: nextId('command'),
+          idempotencyKey: nextId('idem'),
+          adapter: new AccountingJournalCommandAdapter(),
+        });
+        const result = prepared.completionState === 'checked_mutation_pending'
+          ? await checkedMutations.executePrepared({ prepared })
+          : prepared;
+        return new TeamResultAssembler().assemble({
+          ...resultMetadata,
+          results: [result],
+        });
+      }
       return coordinator.execute({
         team: runtimeInput.team,
         strategyName: plan.recommendedStrategyName,
@@ -231,6 +254,7 @@ export async function normalizeAccountingLeadRequest(
     artifacts?: ArtifactStore;
     allocateAccountId?: () => ReturnType<typeof AccountIdSchema.parse>;
     allocateAccountMappingId?: () => ReturnType<typeof AccountSourceMappingIdSchema.parse>;
+    allocatePeriodId?: () => ReturnType<typeof PeriodIdSchema.parse>;
   } = {},
 ): Promise<JsonValue> {
   const normalized = await materializeAccountingLeadRequest({
@@ -243,6 +267,8 @@ export async function normalizeAccountingLeadRequest(
       ?? (() => AccountIdSchema.parse(nextId('account'))),
     allocateAccountMappingId: dependencies.allocateAccountMappingId
       ?? (() => AccountSourceMappingIdSchema.parse(nextId('accountmap'))),
+    allocatePeriodId: dependencies.allocatePeriodId
+      ?? (() => PeriodIdSchema.parse(nextId('period'))),
   });
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
 }
@@ -441,7 +467,7 @@ function findSkill(predicate: (skill: SkillRegistration) => boolean): SkillRegis
   return skill;
 }
 
-function nextId(prefix: 'account' | 'accountmap' | 'artifact' | 'command' | 'confirm' | 'evidence' | 'idem' | 'readback' | 'run' | 'task'): string {
+function nextId(prefix: 'account' | 'accountmap' | 'artifact' | 'command' | 'confirm' | 'evidence' | 'idem' | 'period' | 'readback' | 'run' | 'task'): string {
   return `${prefix}_${ulid()}`;
 }
 

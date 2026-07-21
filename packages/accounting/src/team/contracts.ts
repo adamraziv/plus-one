@@ -22,8 +22,13 @@ export const TransactionCaptureRequestSchemaV1 = z.object({
   periodId: PeriodIdSchema.optional(),
   explicitInstruction: z.literal(true),
   instruction: nonEmpty,
+  paymentAccountName: z.string().min(1).max(512).optional(),
+  categoryName: z.string().min(1).max(512).optional(),
+  categoryCandidates: z.array(z.string().min(1).max(512)).max(20).optional(),
   paymentAccountCurrency: CurrencyCodeSchema.optional(),
+  paymentAccountClass: z.enum(['asset', 'liability', 'equity']).optional(),
   categoryAccountCurrency: CurrencyCodeSchema.optional(),
+  categoryAccountClass: z.enum(['income', 'expense']).optional(),
   known: z.object({
     amount: z.string().optional(),
     currency: CurrencyCodeSchema.optional(),
@@ -61,11 +66,20 @@ const chartWorkBase = {
   }).strict(),
 };
 
+export const ChartAccountSnapshotSchemaV1 = z.object({
+  accountId: AccountIdSchema,
+  name: nonEmpty,
+  accountingClass: AccountingClassSchemaV1,
+  normalBalance: NormalBalanceSchemaV1,
+  nativeCurrency: CurrencyCodeSchema,
+}).strict();
+
 export const ChartWorkRequestSchemaV1 = z.discriminatedUnion('action', [
   z.object({
     ...chartWorkBase,
     action: z.literal('create_account'),
     accountId: AccountIdSchema,
+    existingAccount: ChartAccountSnapshotSchemaV1.optional(),
   }).strict(),
   z.object({
     ...chartWorkBase,
@@ -101,6 +115,13 @@ export const ChartClarificationSchemaV1 = z.object({
   ])).min(1),
   questions: z.array(nonEmpty).min(1),
   reason: nonEmpty,
+}).strict();
+
+export const ChartNoChangeSchemaV1 = z.object({
+  schemaName: z.literal('chart-no-change'),
+  schemaVersion: z.literal(1),
+  reason: z.enum(['matching_account_exists', 'account_name_conflict']),
+  existingAccount: ChartAccountSnapshotSchemaV1,
 }).strict();
 
 export const AccountingClarificationSchemaV1 = z.object({
@@ -248,6 +269,7 @@ export const ChartOfAccountsProposalSchemaV1 = z.discriminatedUnion('action', [
 export const ChartWorkResultSchemaV1 = z.discriminatedUnion('schemaName', [
   ChartOfAccountsProposalSchemaV1,
   ChartClarificationSchemaV1,
+  ChartNoChangeSchemaV1,
 ]);
 
 export type AccountingIntentV1 = z.infer<typeof AccountingIntentSchemaV1>;
@@ -255,6 +277,7 @@ export type TransactionCaptureRequestV1 = z.infer<typeof TransactionCaptureReque
 export type JournalWorkRequestV1 = z.infer<typeof JournalWorkRequestSchemaV1>;
 export type ChartWorkRequestV1 = z.infer<typeof ChartWorkRequestSchemaV1>;
 export type ChartClarificationV1 = z.infer<typeof ChartClarificationSchemaV1>;
+export type ChartNoChangeV1 = z.infer<typeof ChartNoChangeSchemaV1>;
 export type AccountingClarificationV1 = z.infer<typeof AccountingClarificationSchemaV1>;
 export type CheckedJournalDraftProposalV1 = z.infer<typeof CheckedJournalDraftProposalSchemaV1>;
 export type AccountingJournalMutationProposalV1 =

@@ -8,6 +8,9 @@ import {
   type OrchestratorFinalResponseV1,
 } from '@plus-one/contracts';
 import type { OrchestratorAgent, OrchestratorTurnResult } from '../agents/orchestrator.js';
+import {
+  TransactionCaptureContinuationSchemaV1,
+} from '../accounting/transaction-capture-continuation.js';
 
 export const ORCHESTRATOR_LOOP_WORKFLOW_ID = 'orchestrator-loop';
 export const ORCHESTRATOR_LOOP_STEP_ID = 'orchestrator-turn';
@@ -18,11 +21,13 @@ export const OrchestratorSuspendPayloadSchemaV1 = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('clarification'),
     response: OrchestratorFinalResponseSchemaV1,
+    transactionContinuation: TransactionCaptureContinuationSchemaV1.optional(),
   }).strict(),
   z.object({
     kind: z.literal('mutation_confirmation'),
     response: OrchestratorFinalResponseSchemaV1,
     pendingMutation: TeamResultEnvelopeSchemaV2,
+    transactionContinuation: TransactionCaptureContinuationSchemaV1.optional(),
   }).strict(),
 ]);
 
@@ -69,16 +74,34 @@ export function createOrchestratorLoopWorkflow(
         ? await abortable(orchestrator.resolvePendingMutation({
           message,
           pending: suspended.pendingMutation,
+          ...(suspended.transactionContinuation === undefined
+            ? {}
+            : { transactionContinuation: suspended.transactionContinuation }),
           signal: abortSignal,
         }), abortSignal)
-        : await abortable(orchestrator.runTurn({ message, signal: abortSignal }), abortSignal) as OrchestratorTurnResult;
+        : await abortable(orchestrator.runTurn({
+          message,
+          ...(suspended?.transactionContinuation === undefined
+            ? {}
+            : { transactionContinuation: suspended.transactionContinuation }),
+          signal: abortSignal,
+        }), abortSignal) as OrchestratorTurnResult;
       if (result.kind === 'ask-user') {
         return suspend(result.pendingMutation === undefined
-          ? { kind: 'clarification', response: result.response }
+          ? {
+              kind: 'clarification',
+              response: result.response,
+              ...(result.transactionContinuation === undefined
+                ? {}
+                : { transactionContinuation: result.transactionContinuation }),
+            }
           : {
               kind: 'mutation_confirmation',
               response: result.response,
               pendingMutation: result.pendingMutation,
+              ...(result.transactionContinuation === undefined
+                ? {}
+                : { transactionContinuation: result.transactionContinuation }),
             });
       }
       return result.response;

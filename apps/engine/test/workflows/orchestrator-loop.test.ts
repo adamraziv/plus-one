@@ -107,6 +107,55 @@ describe('orchestrator workflow loop', () => {
     }));
   });
 
+  it('persists transaction continuation through clarification suspension and resume', async () => {
+    const suspend = vi.fn();
+    const transactionContinuation = {
+      schemaName: 'transaction-capture-continuation' as const,
+      schemaVersion: 1 as const,
+      request: {
+        schemaName: 'transaction-capture-request-draft' as const,
+        schemaVersion: 1 as const,
+        instruction: '50 USD in dining from test wallet',
+        known: { amount: '50.00', currency: 'USD', paymentAccountName: 'test wallet' },
+      },
+    };
+    const runTurn = vi.fn()
+      .mockResolvedValueOnce({
+        kind: 'ask-user' as const,
+        response: response('Choose a category.'),
+        transactionContinuation,
+      })
+      .mockResolvedValueOnce({ kind: 'final' as const, response: response('Recorded.') });
+    const workflow = createOrchestratorLoopWorkflow({ runTurn } as never);
+    const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
+
+    await step.execute({ inputData: message, suspend, abortSignal } as never);
+    expect(suspend).toHaveBeenCalledWith({
+      kind: 'clarification',
+      response: response('Choose a category.'),
+      transactionContinuation,
+    });
+
+    const clarification = suspend.mock.calls[0]![0];
+    const next = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      externalMessageId: 'telegram-category-2',
+      body: 'Food',
+    });
+    await step.execute({
+      inputData: message,
+      resumeData: next,
+      suspendData: clarification,
+      suspend,
+      abortSignal,
+    } as never);
+
+    expect(runTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      message: next,
+      transactionContinuation,
+    }));
+  });
+
   it('cancels the active workflow run when the channel signal aborts', async () => {
     const controller = new AbortController();
     const cancel = vi.fn(async () => undefined);

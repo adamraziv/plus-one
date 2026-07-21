@@ -54,6 +54,7 @@ const clarification = {
   ...checked,
   status: 'insufficient_evidence' as const,
   completionState: 'terminal' as const,
+  effectRequirement: { kind: 'none' as const },
   acceptedMaker: undefined,
   completionReason: 'Required user-owned fields are missing.',
   outstanding: ['What should the account be called?'],
@@ -152,7 +153,9 @@ describe('CheckedMutationWorkCellCoordinator', () => {
     });
 
     expect(prepared.status).toBe('verified');
-    if (prepared.status !== 'verified') throw new Error('Expected a prepared mutation.');
+    if (prepared.completionState !== 'checked_mutation_pending') {
+      throw new Error('Expected a prepared mutation.');
+    }
     expect(prepared.completionState).toBe('checked_mutation_pending');
     expect(prepared.command).toMatchObject({
       checkedProposalId: artifact.artifactId,
@@ -186,7 +189,9 @@ describe('CheckedMutationWorkCellCoordinator', () => {
       adapter,
     });
     expect(prepared.status).toBe('verified');
-    if (prepared.status !== 'verified') throw new Error('Expected a prepared mutation.');
+    if (prepared.completionState !== 'checked_mutation_pending') {
+      throw new Error('Expected a prepared mutation.');
+    }
     const result = await coordinator.executePrepared({
       prepared,
       confirmationId: 'confirm_01JNZQ4A9B8C7D6E5F4G3H2J1K',

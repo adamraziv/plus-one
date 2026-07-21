@@ -4,6 +4,7 @@ import {
   AccountingClarificationSchemaV1,
   AccountingWorkResultSchemaV1,
   ChartClarificationSchemaV1,
+  ChartNoChangeSchemaV1,
   ChartWorkRequestSchemaV1,
   ChartWorkResultSchemaV1,
   JournalWorkRequestSchemaV1,
@@ -40,6 +41,16 @@ const chartStop: WorkCellDefinition['evaluateStopCondition'] = ({ maker }) => {
       status: 'insufficient_evidence',
       reason: clarification.data.reason,
       outstanding: [...clarification.data.questions],
+    };
+  }
+  const noChange = ChartNoChangeSchemaV1.safeParse(maker.output);
+  if (noChange.success) {
+    return {
+      status: 'verified',
+      reason: noChange.data.reason === 'matching_account_exists'
+        ? 'The requested account already exists with matching details.'
+        : 'An account with that name already exists with different details.',
+      outstanding: [],
     };
   }
   return {

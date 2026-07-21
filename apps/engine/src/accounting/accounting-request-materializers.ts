@@ -1,5 +1,6 @@
 import type { DatabasePools } from '@plus-one/database';
 import {
+  ChartAccountSnapshotSchemaV1,
   ChartWorkRequestSchemaV1,
   JournalWorkRequestSchemaV1,
   TransactionCaptureRequestSchemaV1,
@@ -15,15 +16,20 @@ import {
 import {
   AccountIdSchema,
   AccountSourceMappingIdSchema,
+  AccountingClassSchemaV1,
   ArtifactHashSchema,
   ArtifactIdSchema,
   BookIdSchema,
   CurrencyCodeSchema,
   PeriodIdSchema,
+  PositiveAmountStringSchema,
   PlusOneError,
   TaskIdSchema,
+  IanaTimezoneSchema,
+  LocalDateSchema,
   type AccountId,
   type AccountSourceMappingId,
+  type AccountingClassV1,
   type ArtifactEnvelopeV1,
   type CurrencyCode,
   type InboundChannelMessageV1,
@@ -60,6 +66,7 @@ export interface AccountingMaterializationContext {
   message: InboundChannelMessageV1;
   allocateAccountId: () => AccountId;
   allocateAccountMappingId: () => AccountSourceMappingId;
+  allocatePeriodId?: () => PeriodId;
 }
 
 interface AccountingRequestMaterializer<I extends AccountingIntent> {
@@ -78,6 +85,7 @@ export async function materializeAccountingLeadRequest(input: AccountingMaterial
     message: input.message,
     allocateAccountId: input.allocateAccountId,
     allocateAccountMappingId: input.allocateAccountMappingId,
+    ...(input.allocatePeriodId === undefined ? {} : { allocatePeriodId: input.allocatePeriodId }),
   };
 
   switch (parsed.intent) {
@@ -138,15 +146,17 @@ const transactionCaptureMaterializer: AccountingRequestMaterializer<'transaction
       input.pools,
       input.message.householdId,
       bookId,
+      input.message.receivedAt,
       draft.known,
     );
     const periodId = resolvedKnown.known.occurredOn === undefined
       ? undefined
-      : await resolvePeriodIdForOccurredOn(
+      : await resolveOrCreatePeriodIdForOccurredOn(
         input.pools,
         input.message.householdId,
         bookId,
         resolvedKnown.known.occurredOn,
+        input.allocatePeriodId,
       );
 
     return TransactionCaptureRequestSchemaV1.parse({
@@ -160,9 +170,22 @@ const transactionCaptureMaterializer: AccountingRequestMaterializer<'transaction
       ...(resolvedKnown.paymentAccountCurrency === undefined
         ? {}
         : { paymentAccountCurrency: resolvedKnown.paymentAccountCurrency }),
+      ...(resolvedKnown.paymentAccountClass === undefined
+        ? {}
+        : { paymentAccountClass: resolvedKnown.paymentAccountClass }),
       ...(resolvedKnown.categoryAccountCurrency === undefined
         ? {}
         : { categoryAccountCurrency: resolvedKnown.categoryAccountCurrency }),
+      ...(resolvedKnown.categoryAccountClass === undefined
+        ? {}
+        : { categoryAccountClass: resolvedKnown.categoryAccountClass }),
+      ...(draft.known.paymentAccountName === undefined
+        ? {}
+        : { paymentAccountName: draft.known.paymentAccountName }),
+      ...(resolvedKnown.categoryName === undefined ? {} : { categoryName: resolvedKnown.categoryName }),
+      ...(resolvedKnown.categoryCandidates === undefined
+        ? {}
+        : { categoryCandidates: resolvedKnown.categoryCandidates }),
       known: resolvedKnown.known,
     });
   },
@@ -257,7 +280,7 @@ async function materializeCompleteTransactionCapture(
 ) {
   const paymentAccount = request.known.paymentAccountId === undefined
     ? undefined
-    : await requireScopedAccountById(
+    : await requireScopedTransactionAccountById(
       input.pools,
       input.message.householdId,
       bookId,
@@ -267,7 +290,7 @@ async function materializeCompleteTransactionCapture(
     );
   const categoryAccount = request.known.categoryAccountId === undefined
     ? undefined
-    : await requireScopedAccountById(
+    : await requireScopedTransactionAccountById(
       input.pools,
       input.message.householdId,
       bookId,
@@ -278,11 +301,12 @@ async function materializeCompleteTransactionCapture(
   const periodId = request.periodId === undefined
     ? request.known.occurredOn === undefined
       ? undefined
-      : await resolvePeriodIdForOccurredOn(
+      : await resolveOrCreatePeriodIdForOccurredOn(
         input.pools,
         input.message.householdId,
         bookId,
         request.known.occurredOn,
+        input.allocatePeriodId,
       )
     : await requireScopedPeriodId(
       input.pools,
@@ -297,7 +321,9 @@ async function materializeCompleteTransactionCapture(
     bookId,
     ...(periodId === undefined ? {} : { periodId }),
     ...(paymentAccount === undefined ? {} : { paymentAccountCurrency: paymentAccount.nativeCurrency }),
+    ...(paymentAccount === undefined ? {} : { paymentAccountClass: paymentAccount.accountingClass }),
     ...(categoryAccount === undefined ? {} : { categoryAccountCurrency: categoryAccount.nativeCurrency }),
+    ...(categoryAccount === undefined ? {} : { categoryAccountClass: categoryAccount.accountingClass }),
   });
 }
 
@@ -306,22 +332,33 @@ async function materializeChartDraft(
   bookId: ReturnType<typeof BookIdSchema.parse>,
   draft: ChartWorkRequestDraftV1,
 ) {
+  const known = await chartKnownFromDraft(input.pools, input.message.householdId, bookId, draft);
   const base = {
     schemaName: 'chart-work-request' as const,
     schemaVersion: 1 as const,
     householdId: input.message.householdId,
     bookId,
     instruction: draft.instruction,
-    known: await chartKnownFromDraft(input.pools, input.message.householdId, bookId, draft),
+    known,
   };
 
   switch (draft.action) {
-    case 'create_account':
+    case 'create_account': {
+      const existingAccount = known.name === undefined
+        ? undefined
+        : await findExistingChartAccountByName(
+          input.pools,
+          input.message.householdId,
+          bookId,
+          known.name,
+        );
       return ChartWorkRequestSchemaV1.parse({
         ...base,
         action: draft.action,
-        accountId: input.allocateAccountId(),
+        accountId: existingAccount?.accountId ?? input.allocateAccountId(),
+        ...(existingAccount === undefined ? {} : { existingAccount }),
       });
+    }
     case 'update_account':
     case 'archive_account':
       return ChartWorkRequestSchemaV1.parse({
@@ -376,22 +413,38 @@ async function materializeCompleteChartRequest(
   bookId: ReturnType<typeof BookIdSchema.parse>,
   request: ChartWorkRequestV1,
 ) {
+  const known = await scopeChartKnown(
+    input.pools,
+    input.message.householdId,
+    bookId,
+    request.known,
+  );
   const base = {
     schemaName: 'chart-work-request' as const,
     schemaVersion: 1 as const,
     householdId: input.message.householdId,
     bookId,
     instruction: request.instruction,
-    known: await scopeChartKnown(input.pools, input.message.householdId, bookId, request.known),
+    known,
   };
 
   switch (request.action) {
-    case 'create_account':
+    case 'create_account': {
+      const existingAccount = known.name === undefined
+        ? undefined
+        : await findExistingChartAccountByName(
+          input.pools,
+          input.message.householdId,
+          bookId,
+          known.name,
+        );
       return ChartWorkRequestSchemaV1.parse({
         ...base,
         action: request.action,
-        accountId: input.allocateAccountId(),
+        accountId: existingAccount?.accountId ?? input.allocateAccountId(),
+        ...(existingAccount === undefined ? {} : { existingAccount }),
       });
+    }
     case 'update_account':
     case 'archive_account':
       return ChartWorkRequestSchemaV1.parse({
@@ -520,15 +573,24 @@ async function canonicalTransactionKnown(
   pools: DatabasePools,
   householdId: string,
   bookId: ReturnType<typeof BookIdSchema.parse>,
+  receivedAt: string,
   known: TransactionCaptureRequestDraftV1['known'],
 ): Promise<{
   known: TransactionCaptureRequestV1['known'];
   paymentAccountCurrency?: CurrencyCode;
+  paymentAccountClass?: AccountingClassV1;
   categoryAccountCurrency?: CurrencyCode;
+  categoryAccountClass?: AccountingClassV1;
+  categoryName?: string;
+  categoryCandidates?: string[];
 }> {
+  const occurredOn = await resolveRelativeTransactionDate(pools, householdId, receivedAt, known.occurredOn);
+  const parsedAmount = known.amount === undefined
+    ? undefined
+    : PositiveAmountStringSchema.safeParse(known.amount.trim());
   const paymentAccount = known.paymentAccountName === undefined
     ? undefined
-    : await findScopedAccountByName(
+    : await findScopedTransactionAccountByName(
       pools,
       householdId,
       bookId,
@@ -537,24 +599,112 @@ async function canonicalTransactionKnown(
     );
   const categoryAccount = known.categoryName === undefined
     ? undefined
-    : await findScopedAccountByName(
+    : await findScopedTransactionAccountByName(
       pools,
       householdId,
       bookId,
       known.categoryName,
       categoryAccountingClasses,
     );
+  const categoryCandidates = categoryAccount === undefined
+    ? await findCategoryNames(pools, householdId, bookId)
+    : undefined;
+  const amount = parsedAmount?.success === true
+    ? await amountForCurrency(pools, parsedAmount.data, known.currency)
+    : undefined;
   return {
     known: {
-      ...(known.amount === undefined ? {} : { amount: known.amount }),
+      ...(amount === undefined ? {} : { amount }),
       ...(known.currency === undefined ? {} : { currency: known.currency }),
       ...(paymentAccount === undefined ? {} : { paymentAccountId: paymentAccount.accountId }),
-      ...(known.occurredOn === undefined ? {} : { occurredOn: known.occurredOn }),
+      ...(occurredOn === undefined ? {} : { occurredOn }),
       ...(categoryAccount === undefined ? {} : { categoryAccountId: categoryAccount.accountId }),
     },
     ...(paymentAccount === undefined ? {} : { paymentAccountCurrency: paymentAccount.nativeCurrency }),
+    ...(paymentAccount === undefined ? {} : { paymentAccountClass: paymentAccount.accountingClass }),
     ...(categoryAccount === undefined ? {} : { categoryAccountCurrency: categoryAccount.nativeCurrency }),
+    ...(categoryAccount === undefined ? {} : { categoryAccountClass: categoryAccount.accountingClass }),
+    ...(known.categoryName === undefined ? {} : { categoryName: known.categoryName }),
+    ...(categoryCandidates === undefined ? {} : { categoryCandidates }),
   };
+}
+
+async function amountForCurrency(
+  pools: DatabasePools,
+  amount: string,
+  currency: CurrencyCode | undefined,
+): Promise<string | undefined> {
+  if (currency === undefined) return amount;
+  const result = await pools.accounting.query<{ matches: boolean | null }>(
+    `SELECT operations.amount_matches_currency_scale(
+       $1::operations.decimal_amount,
+       $2::operations.currency_code
+     ) AS matches`,
+    [amount, currency],
+  );
+  return result.rows.length === 1 && result.rows[0]!.matches === true ? amount : undefined;
+}
+
+async function resolveRelativeTransactionDate(
+  pools: DatabasePools,
+  householdId: string,
+  receivedAt: string,
+  occurredOn: string | undefined,
+): Promise<string | undefined> {
+  if (occurredOn === undefined) return undefined;
+  const normalized = occurredOn.trim().toLowerCase().replace(/[.!?]+$/g, '');
+  const offset = normalized === 'today'
+    ? 0
+    : normalized === 'yesterday'
+      ? -1
+      : normalized === 'tomorrow'
+        ? 1
+        : normalized === 'the day before yesterday' || normalized === 'day before yesterday'
+          ? -2
+          : undefined;
+  if (offset === undefined) {
+    const explicit = LocalDateSchema.safeParse(occurredOn.trim());
+    return explicit.success ? explicit.data : undefined;
+  }
+  const timezoneResult = await pools.accounting.query<{ reporting_timezone: string }>(
+    `SELECT reporting_timezone
+     FROM operations.households
+     WHERE household_id = $1
+     LIMIT 2`,
+    [householdId],
+  );
+  if (timezoneResult.rows.length !== 1) {
+    throw materializationError(
+      'validation_rejected',
+      'household_reporting_timezone_not_found',
+      'Relative transaction dates require a household reporting timezone',
+      { matchedHouseholds: timezoneResult.rows.length },
+    );
+  }
+  const timezone = IanaTimezoneSchema.parse(timezoneResult.rows[0]!.reporting_timezone);
+  const today = localDateForInstant(receivedAt, timezone);
+  return addLocalDays(today, offset);
+}
+
+function localDateForInstant(instant: string, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    calendar: 'iso8601',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(instant));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return LocalDateSchema.parse(`${values.year}-${values.month}-${values.day}`);
+}
+
+function addLocalDays(localDate: string, offset: number): string {
+  const [year, month, day] = localDate.split('-').map(Number);
+  const shifted = new Date(Date.UTC(year!, month! - 1, day! + offset));
+  return LocalDateSchema.parse(
+    `${shifted.getUTCFullYear().toString().padStart(4, '0')}-${(shifted.getUTCMonth() + 1)
+      .toString().padStart(2, '0')}-${shifted.getUTCDate().toString().padStart(2, '0')}`,
+  );
 }
 
 const paymentAccountingClasses = ['asset', 'liability', 'equity'];
@@ -576,7 +726,8 @@ async function findScopedAccountByName(
      JOIN accounting.books book ON book.id = account.book_id
      WHERE household.household_id = $1
        AND book.book_id = $2
-       AND lower(account.name) = lower($3)
+       AND lower(regexp_replace(btrim(account.name), '\\s+', ' ', 'g'))
+         = lower(regexp_replace(btrim($3), '\\s+', ' ', 'g'))
        AND ($4::text[] IS NULL OR account.accounting_class = ANY($4::text[]))
        AND account.archived_at IS NULL
      ORDER BY account.account_id
@@ -589,6 +740,106 @@ async function findScopedAccountByName(
       nativeCurrency: CurrencyCodeSchema.parse(result.rows[0]!.native_currency),
     }
     : undefined;
+}
+
+async function findScopedTransactionAccountByName(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: ReturnType<typeof BookIdSchema.parse>,
+  accountName: string,
+  allowedClasses: readonly string[],
+): Promise<{
+  accountId: AccountId;
+  nativeCurrency: CurrencyCode;
+  accountingClass: AccountingClassV1;
+} | undefined> {
+  const normalizedName = accountName.trim();
+  if (normalizedName.length === 0) return undefined;
+  const result = await pools.accounting.query<{
+    account_id: string;
+    native_currency: string;
+    accounting_class: string;
+  }>(
+    `SELECT account.account_id, account.native_currency, account.accounting_class
+     FROM accounting.accounts account
+     JOIN operations.households household ON household.id = account.household_id
+     JOIN accounting.books book ON book.id = account.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND lower(regexp_replace(btrim(account.name), '\\s+', ' ', 'g'))
+         = lower(regexp_replace(btrim($3), '\\s+', ' ', 'g'))
+       AND account.accounting_class = ANY($4::text[])
+       AND account.archived_at IS NULL
+     ORDER BY account.account_id
+     LIMIT 2`,
+    [householdId, bookId, normalizedName, [...allowedClasses]],
+  );
+  return result.rows.length === 1
+    ? {
+      accountId: AccountIdSchema.parse(result.rows[0]!.account_id),
+      nativeCurrency: CurrencyCodeSchema.parse(result.rows[0]!.native_currency),
+      accountingClass: AccountingClassSchemaV1.parse(result.rows[0]!.accounting_class),
+    }
+    : undefined;
+}
+
+async function findExistingChartAccountByName(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: ReturnType<typeof BookIdSchema.parse>,
+  accountName: string,
+) {
+  const result = await pools.accounting.query<{
+    account_id: string;
+    name: string;
+    accounting_class: string;
+    normal_balance: string;
+    native_currency: string;
+  }>(
+    `SELECT account.account_id, account.name, account.accounting_class,
+       account.normal_balance, account.native_currency
+     FROM accounting.accounts account
+     JOIN operations.households household ON household.id = account.household_id
+     JOIN accounting.books book ON book.id = account.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND lower(regexp_replace(btrim(account.name), '\\s+', ' ', 'g'))
+         = lower(regexp_replace(btrim($3), '\\s+', ' ', 'g'))
+       AND account.archived_at IS NULL
+     ORDER BY account.account_id
+     LIMIT 2`,
+    [householdId, bookId, accountName],
+  );
+  if (result.rows.length !== 1) return undefined;
+  const row = result.rows[0]!;
+  return ChartAccountSnapshotSchemaV1.parse({
+    accountId: row.account_id,
+    name: row.name,
+    accountingClass: row.accounting_class,
+    normalBalance: row.normal_balance,
+    nativeCurrency: row.native_currency,
+  });
+}
+
+async function findCategoryNames(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: ReturnType<typeof BookIdSchema.parse>,
+): Promise<string[]> {
+  const result = await pools.accounting.query<{ name: string }>(
+    `SELECT DISTINCT account.name
+     FROM accounting.accounts account
+     JOIN operations.households household ON household.id = account.household_id
+     JOIN accounting.books book ON book.id = account.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND account.accounting_class = 'expense'
+       AND account.archived_at IS NULL
+     ORDER BY account.name
+     LIMIT 20`,
+    [householdId, bookId],
+  );
+  return result.rows.map((row) => row.name);
 }
 
 async function resolveScopedAccountByName(
@@ -621,7 +872,8 @@ async function requireScopedAccountByName(
      JOIN accounting.books book ON book.id = account.book_id
      WHERE household.household_id = $1
        AND book.book_id = $2
-       AND lower(account.name) = lower($3)
+       AND lower(regexp_replace(btrim(account.name), '\\s+', ' ', 'g'))
+         = lower(regexp_replace(btrim($3), '\\s+', ' ', 'g'))
        AND account.archived_at IS NULL
      ORDER BY account.account_id
      LIMIT 2`,
@@ -671,7 +923,89 @@ async function requireScopedAccountById(
   );
 }
 
-async function resolvePeriodIdForOccurredOn(
+async function requireScopedTransactionAccountById(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: ReturnType<typeof BookIdSchema.parse>,
+  accountId: AccountId,
+  allowedClasses: readonly string[],
+  code: string,
+): Promise<{
+  accountId: AccountId;
+  nativeCurrency: CurrencyCode;
+  accountingClass: AccountingClassV1;
+}> {
+  const result = await pools.accounting.query<{
+    account_id: string;
+    native_currency: string;
+    accounting_class: string;
+  }>(
+    `SELECT account.account_id, account.native_currency, account.accounting_class
+     FROM accounting.accounts account
+     JOIN operations.households household ON household.id = account.household_id
+     JOIN accounting.books book ON book.id = account.book_id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+       AND account.account_id = $3
+       AND account.accounting_class = ANY($4::text[])
+       AND account.archived_at IS NULL
+     LIMIT 2`,
+    [householdId, bookId, accountId, [...allowedClasses]],
+  );
+  if (result.rows.length === 1) {
+    return {
+      accountId: AccountIdSchema.parse(result.rows[0]!.account_id),
+      nativeCurrency: CurrencyCodeSchema.parse(result.rows[0]!.native_currency),
+      accountingClass: AccountingClassSchemaV1.parse(result.rows[0]!.accounting_class),
+    };
+  }
+  throw materializationError(
+    'validation_rejected',
+    code,
+    'The supplied account is outside the active household book scope',
+  );
+}
+
+async function resolveOrCreatePeriodIdForOccurredOn(
+  pools: DatabasePools,
+  householdId: string,
+  bookId: ReturnType<typeof BookIdSchema.parse>,
+  occurredOn: string,
+  allocatePeriodId?: () => PeriodId,
+): Promise<PeriodId> {
+  const existing = await findPeriodIdForOccurredOn(pools, householdId, bookId, occurredOn);
+  if (existing !== undefined) return existing;
+  const bounds = monthlyPeriodBounds(occurredOn);
+  await pools.accounting.query(
+    `INSERT INTO accounting.periods
+       (period_id, household_id, book_id, period_start, period_end)
+     SELECT $3, household.id, book.id, $4::date, $5::date
+     FROM operations.households household
+     JOIN accounting.books book ON book.household_id = household.id
+     WHERE household.household_id = $1
+       AND book.book_id = $2
+     ON CONFLICT (household_id, book_id, period_start) DO NOTHING`,
+    [householdId, bookId, requiredAllocatedPeriodId(allocatePeriodId), bounds.periodStart, bounds.periodEnd],
+  );
+  const resolved = await findPeriodIdForOccurredOn(pools, householdId, bookId, occurredOn);
+  if (resolved !== undefined) return resolved;
+  throw materializationError(
+    'validation_rejected',
+    'transaction_period_materialization_failed',
+    'The accounting period for the transaction date could not be materialized',
+  );
+}
+
+function requiredAllocatedPeriodId(allocatePeriodId?: () => PeriodId): PeriodId {
+  if (allocatePeriodId !== undefined) return allocatePeriodId();
+  throw materializationError(
+    'validation_rejected',
+    'transaction_period_allocator_missing',
+    'The accounting period allocator is unavailable',
+  );
+}
+
+async function findPeriodIdForOccurredOn(
   pools: DatabasePools,
   householdId: string,
   bookId: ReturnType<typeof BookIdSchema.parse>,
@@ -690,6 +1024,21 @@ async function resolvePeriodIdForOccurredOn(
     [householdId, bookId, occurredOn],
   );
   return result.rows.length === 1 ? PeriodIdSchema.parse(result.rows[0]!.period_id) : undefined;
+}
+
+function monthlyPeriodBounds(occurredOn: string): { periodStart: string; periodEnd: string } {
+  const date = LocalDateSchema.parse(occurredOn);
+  const [year, month] = date.split('-').map(Number);
+  const periodStart = LocalDateSchema.parse(
+    `${year!.toString().padStart(4, '0')}-${month!.toString().padStart(2, '0')}-01`,
+  );
+  const nextMonth = new Date(Date.UTC(year!, month!, 1));
+  const periodEnd = addLocalDays(
+    `${nextMonth.getUTCFullYear().toString().padStart(4, '0')}-${(nextMonth.getUTCMonth() + 1)
+      .toString().padStart(2, '0')}-01`,
+    -1,
+  );
+  return { periodStart, periodEnd };
 }
 
 async function requireScopedPeriodId(

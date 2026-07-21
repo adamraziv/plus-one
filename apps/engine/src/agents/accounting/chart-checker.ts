@@ -6,6 +6,7 @@ import {
 } from '@plus-one/contracts';
 import {
   ChartClarificationSchemaV1,
+  ChartNoChangeSchemaV1,
   ChartOfAccountsProposalSchemaV1,
   ChartWorkRequestSchemaV1,
 } from '@plus-one/accounting';
@@ -46,8 +47,9 @@ export function createChartCheckerAgent(input: AccountingRoleAgentInput): Accoun
     const verdict = task === undefined
       ? undefined
       : verdictForClarification(task)
-        ?? verdictForDeterministicProposal(task)
-        ?? verdictForIdentityMismatch(task);
+        ?? verdictForNoChange(task)
+        ?? verdictForIdentityMismatch(task)
+        ?? verdictForDeterministicProposal(task);
     if (verdict === undefined) return fallbackGenerate(messages, options);
     return submitContractResult(options, verdict);
   }) as typeof fallback.generate;
@@ -65,6 +67,39 @@ function parseVerificationTask(messages: readonly { role: string; content: strin
   }
   const parsed = VerificationTaskSchemaV1.safeParse(payload);
   return parsed.success ? parsed.data : undefined;
+}
+
+function verdictForNoChange(task: NonNullable<ReturnType<typeof parseVerificationTask>>) {
+  const maker = MakerArtifactSchemaV1.parse(task.makerArtifact.payload);
+  const noChange = ChartNoChangeSchemaV1.safeParse(maker.output);
+  const request = ChartWorkRequestSchemaV1.safeParse(task.makerInput);
+  if (!noChange.success
+    || !request.success
+    || request.data.action !== 'create_account'
+    || request.data.existingAccount === undefined) return undefined;
+  const existing = request.data.existingAccount;
+  const known = request.data.known;
+  const conflicts = [
+    known.accountingClass !== undefined && known.accountingClass !== existing.accountingClass,
+    known.normalBalance !== undefined && known.normalBalance !== existing.normalBalance,
+    known.nativeCurrency !== undefined && known.nativeCurrency !== existing.nativeCurrency,
+  ].some(Boolean);
+  const expected = ChartNoChangeSchemaV1.parse({
+    schemaName: 'chart-no-change',
+    schemaVersion: 1,
+    reason: conflicts ? 'account_name_conflict' : 'matching_account_exists',
+    existingAccount: existing,
+  });
+  const accepted = canonicalizeJson(jsonValue(noChange.data)) === canonicalizeJson(jsonValue(expected));
+  return CheckerVerdictSchemaV1.parse({
+    verdict: accepted ? 'accepted' : 'revision_requested',
+    coveredArtifactId: task.makerArtifact.artifactId,
+    coveredArtifactHash: task.makerArtifact.artifactHash,
+    findings: accepted ? [] : [{
+      code: 'chart_no_change_mismatch',
+      message: 'The no-change result does not match the runtime-resolved existing account.',
+    }],
+  });
 }
 
 function verdictForClarification(task: NonNullable<ReturnType<typeof parseVerificationTask>>) {

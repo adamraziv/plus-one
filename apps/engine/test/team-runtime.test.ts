@@ -135,6 +135,19 @@ describe('accounting request materializers', () => {
       if (text.includes('FROM accounting.account_source_mappings')) {
         return { rows: [{ mapping_id: 'accountmap_01JNZQ4A9B8C7D6E5F4G3H2J7K' }] };
       }
+      if (text.includes('SELECT account.account_id, account.name')) {
+        return action === 'create_account'
+          ? { rows: [] }
+          : {
+              rows: [{
+                account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+                name: 'Checking',
+                accounting_class: 'asset',
+                normal_balance: 'debit',
+                native_currency: 'USD',
+              }],
+            };
+      }
       return { rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K' }] };
     });
     const context = materializationContext(query);
@@ -177,11 +190,23 @@ describe('accounting request materializers', () => {
 
   it('resolves an unambiguous named parent but leaves missing or ambiguous parents unresolved', async () => {
     const cases = [
-      [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K', native_currency: 'USD' }],
+      [{
+        account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        native_currency: 'USD',
+        accounting_class: 'asset',
+      }],
       [],
       [
-        { account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K', native_currency: 'USD' },
-        { account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J4K', native_currency: 'USD' },
+        {
+          account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+          native_currency: 'USD',
+          accounting_class: 'asset',
+        },
+        {
+          account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J4K',
+          native_currency: 'USD',
+          accounting_class: 'asset',
+        },
       ],
     ];
 
@@ -190,6 +215,7 @@ describe('accounting request materializers', () => {
         if (text.includes('FROM accounting.books')) {
           return { rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] };
         }
+        if (text.includes('SELECT account.account_id, account.name')) return { rows: [] };
         return { rows };
       });
       const materialized = await materializeAccountingLeadRequest({
@@ -221,7 +247,11 @@ describe('accounting request materializers', () => {
         return { rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] };
       }
       if (text.includes('account.account_id = $3')) {
-        return { rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K', native_currency: 'USD' }] };
+        return { rows: [{
+          account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          native_currency: 'USD',
+          accounting_class: 'asset',
+        }] };
       }
       return { rows: [] };
     });
@@ -356,7 +386,7 @@ describe('accounting request materializers', () => {
       if (text.includes('FROM accounting.books')) {
         return { rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] };
       }
-      if (text.includes('lower(account.name)')) {
+      if (text.includes('FROM accounting.accounts')) {
         return { rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K' }] };
       }
       return {
@@ -595,9 +625,9 @@ describe('normalizeAccountingLeadRequest', () => {
   });
 
   it('materializes an asset chart create draft with a debit normal-balance default', async () => {
-    const query = vi.fn(async () => ({
-      rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }],
-    }));
+    const query = vi.fn(async (text: string) => text.includes('FROM accounting.books')
+      ? { rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] }
+      : { rows: [] });
     const pools = { accounting: { query } } as never;
 
     const normalized = await normalizeAccountingLeadRequest(pools, message, {
@@ -634,14 +664,23 @@ describe('normalizeAccountingLeadRequest', () => {
     });
     expect(parsed.accountId).toMatch(/^account_[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(parsed).not.toHaveProperty('mappingId');
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('canonicalizes typed transaction capture drafts without parsing prose', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })
-      .mockResolvedValueOnce({ rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K', native_currency: 'USD' }] })
-      .mockResolvedValueOnce({ rows: [{ account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K', native_currency: 'USD' }] })
+      .mockResolvedValueOnce({ rows: [{
+        account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        native_currency: 'USD',
+        accounting_class: 'asset',
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        native_currency: 'USD',
+        accounting_class: 'expense',
+      }] })
+      .mockResolvedValueOnce({ rows: [{ matches: true }] })
       .mockResolvedValueOnce({ rows: [{ period_id: 'period_01JNZQ4A9B8C7D6E5F4G3H2J4K' }] });
     const pools = {
       accounting: {
@@ -680,7 +719,9 @@ describe('normalizeAccountingLeadRequest', () => {
         explicitInstruction: true,
         instruction: 'Record a USD 10.00 burger purchase from checking on 2026-06-27 in dining out.',
         paymentAccountCurrency: 'USD',
+        paymentAccountClass: 'asset',
         categoryAccountCurrency: 'USD',
+        categoryAccountClass: 'expense',
         known: {
           amount: '10.00',
           currency: 'USD',
@@ -690,6 +731,224 @@ describe('normalizeAccountingLeadRequest', () => {
         },
       },
     });
+  });
+
+  it('turns an impossible transaction date into an unresolved field before period lookup', async () => {
+    const query = vi.fn(async (text: string, values?: unknown[]) => {
+      if (text.includes('FROM accounting.books')) {
+        return { rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] };
+      }
+      if (text.includes('FROM accounting.periods')) {
+        throw new Error('period lookup must not receive an invalid date');
+      }
+      if (text.includes('amount_matches_currency_scale')) {
+        return { rows: [{ matches: true }] };
+      }
+      if (text.includes('FROM accounting.accounts')) {
+        const allowedClasses = values?.[3] as string[] | undefined;
+        const category = allowedClasses?.includes('expense') === true;
+        return {
+          rows: [{
+            account_id: category
+              ? 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K'
+              : 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+            native_currency: 'USD',
+            accounting_class: category ? 'expense' : 'asset',
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const normalized = await normalizeAccountingLeadRequest(
+      { accounting: { query } } as never,
+      message,
+      {
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'transaction_capture',
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: 'Record a purchase on 2026-02-30.',
+          known: {
+            amount: '25',
+            currency: 'USD',
+            occurredOn: '2026-02-30',
+            paymentAccountName: 'Checking',
+            categoryName: 'Groceries',
+          },
+        },
+      },
+    );
+
+    expect(normalized).toMatchObject({
+      request: {
+        known: {
+          amount: '25',
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        },
+      },
+    });
+    expect(normalized).not.toHaveProperty('request.known.occurredOn');
+    expect(query.mock.calls.some(([text]) => String(text).includes('FROM accounting.periods'))).toBe(false);
+  });
+
+  it('turns a non-positive transaction amount into an unresolved field', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })
+      .mockResolvedValueOnce({ rows: [{
+        account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        native_currency: 'USD',
+        accounting_class: 'asset',
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        native_currency: 'USD',
+        accounting_class: 'expense',
+      }] })
+      .mockResolvedValueOnce({ rows: [{ period_id: 'period_01JNZQ4A9B8C7D6E5F4G3H2J4K' }] });
+
+    const normalized = await normalizeAccountingLeadRequest(
+      { accounting: { query } } as never,
+      message,
+      {
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'transaction_capture',
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: 'Record a zero-value purchase.',
+          known: {
+            amount: '0',
+            currency: 'USD',
+            occurredOn: '2026-07-28',
+            paymentAccountName: 'Checking',
+            categoryName: 'Groceries',
+          },
+        },
+      },
+    );
+
+    expect(normalized).toMatchObject({
+      request: {
+        known: {
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          occurredOn: '2026-07-28',
+          categoryAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+        },
+      },
+    });
+    expect(normalized).not.toHaveProperty('request.known.amount');
+  });
+
+  it('turns an amount that violates its currency scale into an unresolved field', async () => {
+    const query = vi.fn(async (text: string, values?: unknown[]) => {
+      if (text.includes('FROM accounting.books')) {
+        return { rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] };
+      }
+      if (text.includes('amount_matches_currency_scale')) {
+        return { rows: [{ matches: false }] };
+      }
+      if (text.includes('FROM accounting.periods')) {
+        return { rows: [{ period_id: 'period_01JNZQ4A9B8C7D6E5F4G3H2J4K' }] };
+      }
+      if (text.includes('FROM accounting.accounts')) {
+        const allowedClasses = values?.[3] as string[] | undefined;
+        const category = allowedClasses?.includes('expense') === true;
+        return {
+          rows: [{
+            account_id: category
+              ? 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K'
+              : 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+            native_currency: 'JPY',
+            accounting_class: category ? 'expense' : 'asset',
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const normalized = await normalizeAccountingLeadRequest(
+      { accounting: { query } } as never,
+      message,
+      {
+        schemaName: 'accounting-lead-request',
+        schemaVersion: 1,
+        intent: 'transaction_capture',
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: 'Record fractional yen.',
+          known: {
+            amount: '10.5',
+            currency: 'JPY',
+            occurredOn: '2026-07-28',
+            paymentAccountName: 'Main Wallet',
+            categoryName: 'Snacks',
+          },
+        },
+      },
+    );
+
+    expect(normalized).not.toHaveProperty('request.known.amount');
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('amount_matches_currency_scale'),
+      ['10.5', 'JPY'],
+    );
+  });
+
+  it('preserves an unresolved category name and returns existing spending categories as suggestions', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ book_id: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K' }] })
+      .mockResolvedValueOnce({ rows: [{
+        account_id: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+        native_currency: 'USD',
+        accounting_class: 'asset',
+      }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [
+        { name: 'Food' },
+        { name: 'Groceries' },
+      ] })
+      .mockResolvedValueOnce({ rows: [{ matches: true }] })
+      .mockResolvedValueOnce({ rows: [{ period_id: 'period_01JNZQ4A9B8C7D6E5F4G3H2J4K' }] });
+
+    const normalized = await normalizeAccountingLeadRequest({ accounting: { query } } as never, message, {
+      schemaName: 'accounting-lead-request',
+      schemaVersion: 1,
+      intent: 'transaction_capture',
+      request: {
+        schemaName: 'transaction-capture-request-draft',
+        schemaVersion: 1,
+        instruction: 'Record a USD 50 purchase from test wallet yesterday in dining.',
+        known: {
+          amount: '50.00',
+          currency: 'USD',
+          occurredOn: '2026-07-15',
+          paymentAccountName: 'test wallet',
+          categoryName: 'dining',
+        },
+      },
+    });
+
+    expect(normalized).toMatchObject({
+      request: {
+        categoryName: 'dining',
+        categoryCandidates: ['Food', 'Groceries'],
+        known: {
+          amount: '50.00',
+          currency: 'USD',
+          paymentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+          occurredOn: '2026-07-15',
+        },
+      },
+    });
+    expect(normalized).not.toHaveProperty('request.known.categoryAccountId');
   });
 
   it('rejects undeclared transaction input instead of deriving work from message text', async () => {

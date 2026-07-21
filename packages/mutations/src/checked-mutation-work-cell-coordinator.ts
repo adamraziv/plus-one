@@ -47,8 +47,8 @@ export interface VerifiedMutationWorkCellResult extends CheckedWorkCellResult {
 }
 
 export interface TerminalNonMutationWorkCellResult extends CheckedWorkCellResult {
-  status: Exclude<CheckedWorkCellResult['status'], 'verified'>;
   completionState: 'terminal';
+  effectRequirement: Extract<CheckedWorkCellResult['effectRequirement'], { kind: 'none' }>;
 }
 
 export class CheckedMutationWorkCellCoordinator {
@@ -149,7 +149,7 @@ export class CheckedMutationWorkCellCoordinator {
       idempotencyKey: input.idempotencyKey,
       adapter: input.adapter,
     });
-    if (prepared.status !== 'verified') {
+    if (!isPreparedMutationResult(prepared)) {
       throw invalidPreparationResult(prepared);
     }
     return this.executePrepared({
@@ -192,7 +192,15 @@ export class CheckedMutationWorkCellCoordinator {
 function isTerminalNonMutationResult(
   result: CheckedWorkCellResult,
 ): result is TerminalNonMutationWorkCellResult {
-  return result.status !== 'verified' && result.completionState === 'terminal';
+  return result.completionState === 'terminal' && result.effectRequirement.kind === 'none';
+}
+
+function isPreparedMutationResult(
+  result: PreparedMutationWorkCellResult | TerminalNonMutationWorkCellResult,
+): result is PreparedMutationWorkCellResult {
+  return result.status === 'verified'
+    && result.completionState === 'checked_mutation_pending'
+    && result.effectRequirement.kind === 'checked_mutation';
 }
 
 function invalidPreparationResult(result: CheckedWorkCellResult): PlusOneError {

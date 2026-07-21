@@ -13,6 +13,12 @@ import {
 import { internalImplementationDetailMatchCategory, type TeamDefinition } from '@plus-one/runtime';
 import { isUserFacingQueryField } from '../query-tools.js';
 import { internalIdentifierMatchCategory } from '../safety/internal-identifier.js';
+import { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
+import {
+  transactionCaptureContinuation,
+  type TransactionCaptureContinuationV1,
+} from '../accounting/transaction-capture-continuation.js';
+import type { TransactionCaptureRequestDraftV1 } from '../accounting/accounting-request-drafts.js';
 import {
   DelegateTeamToolInputSchema,
   parseDelegateTeamToolInput,
@@ -45,6 +51,7 @@ export const FinalSynthesisTeamResultViewSchema = z.object({
   team: z.string(),
   status: z.enum(['verified', 'partial', 'insufficient_evidence', 'conflicted', 'failed']),
   checkedClaims: z.array(z.string()),
+  proposalFacts: z.array(z.string()),
   assumptions: z.array(z.string()),
   uncertainty: z.array(z.string()),
   outstanding: z.array(z.string()),
@@ -66,6 +73,7 @@ export const FinalSynthesisTeamResultViewSchema = z.object({
 export type FinalSynthesisTeamResultView = z.infer<typeof FinalSynthesisTeamResultViewSchema>;
 
 const DELEGATE_TEAM_RETRY_INSTRUCTION = 'Retry delegateTeam with an exact registered team id and a JSON-object request matching that team\'s declared schema.';
+export const MAX_DELEGATIONS_PER_TURN = 4;
 
 export const DelegateTeamRetrySignalSchema = z.object({
   schemaName: z.literal('delegate-team-retry-signal'),
@@ -137,12 +145,24 @@ export function finalSynthesisTeamResultView(result: TeamResultEnvelopeV2): Fina
     checkedClaims: result.effect.state === 'awaiting_confirmation'
       ? []
       : userFacingTexts(result.claims.map((claim) => claim.text)),
+    proposalFacts: pendingProposalFacts(result),
     assumptions: userFacingTexts(result.assumptions),
     uncertainty: userFacingTexts(result.uncertainty),
     outstanding: userFacingTexts(result.outstanding),
     checkedData,
     ...(proposedChange === undefined ? {} : { proposedChange }),
     effectState: result.effect.state,
+  });
+}
+
+function pendingProposalFacts(result: TeamResultEnvelopeV2): string[] {
+  if (result.effect.state !== 'awaiting_confirmation') return [];
+  return result.claims.flatMap((claim) => {
+    const text = userFacingText(claim.text);
+    if (text === undefined || /\b(created|saved|added|applied|recorded|completed|succeeded)\b/i.test(text)) {
+      return [];
+    }
+    return [text];
   });
 }
 
@@ -154,6 +174,7 @@ export function createDelegateTeamTool(input: {
     signal: AbortSignal;
     delegationCount: number;
     delegationFailed: boolean;
+    transactionCaptureContinuation?: TransactionCaptureContinuationV1;
   } | undefined;
 }) {
   const teamCatalog = [...input.teams.values()]
@@ -166,6 +187,8 @@ export function createDelegateTeamTool(input: {
       `Registered teams for this runtime are: ${teamCatalog}.`,
       'The team field must be an exact team id.',
       'The request field must be a JSON object matching the selected team schema.',
+      'You may call this tool again after receiving a checked result when the same user task requires another sequential checked substep.',
+      'Call only one specialist substep at a time and use each checked result before choosing the next substep.',
       'Do not use this tool for payments, trades, tax filings, provider account changes, or external financial actions.',
     ].join(' '),
     inputSchema: DelegateTeamToolInputSchema,
@@ -193,11 +216,12 @@ export function createDelegateTeamTool(input: {
       if (active.signal.aborted) {
         throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
       }
-      if (active.delegationCount !== 0) {
+      if (active.delegationCount >= MAX_DELEGATIONS_PER_TURN) {
         active.delegationFailed = true;
-        throw new Error('Only one specialist delegation is allowed per orchestrator turn.');
+        throw new Error(`Specialist delegation limit of ${MAX_DELEGATIONS_PER_TURN} was exceeded.`);
       }
       const context = parseDelegateTeamToolInput(inputData);
+      const request = requestWithTransactionContinuation(active, context.request);
       active.delegationCount += 1;
       const team = input.teams.get(context.team);
       if (team === undefined) throw new Error(`Unknown team: ${context.team}`);
@@ -208,7 +232,7 @@ export function createDelegateTeamTool(input: {
         const result = TeamResultEnvelopeSchemaV2.parse(await input.teamRuntime.runTeamLead({
           message: InboundChannelMessageSchemaV1.parse(active.message),
           team,
-          request: requestForRuntime(context.request),
+          request: requestForRuntime(request),
           signal: active.signal,
         }));
         return result;
@@ -218,6 +242,30 @@ export function createDelegateTeamTool(input: {
       }
     },
   });
+}
+
+function requestWithTransactionContinuation(
+  active: {
+    transactionCaptureContinuation?: TransactionCaptureContinuationV1;
+  },
+  request: unknown,
+): unknown {
+  const parsed = AccountingDelegateRequestSchemaV1.safeParse(request);
+  if (!parsed.success || parsed.data.intent !== 'transaction_capture') return request;
+  const current = parsed.data.request;
+  if (current.schemaName !== 'transaction-capture-request-draft') {
+    delete active.transactionCaptureContinuation;
+    return request;
+  }
+  const previous = active.transactionCaptureContinuation?.request;
+  const merged: TransactionCaptureRequestDraftV1 = previous === undefined
+    ? current
+    : {
+        ...current,
+        known: { ...previous.known, ...current.known },
+      };
+  active.transactionCaptureContinuation = transactionCaptureContinuation(merged);
+  return { ...parsed.data, request: merged };
 }
 
 export function userFacingTexts(values: readonly string[]): string[] {

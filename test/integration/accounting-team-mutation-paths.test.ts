@@ -262,6 +262,7 @@ function chartClarificationChecked() {
     ...checkedResult('chart-of-accounts', maker),
     status: 'insufficient_evidence' as const,
     completionState: 'terminal' as const,
+    effectRequirement: { kind: 'none' as const },
     acceptedMaker: undefined,
     completionReason: 'An account name is required.',
     outstanding: ['What should the account be called?'],

@@ -10,9 +10,11 @@ import {
   OpaqueIdentifierDefinitions,
   QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV2,
+  CurrencyCodeSchema,
   type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
+import { AccountingJournalMutationProposalSchemaV1 } from '@plus-one/accounting';
 import { confirmationDecision, OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
 import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
@@ -226,6 +228,78 @@ function persistedChartTeamResult() {
   });
 }
 
+function persistedTransactionTeamResult() {
+  const persisted = persistedChartTeamResult();
+  const proposal = AccountingJournalMutationProposalSchemaV1.parse({
+    schemaName: 'accounting-journal-mutation-proposal',
+    schemaVersion: 1,
+    operation: 'post',
+    draft: {
+      draftSeriesId: 'draftseries_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      version: 1,
+      journal: {
+        schemaName: 'post-journal-proposal',
+        schemaVersion: 1,
+        householdId,
+        bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        journalId: 'journal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        draftId: 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        periodId: 'period_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        taskId,
+        journalType: 'ordinary',
+        transactionCurrency: 'USD',
+        occurredOn: '2026-07-24',
+        effectiveOn: '2026-07-24',
+        description: 'Dog treats from Everyday Checking.',
+        tagIds: [],
+        postings: [
+          {
+            accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+            direction: 'debit',
+            transactionAmount: '23.75',
+            accountNativeAmount: '23.75',
+            accountNativeCurrency: 'USD',
+            tagIds: [],
+          },
+          {
+            accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+            direction: 'credit',
+            transactionAmount: '23.75',
+            accountNativeAmount: '23.75',
+            accountNativeCurrency: 'USD',
+            tagIds: [],
+          },
+        ],
+      },
+    },
+  });
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...persisted,
+    claims: [{
+      claimId: 'transaction-capture-persisted',
+      text: 'The checked transaction was committed and read back.',
+      evidenceArtifactIds: [],
+      checkedMakerArtifactIds: [artifactId],
+    }],
+    makerArtifacts: [{
+      ...persisted.makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: proposal,
+        claims: [{
+          claimId: 'transaction-capture-persisted',
+          text: 'The checked transaction was committed and read back.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+  });
+}
+
 const addAccountMessage = message('Add Bank ABC as an IDR asset account.');
 
 function finalSynthesisProjectionResult(relationName = 'reporting.categorized_transactions') {
@@ -313,6 +387,75 @@ function finalSynthesisProjectionResult(relationName = 'reporting.categorized_tr
         claims: [{
           claimId: 'checking-account',
           text: 'Checking is configured for this household.',
+          evidenceArtifactIds: [],
+        }],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+  });
+}
+
+function categorizedTransactionResult() {
+  const base = teamResult();
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...base,
+    claims: [{
+      claimId: 'categorized-transactions',
+      text: 'The checked query returned one categorized transaction.',
+      evidenceArtifactIds: [],
+      checkedMakerArtifactIds: [artifactId],
+    }],
+    makerArtifacts: [{
+      ...base.makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'query-result', schemaVersion: 1 },
+        output: QueryResultSchemaV1.parse({
+          schemaName: 'query-result',
+          schemaVersion: 1,
+          relationName: 'reporting.categorized_transactions',
+          grain: ['household', 'posting'],
+          rows: [
+            {
+              effective_on: '2026-07-24',
+              account_name: 'Dog Treats',
+              accounting_class: 'expense',
+              direction: 'debit',
+              account_native_amount: '23.750000000000',
+              account_native_currency: 'USD',
+              description: 'Dog treats from Everyday Checking.',
+            },
+            {
+              effective_on: '2026-07-24',
+              account_name: 'Everyday Checking',
+              accounting_class: 'asset',
+              direction: 'credit',
+              account_native_amount: '23.750000000000',
+              account_native_currency: 'USD',
+              description: 'Dog treats from Everyday Checking.',
+            },
+          ],
+          fieldDefinitions: [
+            'effective_on',
+            'account_name',
+            'accounting_class',
+            'direction',
+            'account_native_amount',
+            'account_native_currency',
+            'description',
+          ],
+          sourceReferences: [
+            'relation=reporting.categorized_transactions',
+            `filter=household_id:eq:${householdId}`,
+          ],
+          freshness: 'latest available reporting projection',
+          coverageWarnings: [],
+        }),
+        claims: [{
+          claimId: 'categorized-transactions',
+          text: 'The checked query returned one categorized transaction.',
           evidenceArtifactIds: [],
         }],
         assumptions: [],
@@ -412,6 +555,54 @@ function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting')
     }],
     completionReason: 'A safe chart-of-accounts proposal requires the unresolved user-owned fields.',
     outstanding: ['What is its native currency?', 'native_currency'],
+  });
+}
+
+function transactionInsufficientEvidenceResult(question = 'Which account did you pay from?') {
+  const base = teamResult('accounting');
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...base,
+    status: 'insufficient_evidence',
+    claims: [],
+    makerArtifacts: [{
+      ...base.makerArtifacts[0]!,
+      payload: MakerArtifactSchemaV1.parse({
+        schemaName: 'maker-artifact',
+        schemaVersion: 1,
+        outputSchema: { schemaName: 'accounting-work-result', schemaVersion: 1 },
+        output: {
+          schemaName: 'accounting-clarification',
+          schemaVersion: 1,
+          missingFields: ['payment_account'],
+          questions: [question],
+          reason: 'The transaction still needs a required accounting field.',
+        },
+        claims: [],
+        assumptions: [],
+        uncertainty: [],
+      }),
+    }],
+    completionReason: 'The transaction still needs a required accounting field.',
+    outstanding: [question],
+    effect: { state: 'none' },
+  });
+}
+
+function unresolvedChartTeamResult(input: Parameters<typeof pendingChartTeamResult>[0] = {}) {
+  const pending = pendingChartTeamResult(input);
+  if (pending.effect.state !== 'awaiting_confirmation') throw new Error('Expected pending chart result');
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...pending,
+    status: 'failed',
+    claims: [],
+    completionReason: 'The mutation outcome requires deterministic reconciliation.',
+    outstanding: ['The category change needs reconciliation.'],
+    effect: {
+      state: 'unresolved',
+      proposal: pending.effect.proposal,
+      commandId: pending.effect.command.commandId,
+      reason: 'commit_ambiguous',
+    },
   });
 }
 
@@ -523,12 +714,59 @@ describe('OrchestratorAgent', () => {
     );
   });
 
+  it('always synthesizes persisted mutations from checked facts', async () => {
+    const persisted = persistedChartTeamResult();
+    const generate = vi.fn(async () => {
+      if (generate.mock.calls.length === 1) {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'accounting',
+          request: {
+            schemaName: 'accounting-lead-request',
+            schemaVersion: 1,
+            intent: 'chart_of_accounts',
+            request: {
+              schemaName: 'chart-work-request-draft',
+              schemaVersion: 1,
+              action: 'create_account',
+              instruction: 'Add Bank ABC as an IDR asset account.',
+              known: {
+                accountName: 'Bank ABC',
+                accountingClass: 'asset',
+                normalBalance: 'debit',
+                nativeCurrency: 'IDR',
+              },
+            },
+          },
+        });
+        return { text: 'I completed the checked accounting request.' };
+      }
+      return { text: 'I added Bank ABC as an IDR asset account with a normal debit balance.' };
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(async () => persisted),
+      teams: [accountingTeam],
+    });
+
+    const response = await orchestrator.run({ message: addAccountMessage });
+
+    expect(response.body).toBe('I added Bank ABC as an IDR asset account with a normal debit balance.');
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['yes', 'approve'],
     ['go ahead', 'approve'],
+    ['yes, go ahead please', 'approve'],
+    ['yes please', 'approve'],
+    ['sure, please go ahead', 'approve'],
+    ['do it please', 'approve'],
+    ['CONFIRM', 'approve'],
     ['please do', 'approve'],
     ['sounds good', 'approve'],
     ['no, cancel it', 'reject'],
+    ['please cancel', 'reject'],
+    ['yes, but use USD instead', 'unclear'],
     ['what does debit mean?', 'unclear'],
   ] as const)('classifies %s as %s for a suspended proposal', (body, expected) => {
     expect(confirmationDecision(body)).toBe(expected);
@@ -561,12 +799,411 @@ describe('OrchestratorAgent', () => {
     expect(resumePendingMutation).toHaveBeenCalledOnce();
   });
 
+  it('continues the retained transaction after a confirmed new category is created', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Dining',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    });
+    const resumePendingMutation = vi.fn(async () => persistedChartTeamResult());
+    const runTeamLead = vi.fn(async () => teamResult('accounting'));
+    const generate = vi.fn(async () => ({ text: 'I created Dining and recorded the transaction.' }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead,
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: '50 USD yesterday in dining from test wallet',
+          known: {
+            amount: '50.00',
+            currency: CurrencyCodeSchema.parse('USD'),
+            paymentAccountName: 'test wallet',
+            occurredOn: '2026-07-15',
+            categoryName: 'dining',
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ kind: 'final', response: { body: 'I created Dining and recorded the transaction.' } });
+    expect(resumePendingMutation).toHaveBeenCalledOnce();
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: accountingTeam,
+      request: expect.objectContaining({
+        intent: 'transaction_capture',
+        request: expect.objectContaining({
+          known: expect.objectContaining({
+            amount: '50.00',
+            currency: 'USD',
+            paymentAccountName: 'test wallet',
+            occurredOn: '2026-07-15',
+            categoryName: 'Dining',
+          }),
+        }),
+      }),
+    }));
+  });
+
+  it('describes a completed transaction prerequisite as a category with checked journal facts', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Dog Treats',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    });
+    const generate = vi.fn(async () => ({
+      text: 'I created a new Dog Treats account and maybe logged the transaction.',
+    }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead: vi.fn(async () => persistedTransactionTeamResult()),
+        resumePendingMutation: vi.fn(async () => persistedChartTeamResult()),
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: 'Dog treats from Everyday Checking yesterday.',
+          known: {
+            amount: '23.75',
+            currency: CurrencyCodeSchema.parse('USD'),
+            paymentAccountName: 'Everyday Checking',
+            occurredOn: 'yesterday',
+            categoryName: 'Dog Treats',
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'final',
+      response: {
+        body: 'I added Dog Treats as a new spending category and recorded USD 23.75 from Everyday Checking on 2026-07-24 under Dog Treats.',
+      },
+    });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('continues the retained transaction after a confirmed new income category is created', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Consulting Income',
+      accountingClass: 'income',
+      normalBalance: 'credit',
+      nativeCurrency: 'USD',
+    });
+    const resumePendingMutation = vi.fn(async () => persistedChartTeamResult());
+    const runTeamLead = vi.fn(async () => teamResult('accounting'));
+    const generate = vi.fn(async () => ({ text: 'I created Consulting Income and recorded the transaction.' }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead,
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: 'USD 1200 yesterday as consulting income into business checking',
+          known: {
+            amount: '1200',
+            currency: CurrencyCodeSchema.parse('USD'),
+            paymentAccountName: 'Business Checking',
+            occurredOn: 'yesterday',
+            categoryName: 'Consulting Income',
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'final',
+      response: { body: 'I created Consulting Income and recorded the transaction.' },
+    });
+    expect(resumePendingMutation).toHaveBeenCalledOnce();
+    expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
+      team: accountingTeam,
+      request: expect.objectContaining({
+        intent: 'transaction_capture',
+        request: expect.objectContaining({
+          known: expect.objectContaining({
+            amount: '1200',
+            currency: 'USD',
+            paymentAccountName: 'Business Checking',
+            occurredOn: 'yesterday',
+            categoryName: 'Consulting Income',
+          }),
+        }),
+      }),
+    }));
+  });
+
+  it('does not continue the transaction when category creation is unresolved', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Dining',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    });
+    const resumePendingMutation = vi.fn(async () => unresolvedChartTeamResult({
+      name: 'Dining',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    }));
+    const runTeamLead = vi.fn();
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead,
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: '50 USD yesterday in dining from test wallet',
+          known: {
+            amount: '50.00',
+            currency: CurrencyCodeSchema.parse('USD'),
+            paymentAccountName: 'test wallet',
+            occurredOn: '2026-07-15',
+            categoryName: 'dining',
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'final',
+      response: { body: 'I could not complete that request safely. Please try again.' },
+    });
+    expect(resumePendingMutation).toHaveBeenCalledOnce();
+    expect(runTeamLead).not.toHaveBeenCalled();
+  });
+
+  it('retains the category confirmation and transaction draft when resume throws', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Dining',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    });
+    const resumePendingMutation = vi.fn(async () => {
+      throw new Error('journal mutation wiring is unavailable');
+    });
+    const continuation = {
+      schemaName: 'transaction-capture-continuation' as const,
+      schemaVersion: 1 as const,
+      request: {
+        schemaName: 'transaction-capture-request-draft' as const,
+        schemaVersion: 1 as const,
+        instruction: '50 USD yesterday in dining from test wallet',
+        known: {
+          amount: '50.00',
+          currency: CurrencyCodeSchema.parse('USD'),
+          paymentAccountName: 'test wallet',
+          occurredOn: '2026-07-15',
+          categoryName: 'dining',
+        },
+      },
+    };
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+      transactionContinuation: continuation,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      pendingMutation: pending,
+      transactionContinuation: continuation,
+      response: {
+        body: 'I couldn’t complete that safely yet. The category confirmation is still pending. Would you like me to retry?',
+      },
+    });
+    expect(resumePendingMutation).toHaveBeenCalledOnce();
+  });
+
+  it('retains the transaction continuation when the resumed transaction needs clarification', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Dining',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    });
+    const resumePendingMutation = vi.fn(async () => persistedChartTeamResult());
+    const runTeamLead = vi.fn(async () => transactionInsufficientEvidenceResult());
+    const generate = vi.fn(async () => ({ text: 'This model response must not replace the checked question.' }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead,
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: '50 USD yesterday in dining from test wallet',
+          known: {
+            amount: '50.00',
+            currency: CurrencyCodeSchema.parse('USD'),
+            paymentAccountName: 'test wallet',
+            occurredOn: '2026-07-15',
+            categoryName: 'dining',
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      response: { body: 'Which account did you pay from?' },
+      transactionContinuation: {
+        request: { known: { categoryName: 'dining' } },
+      },
+    });
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('retains the transaction continuation when category confirmation is unclear', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Dining',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'USD',
+    });
+    const resumePendingMutation = vi.fn();
+    const generate = vi.fn(async () => ({ text: 'I am not sure what to do next.' }));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('I am not sure'),
+      pending,
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: '50 USD yesterday in dining from test wallet',
+          known: {
+            amount: '50.00',
+            currency: CurrencyCodeSchema.parse('USD'),
+            paymentAccountName: 'test wallet',
+            occurredOn: '2026-07-15',
+            categoryName: 'dining',
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      pendingMutation: pending,
+      response: {
+        body: expect.stringContaining('then record USD 50.00 from test wallet'),
+      },
+      transactionContinuation: {
+        request: { known: { categoryName: 'dining' } },
+      },
+    });
+    expect(resumePendingMutation).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
   it('never exposes maker persistence claims while an effect is pending', () => {
     const view = finalSynthesisTeamResultView(pendingChartTeamResult({
       claimText: 'Bank ABC has been created successfully.',
     }));
     expect(view.checkedClaims).toEqual([]);
+    expect(view.proposalFacts).toEqual([]);
     expect(view.proposedChange).toMatchObject({ accountName: 'Bank ABC' });
+  });
+
+  it('exposes checked non-persistence proposal facts while an effect is pending', () => {
+    const claimText = 'Prepared a USD 50 transaction from Test Wallet on 2026-07-19 under Dining.';
+    const view = finalSynthesisTeamResultView(pendingChartTeamResult({ claimText }));
+
+    expect(view.checkedClaims).toEqual([]);
+    expect(view.proposalFacts).toEqual([claimText]);
   });
 
   it.each(Object.values(OpaqueIdentifierDefinitions))(
@@ -707,6 +1344,18 @@ describe('OrchestratorAgent', () => {
     expect(orchestratorInstructions).toContain(
       'For account creation or chart changes, use the accounting team with intent chart_of_accounts and a nested chart-work-request-draft.',
     );
+    expect(orchestratorInstructions).toContain(
+      'When the current user turn both updates a transaction draft and requests a resolvable prerequisite, you MUST execute those checked substeps in that turn without returning user-facing text between them.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'A missing-category clarification is not terminal when the current user message explicitly chose to create that category.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'For categorized transaction query rows, direction is the ledger posting direction for that exact row and account; never invert or transfer it to another account.',
+    );
+    expect(orchestratorInstructions).toContain(
+      'If the user did not ask about ledger debit or credit direction, omit debit and credit wording from the reply.',
+    );
   });
 
   it('uses prepared thread context and persists the final user-facing reply', async () => {
@@ -720,6 +1369,14 @@ describe('OrchestratorAgent', () => {
     };
     const generate = vi.fn(async (messages: unknown) => {
       expect(messages).toEqual([
+        expect.objectContaining({
+          role: 'system',
+          content: expect.objectContaining({
+            parts: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining(now) }),
+            ]),
+          }),
+        }),
         expect.objectContaining({ role: 'assistant' }),
         expect.objectContaining({ role: 'user' }),
       ]);
@@ -833,6 +1490,30 @@ describe('OrchestratorAgent', () => {
     expect(serializedView.includes('Ready for orchestrator reconciliation.')).toBe(false);
   });
 
+  it('replaces stale mutation and inverted-direction query prose with checked transaction facts', async () => {
+    const result = categorizedTransactionResult();
+    const generate = vi.fn(async () => {
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'query',
+        request: queryDraft('Show the Dog Treats transaction.', { coverage: ['categorized transactions'] }),
+      });
+      return {
+        text: 'Everyday Checking was debited. Dog Treats is still being created. Would you like me to proceed with capturing this transaction?',
+      };
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(async () => result),
+      teams: [queryTeam],
+    });
+
+    const response = await orchestrator.run({ message: message('Show the Dog Treats transaction.') });
+
+    expect(response.body).toBe(
+      'I found a USD 23.75 transaction on 2026-07-24 under Dog Treats, using Everyday Checking.',
+    );
+  });
+
   it('does not grant categorized transaction field capability to another reporting relation', () => {
     const orchestrator = singleLoopOrchestrator({
       generate: vi.fn(async () => ({ text: 'Unused.' })),
@@ -877,8 +1558,8 @@ describe('OrchestratorAgent', () => {
         request: queryDraft('List our accounts.', { coverage: ['account list'] }),
       });
       await expect(options.prepareStep()).resolves.toEqual({
-        activeTools: [],
-        toolChoice: 'none',
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
       });
       return { text: 'The checked evidence includes one account row.' };
     });
@@ -969,7 +1650,7 @@ describe('OrchestratorAgent', () => {
     expect(modelCalls).toHaveLength(3);
   });
 
-  it('passes only the user body into a non-memory model prompt', async () => {
+  it('passes the inbound timestamp and user body into a non-memory model prompt', async () => {
     const body = 'What are the balances in my accounts?';
     let prompt: unknown;
     const generate = vi.fn(async (value: unknown) => {
@@ -982,7 +1663,9 @@ describe('OrchestratorAgent', () => {
 
     expect(typeof prompt === 'string').toBe(true);
     if (typeof prompt !== 'string') throw new Error('Expected a text-only prompt.');
-    expect(prompt === body).toBe(true);
+    expect(prompt).toContain(body);
+    expect(prompt).toContain(now);
+    expect(prompt).toContain('preserve the user’s relative wording');
     expect(prompt.includes(householdId)).toBe(false);
     expect(prompt.includes(conversationId)).toBe(false);
     expect(prompt.includes('telegram-chat-42')).toBe(false);
@@ -1020,7 +1703,17 @@ describe('OrchestratorAgent', () => {
     const currentBalancesResult = emptyCurrentBalancesResult();
     const runTeamLead = vi.fn(async () => currentBalancesResult);
     const generate = vi.fn(async (messages: unknown) => {
-      expect(messages).toEqual(preparedMessages);
+      expect(messages).toEqual([
+        expect.objectContaining({
+          role: 'system',
+          content: expect.objectContaining({
+            parts: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining(now) }),
+            ]),
+          }),
+        }),
+        ...preparedMessages,
+      ]);
       const delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('What are the balances in my accounts?', {
@@ -1063,7 +1756,7 @@ describe('OrchestratorAgent', () => {
     expect(response.body).toBe('No current-balance rows were returned.');
   });
 
-  it('allows four semantic model steps for two validation retries, delegation, and final synthesis', async () => {
+  it('allows six semantic model steps for validation recovery and sequential checked substeps', async () => {
     const generate = vi.fn(async () => ({
       text: 'Plus One can help with household finance questions.',
     }));
@@ -1105,6 +1798,14 @@ describe('OrchestratorAgent', () => {
       { finishReason: 'stop' },
     ] })).toBe(false);
     expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
+      { finishReason: 'stop' },
+    ] })).toBe(false);
+    expect(stopWhen({ steps: [
+      { finishReason: 'tool-calls' },
+      { finishReason: 'tool-calls' },
       { finishReason: 'tool-calls' },
       { finishReason: 'tool-calls' },
       { finishReason: 'tool-calls' },
@@ -1218,7 +1919,7 @@ describe('OrchestratorAgent', () => {
       .resolves.toMatchObject({ body: 'Final direct answer.' });
   });
 
-  it('removes delegateTeam after the first delegation so finalization can only return text', async () => {
+  it('keeps delegateTeam available after a checked result so the model can finish or take another checked substep', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
       const options = rawOptions as {
@@ -1233,8 +1934,8 @@ describe('OrchestratorAgent', () => {
         request: queryDraft('List our accounts.'),
       });
       await expect(options.prepareStep()).resolves.toEqual({
-        activeTools: [],
-        toolChoice: 'none',
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
       });
       return { text: 'The checked evidence includes one account row.' };
     });
@@ -1268,18 +1969,107 @@ describe('OrchestratorAgent', () => {
     }
   });
 
-  it('rejects a second delegateTeam call in one orchestrator turn', async () => {
-    const runTeamLead = vi.fn(async () => teamResult());
-    const generate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
-      await executeDelegate(orchestrator.agentTools.delegateTeam, { team: 'query', request: queryDraft('List our accounts.') });
-      return { text: 'unreachable' };
+  it('runs sequential checked substeps while retaining a pending transaction draft', async () => {
+    const pending = pendingChartTeamResult({
+      name: 'Foods',
+      accountingClass: 'expense',
+      normalBalance: 'debit',
+      nativeCurrency: 'IDR',
     });
-    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+    const runTeamLead = vi.fn()
+      .mockResolvedValueOnce(transactionInsufficientEvidenceResult('The Foods category must be created first.'))
+      .mockResolvedValueOnce(pending);
+    const incompleteProposal = 'I’ll add Foods as an IDR expense account with a normal debit balance, then record IDR 20000 from Bank ABC under Foods. Would you like me to proceed?';
+    const generate = vi.fn(async (prompt: unknown, rawOptions: unknown) => {
+      if (JSON.stringify(prompt).includes('Safe checked context:')) {
+        return { text: incompleteProposal };
+      }
+      const options = rawOptions as {
+        prepareStep(): Promise<{ activeTools: string[]; toolChoice: string }> | { activeTools: string[]; toolChoice: string };
+      };
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: 'transaction_capture',
+          request: {
+            schemaName: 'transaction-capture-request-draft',
+            schemaVersion: 1,
+            instruction: 'Yesterday. Add Foods as a new category.',
+            known: { occurredOn: 'yesterday' },
+          },
+        },
+      });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: ['delegateTeam'],
+        toolChoice: 'auto',
+      });
+      await executeDelegate(orchestrator.agentTools.delegateTeam, {
+        team: 'accounting',
+        request: {
+          schemaName: 'accounting-lead-request',
+          schemaVersion: 1,
+          intent: 'chart_of_accounts',
+          request: {
+            schemaName: 'chart-work-request-draft',
+            schemaVersion: 1,
+            action: 'create_account',
+            instruction: 'Add Foods as a new spending category.',
+            known: {
+              accountName: 'Foods',
+              accountingClass: 'expense',
+              normalBalance: 'debit',
+              nativeCurrency: 'IDR',
+            },
+          },
+        },
+      });
+      await expect(options.prepareStep()).resolves.toEqual({
+        activeTools: [],
+        toolChoice: 'none',
+      });
+      return { text: incompleteProposal };
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [accountingTeam] });
 
-    await expect(orchestrator.run({ message: message('List our accounts.') }))
-      .rejects.toThrow('Only one specialist delegation is allowed per orchestrator turn.');
-    expect(runTeamLead).toHaveBeenCalledTimes(1);
+    const result = await orchestrator.runTurn({
+      message: message('yesterday. add foods as a new category'),
+      transactionContinuation: {
+        schemaName: 'transaction-capture-continuation',
+        schemaVersion: 1,
+        request: {
+          schemaName: 'transaction-capture-request-draft',
+          schemaVersion: 1,
+          instruction: 'Spent 20k IDR out of Bank ABC for foods.',
+          known: {
+            amount: '20000',
+            currency: CurrencyCodeSchema.parse('IDR'),
+            paymentAccountName: 'Bank ABC',
+            categoryName: 'foods',
+          },
+        },
+      },
+    });
+    expect(runTeamLead).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      kind: 'ask-user',
+      pendingMutation: pending,
+      transactionContinuation: {
+        request: {
+          known: {
+            amount: '20000',
+            currency: 'IDR',
+            paymentAccountName: 'Bank ABC',
+            categoryName: 'foods',
+            occurredOn: 'yesterday',
+          },
+        },
+      },
+      response: {
+        body: expect.stringContaining('dated yesterday'),
+      },
+    });
   });
 
   it('does not accept a direct draft after delegated work fails', async () => {
@@ -1301,18 +2091,16 @@ describe('OrchestratorAgent', () => {
       .rejects.toThrow('Delegated team');
   });
 
-  it('does not recover to a direct draft after a second delegation is rejected', async () => {
+  it('does not recover to a direct draft after the bounded delegation limit is exceeded', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
-      await executeDelegate(orchestrator.agentTools.delegateTeam, {
-        team: 'query',
-        request: queryDraft('List our accounts.'),
-      });
       try {
-        await executeDelegate(orchestrator.agentTools.delegateTeam, {
-          team: 'query',
-          request: queryDraft('List our accounts.'),
-        });
+        for (let index = 0; index < 5; index += 1) {
+          await executeDelegate(orchestrator.agentTools.delegateTeam, {
+            team: 'query',
+            request: queryDraft(`List our accounts, substep ${index + 1}.`),
+          });
+        }
       } catch {
         return { text: 'Unchecked fallback' };
       }
@@ -1449,8 +2237,82 @@ describe('OrchestratorAgent', () => {
 
     await expect(orchestrator.runTurn({ message: message('add $10 of buying a burger') })).resolves.toMatchObject({
       kind: 'ask-user',
-      response: { body: 'What currency should I use for this account?' },
+      response: { body: 'What is its native currency?' },
     });
+  });
+
+  it('retains and merges the transaction draft across category clarification turns', async () => {
+    const runTeamLead = vi.fn(async () => insufficientEvidenceResult());
+    const generate = vi.fn()
+      .mockImplementationOnce(async () => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'accounting',
+          request: {
+            schemaName: 'accounting-lead-request',
+            schemaVersion: 1,
+            intent: 'transaction_capture',
+            request: {
+              schemaName: 'transaction-capture-request-draft',
+              schemaVersion: 1,
+              instruction: 'add a transaction to test wallet',
+              known: { paymentAccountName: 'test wallet' },
+            },
+          },
+        });
+        return { text: 'What amount should be recorded?' };
+      })
+      .mockImplementationOnce(async () => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'accounting',
+          request: {
+            schemaName: 'accounting-lead-request',
+            schemaVersion: 1,
+            intent: 'transaction_capture',
+            request: {
+              schemaName: 'transaction-capture-request-draft',
+              schemaVersion: 1,
+              instruction: '50 USD yesterday in dining',
+              known: {
+                amount: '50.00',
+                currency: 'USD',
+                occurredOn: '2026-07-15',
+                categoryName: 'dining',
+              },
+            },
+          },
+        });
+        return { text: 'I need a category choice.' };
+      });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam, accountingTeam] });
+
+    const first = await orchestrator.runTurn({ message: message('add a transaction to test wallet') });
+    expect(first).toMatchObject({
+      kind: 'ask-user',
+      transactionContinuation: {
+        request: { known: { paymentAccountName: 'test wallet' } },
+      },
+    });
+
+    const continuation = first.kind === 'ask-user' ? first.transactionContinuation : undefined;
+    if (continuation === undefined) throw new Error('Expected transaction continuation.');
+    await orchestrator.runTurn({
+      message: message('50 USD yesterday, dining'),
+      transactionContinuation: continuation,
+    });
+
+    expect(runTeamLead).toHaveBeenLastCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        request: expect.objectContaining({
+          known: {
+            amount: '50.00',
+            currency: 'USD',
+            occurredOn: '2026-07-15',
+            paymentAccountName: 'test wallet',
+            categoryName: 'dining',
+          },
+        }),
+      }),
+    }));
   });
 
   it('uses only the checked question when post-delegation text leaks internal result fields', async () => {
