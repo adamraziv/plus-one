@@ -14,5 +14,5 @@
       "@plus-one/runtime": ["packages/runtime/src/index.ts"]
     }
   },
-  "include": ["apps/**/*.ts", "packages/**/*.ts", "test/**/*.ts", "vitest.workspace.ts"]
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts", "test/**/*.ts", "vitest.workspace.ts"]
 }

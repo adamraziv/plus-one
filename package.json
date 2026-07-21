@@ -16,13 +16,13 @@
     "plus-one": "bin/plus-one.mjs"
   },
   "scripts": {
-    "lint": "eslint . --max-warnings=0",
+    "lint": "tsx scripts/lint.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test:unit": "vitest --workspace vitest.workspace.ts run --project unit",
     "test:db": "vitest --workspace vitest.workspace.ts run --project database --no-file-parallelism",
     "test:integration": "vitest --workspace vitest.workspace.ts run --project integration --passWithNoTests",
     "test:acceptance": "vitest --workspace vitest.workspace.ts run --project acceptance --passWithNoTests",
-    "dev:mastra": "mastra dev --dir apps/engine/src/mastra",
+    "dev:mastra": "tsc -p tsconfig.mastra.json --pretty false && tsx scripts/prepare-mastra-dev.ts --prepare && mastra dev --dir apps/engine/src/mastra",
     "plus-one": "tsx apps/engine/src/cli.ts",
     "install:cli": "bash scripts/install-cli.sh",
     "smoke:orchestrator": "tsx apps/engine/src/smoke-orchestrator.ts",
