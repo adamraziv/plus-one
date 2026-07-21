@@ -7,12 +7,30 @@ const CanonicalModel = `${Provider}/${Model}`;
 
 export interface OpenAiCompatibleTestServer {
   environment: NodeJS.ProcessEnv;
+  requests(): readonly OpenAiCompatibleTestRequest[];
   close(): Promise<void>;
 }
 
-export async function startOpenAiCompatibleTestServer(): Promise<OpenAiCompatibleTestServer> {
+export interface OpenAiCompatibleTestRequest {
+  path: string;
+  body: Record<string, unknown>;
+}
+
+export interface OpenAiCompatibleTestCompletion {
+  message: Record<string, unknown>;
+  finishReason: 'stop' | 'tool_calls';
+}
+
+export type OpenAiCompatibleTestResponder = (
+  request: OpenAiCompatibleTestRequest,
+) => OpenAiCompatibleTestCompletion | undefined | Promise<OpenAiCompatibleTestCompletion | undefined>;
+
+export async function startOpenAiCompatibleTestServer(input: {
+  responder?: OpenAiCompatibleTestResponder;
+} = {}): Promise<OpenAiCompatibleTestServer> {
+  const requests: OpenAiCompatibleTestRequest[] = [];
   const server = createServer((request, response) => {
-    void handleRequest(request, response).catch(() => {
+    void handleRequest(request, response, input.responder, requests).catch(() => {
       sendJson(response, 500, { error: { message: 'Test model server failed.' } });
     });
   });
@@ -36,6 +54,7 @@ export async function startOpenAiCompatibleTestServer(): Promise<OpenAiCompatibl
       CHECKER_MODEL: CanonicalModel,
       RESEARCH_MODEL: CanonicalModel,
     },
+    requests: () => [...requests],
     close: async () => {
       if (closed) return;
       closed = true;
@@ -47,7 +66,12 @@ export async function startOpenAiCompatibleTestServer(): Promise<OpenAiCompatibl
   };
 }
 
-async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  responder: OpenAiCompatibleTestResponder | undefined,
+  requests: OpenAiCompatibleTestRequest[],
+): Promise<void> {
   const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
   if (request.method === 'GET' && path === '/v1/models') {
     sendJson(response, 200, {
@@ -62,6 +86,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   const body = asRecord(await readJson(request));
+  const captured = { path, body } satisfies OpenAiCompatibleTestRequest;
+  requests.push(captured);
+  const custom = await responder?.(captured);
+  if (custom !== undefined) {
+    sendCompletion(response, custom.message, custom.finishReason);
+    return;
+  }
   const submitResult = findFunctionTool(body, 'submitResult');
   if (submitResult !== undefined) {
     sendCompletion(response, {

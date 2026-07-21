@@ -4,11 +4,16 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { startOpenAiCompatibleTestServer } from './openai-compatible-test-server.js';
+import {
+  startOpenAiCompatibleTestServer,
+  type OpenAiCompatibleTestRequest,
+  type OpenAiCompatibleTestResponder,
+} from './openai-compatible-test-server.js';
 
 export interface MastraDevServerHandle {
   baseUrl: string;
   output: () => string;
+  modelRequests: () => readonly OpenAiCompatibleTestRequest[];
   stop: () => Promise<void>;
 }
 
@@ -17,22 +22,30 @@ export async function startMastraDevServer(input: {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   rejectOutput?: readonly RegExp[];
+  modelResponder?: OpenAiCompatibleTestResponder;
 } = {}): Promise<MastraDevServerHandle> {
   const cwd = input.cwd ?? process.cwd();
   const releaseLock = await acquireDevServerLock(cwd, input.timeoutMs ?? 90_000);
-  const modelServer = await startOpenAiCompatibleTestServer().catch(async (error: unknown) => {
-    await releaseLock();
-    throw error;
-  });
-  const environmentFile = await createEnvironmentFile(cwd, modelServer.environment).catch(async (error: unknown) => {
-    await modelServer.close();
+  const modelServer = await startOpenAiCompatibleTestServer({
+    ...(input.modelResponder === undefined ? {} : { responder: input.modelResponder }),
+  }).catch(async (error: unknown) => {
     await releaseLock();
     throw error;
   });
   const requestedPort = input.env?.PORT ?? String(await findFreePort());
+  const runtimeEnvironment = {
+    ...modelServer.environment,
+    PORT: requestedPort,
+    ...input.env,
+  };
+  const environmentFile = await createEnvironmentFile(cwd, runtimeEnvironment).catch(async (error: unknown) => {
+    await modelServer.close();
+    await releaseLock();
+    throw error;
+  });
   const child = spawn('pnpm', ['dev:mastra', '--env', environmentFile.path], {
     cwd,
-    env: { ...process.env, ...modelServer.environment, PORT: requestedPort, ...input.env },
+    env: { ...process.env, ...runtimeEnvironment },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -84,6 +97,7 @@ export async function startMastraDevServer(input: {
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     output: () => output,
+    modelRequests: modelServer.requests,
     stop: async () => {
       await stopChild(child);
       await releaseLock();
@@ -191,7 +205,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function findFreePort(): Promise<number> {
+export async function findFreePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
