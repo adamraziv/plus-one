@@ -6,7 +6,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@plus-one/accounting": "workspace:*",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
     "@plus-one/runtime": "workspace:*",

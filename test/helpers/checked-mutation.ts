@@ -16,11 +16,13 @@ import {
   PostgresVerificationLedgerRepository,
 } from '@plus-one/database';
 import {
+  createPostAccountingJournalHandler,
+} from '@plus-one/accounting';
+import {
   CheckedMutationExecutor,
   CommandRegistry,
   CommandStateResolver,
   SerializableMutationRunner,
-  createPostAccountingJournalHandler,
   type MutationCommandHandler,
 } from '@plus-one/mutations';
 import { ArtifactStore, canonicalizeJson, hashArtifact } from '@plus-one/runtime';

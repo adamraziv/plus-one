@@ -1,9 +1,4 @@
 import {
-  JournalPostingService,
-  LedgerReadback,
-  type CurrentBalanceProjectionHook,
-} from '@plus-one/accounting';
-import {
   CurrencyCodeSchema,
   DecimalStringSchema,
   PostJournalInputSchemaV1,
@@ -11,12 +6,15 @@ import {
   type JsonValue,
   type PostJournalProposalV1,
 } from '@plus-one/contracts';
-import { z } from 'zod';
 import type {
   DomainReadbackOutput,
   MutationCommandHandler,
   MutationExecutionOutput,
-} from '../command-registry.js';
+} from '@plus-one/mutations';
+import { z } from 'zod';
+import { JournalPostingService } from '../posting/journal-posting-service.js';
+import type { CurrentBalanceProjectionHook } from '../posting/projection-hook.js';
+import { LedgerReadback } from '../repositories/ledger-readback.js';
 
 const BalanceSnapshotSchema = z.object({
   accountId: z.string().min(1),

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
+import { createPostAccountingJournalHandler } from '@plus-one/accounting';
 import { PostJournalProposalSchemaV1, ReadbackResultSchemaV1 } from '@plus-one/contracts';
 import {
   PostgresDomainCommandBridge,
@@ -8,7 +9,6 @@ import {
 } from '@plus-one/database';
 import {
   CommandStateResolver,
-  createPostAccountingJournalHandler,
 } from '@plus-one/mutations';
 import { hashArtifact } from '@plus-one/runtime';
 import {

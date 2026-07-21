@@ -206,9 +206,6 @@ importers:
 
   packages/mutations:
     dependencies:
-      '@plus-one/accounting':
-        specifier: workspace:*
-        version: link:../accounting
       '@plus-one/contracts':
         specifier: workspace:*
         version: link:../contracts
