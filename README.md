@@ -1,25 +1,32 @@
 # Plus One
 
-Plus One is an open-source, self-hosted agentic system for couples managing household finances through chat channels such as Telegram and Slack.
+[![Latest release](https://img.shields.io/github/v/release/adamraziv/plus-one)](https://github.com/adamraziv/plus-one/releases/latest)
+[![License](https://img.shields.io/github/license/adamraziv/plus-one)](LICENSE)
 
-The project is designed around a simple rule: agents can analyze and propose, but deterministic services and PostgreSQL constraints decide what is committed.
+Plus One is an open-source, self-hosted household finance agent for couples. The v0.1.0 production channel is Telegram; channel boundaries are designed for additional integrations.
 
-This repository currently focuses on the core runtime, PostgreSQL persistence, and the checked mutation flow that keeps financial writes explicit and verifiable.
+Agents can analyze and propose, but deterministic services and PostgreSQL constraints decide what is committed.
+
+Latest release: [Plus One v0.1.0](https://github.com/adamraziv/plus-one/releases/tag/v0.1.0).
 
 ## Current Scope
 
-Today, the implemented agent surface is:
+The implemented agent surface includes:
 
 - `orchestrator`: receives requests, coordinates work, and returns the final response
 - `query`: the read boundary for household financial data
 - `accounting`: proposes and verifies ledger and ingestion mutations
 
-The repository also includes supporting foundations for:
+The v0.1.0 production surface includes:
 
-- PostgreSQL migrations and repository code
-- runtime policy, execution, scheduling, and delivery primitives
-- ingestion, planning, and reporting domain packages
-- unit, database, integration, and acceptance tests
+- a Telegram gateway with pairing, readiness, graceful shutdown, and replay deduplication
+- natural-language account and transaction queries
+- multi-turn expense and income capture with confirmation-backed account and category creation
+- durable continuation across clarification, confirmation, timeout, and restart boundaries
+- governed query results, checked mutations, append-only accounting facts, and verified readback
+- an operator CLI and TUI for running and inspecting the gateway
+
+The repository also contains foundations for ingestion, planning, reporting, scheduling, and additional delivery channels.
 
 ## How It Works
 
@@ -190,6 +197,8 @@ plus-one live
 - `database`: SQL migrations, bootstrap, and repair scripts
 - `test`: shared helpers plus database, integration, and acceptance coverage
 
-## Status
+## Release Status
 
-This is an active implementation repository, not a finished product surface. If you are new to the codebase, start with `apps/engine`, `packages/runtime`, `packages/database`, `packages/query`, and `packages/accounting`.
+v0.1.0 is the first public development release. It provides a working self-hosted Telegram finance flow, while APIs, configuration, and operational behavior may still change before 1.0.
+
+If you are new to the codebase, start with `apps/engine`, `packages/runtime`, `packages/database`, `packages/query`, and `packages/accounting`.
