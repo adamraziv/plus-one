@@ -2,6 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/adamraziv/plus-one)](https://github.com/adamraziv/plus-one/releases/latest)
 [![License](https://img.shields.io/github/license/adamraziv/plus-one)](LICENSE)
+[![Contributing](https://img.shields.io/badge/contributing-guide-blue)](CONTRIBUTING.md)
 
 Plus One is an open-source, self-hosted household finance agent for couples. The v0.1.0 production channel is Telegram; channel boundaries are designed for additional integrations.
 
