@@ -4,10 +4,10 @@
   "type": "module",
   "dependencies": {
     "@hono/node-server": "1.19.14",
-    "@mastra/core": "1.47.0",
+    "@mastra/core": "1.52.1",
     "@mastra/hono": "1.5.2",
-    "@mastra/memory": "1.21.2",
-    "@mastra/pg": "1.14.0",
+    "@mastra/memory": "1.23.1",
+    "@mastra/pg": "1.17.0",
     "@plus-one/accounting": "workspace:*",
     "@plus-one/contracts": "workspace:*",
     "@plus-one/database": "workspace:*",
