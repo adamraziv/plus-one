@@ -1,6 +1,7 @@
 import type { ErrorCategoryV1, HouseholdWorkingMemory, HouseholdWorkingMemoryPatch, RetryDirectiveV1 } from '@plus-one/contracts';
 import {
   HouseholdWorkingMemoryPatchSchema,
+  HouseholdWorkingMemoryAgentPatchSchema,
   HouseholdWorkingMemorySchema,
   PlusOneError,
 } from '@plus-one/contracts';
@@ -35,6 +36,7 @@ export type WorkingMemoryReadResult =
 
 export interface OrchestratorSessionMemoryPort {
   readonly agentMemory: Memory;
+  readonly degradedAgentMemory?: Memory | undefined;
   readWorkingMemory(input: { threadId: string; resourceId: string }): Promise<WorkingMemoryReadResult>;
   applyWorkingMemoryPatch(input: {
     threadId: string;
@@ -57,7 +59,7 @@ export function createOrchestratorSessionMemory(
   input: OrchestratorSessionMemoryInput,
 ): OrchestratorSessionMemoryPort {
   if ('memory' in input) {
-    return new OrchestratorSessionMemory(input.memory, input.close);
+    return new OrchestratorSessionMemory(input.memory, undefined, input.close);
   }
 
   const storage = createMastraMemoryStorage(input.connectionString);
@@ -65,7 +67,16 @@ export function createOrchestratorSessionMemory(
     storage,
     options: orchestratorSessionMemoryOptions(input.model),
   });
-  return new OrchestratorSessionMemory(memory, async () => {
+  const degradedMemory = new Memory({
+    storage,
+    options: {
+      lastMessages: false,
+      semanticRecall: false,
+      workingMemory: { enabled: false },
+      observationalMemory: false,
+    },
+  });
+  return new OrchestratorSessionMemory(memory, degradedMemory, async () => {
     await storage.close?.();
   });
 }
@@ -76,6 +87,7 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
 
   constructor(
     readonly agentMemory: Memory,
+    readonly degradedAgentMemory?: Memory,
     private readonly closeStorage?: () => Promise<void>,
   ) {}
 
@@ -259,7 +271,7 @@ export function orchestratorSessionMemoryOptions(model: EngineLlmModelConfig): O
     workingMemory: {
       enabled: true,
       scope: 'resource',
-      schema: HouseholdWorkingMemorySchema,
+      schema: HouseholdWorkingMemoryAgentPatchSchema,
       agentManaged: true,
     },
     observationalMemory: {
@@ -291,6 +303,7 @@ function failedOutcome(
   retry: RetryDirectiveV1,
   cause: unknown,
 ): WorkingMemoryOperationOutcome {
+  void cause;
   return {
     operation,
     status: 'failed',

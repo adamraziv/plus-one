@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HouseholdWorkingMemoryAgentPatchSchema,
   HouseholdWorkingMemoryPatchSchema,
   HouseholdWorkingMemorySchema,
   MAX_WORKING_MEMORY_KEY_LENGTH,
@@ -107,5 +108,17 @@ describe('HouseholdWorkingMemoryPatchSchema', () => {
       members: { 'telegram:user:1': { nickname: null } },
     });
     expect(() => HouseholdWorkingMemoryPatchSchema.parse({ arbitrary: { nested: true } })).toThrow();
+  });
+});
+
+describe('HouseholdWorkingMemoryAgentPatchSchema', () => {
+  it('strips top-level null placeholders while preserving nested field deletion', () => {
+    expect(HouseholdWorkingMemoryAgentPatchSchema.parse({
+      goals: null,
+      communication: { tone: null },
+      members: null,
+    })).toEqual({
+      communication: { tone: null },
+    });
   });
 });

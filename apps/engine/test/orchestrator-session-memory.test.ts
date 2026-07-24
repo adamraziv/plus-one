@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Memory } from '@mastra/memory';
 import {
-  HouseholdWorkingMemorySchema,
+  HouseholdWorkingMemoryAgentPatchSchema,
   PlusOneError,
 } from '@plus-one/contracts';
 import {
@@ -44,7 +44,7 @@ describe('orchestratorSessionMemoryOptions', () => {
         enabled: true,
         scope: 'resource',
         agentManaged: true,
-        schema: HouseholdWorkingMemorySchema,
+        schema: HouseholdWorkingMemoryAgentPatchSchema,
       },
       observationalMemory: {
         model: {

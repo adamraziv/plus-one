@@ -12,10 +12,10 @@ import {
 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
+  HouseholdWorkingMemoryAgentPatchSchema,
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV2,
-  HouseholdWorkingMemoryPatchSchema,
   HouseholdWorkingMemorySchema,
   PlusOneError,
   type ChannelKindV1,
@@ -99,6 +99,11 @@ const orchestratorInstructions = [
   'After delegateTeam returns, explain the checked result to the user in concise natural language.',
   'Working Memory is durable household context, scoped to the authenticated household resource and the current conversation thread.',
   'Use the native updateWorkingMemory tool only for durable user-provided facts such as long-term goals, saving preferences, names, nicknames, communication preferences, and household conventions.',
+  'When the user asks you to remember, save, store, or update a durable fact, you MUST call the native updateWorkingMemory tool before replying.',
+  'The native updateWorkingMemory tool takes one object parameter named memory; put the Working Memory patch inside that memory field.',
+  'Preserve every explicit structured value the user provides in Working Memory. Do not silently summarize, omit, or replace fields; for an exact list replacement, pass the complete replacement array to the tool.',
+  'When the user asks to forget one saved field, call native updateWorkingMemory with that field set to null; use forgetEverything only when the user asks to clear all saved Working Memory.',
+  'Never claim a durable Working Memory save succeeded unless the native tool reports success.',
   'Use forgetEverything when the user explicitly asks to forget all saved Working Memory; it does not delete accounting facts, transactions, channel history, or workflow snapshots.',
   'Treat authenticated principal context as internal authorization context. Never expose or ask for principal, household, thread, or other system identifiers.',
   'When an internal memory-operation event says Working Memory failed, explain the failure naturally, do not claim the information was saved or cleared, and continue with only information that remains verified.',
@@ -288,7 +293,12 @@ export class OrchestratorAgent {
       inputProcessors: [new TokenLimiter({ limit: ORCHESTRATOR_INPUT_TOKEN_LIMIT, trimMode: 'best-fit' })],
     };
     if (dependencies.sessionMemory !== undefined) {
-      agentConfig.memory = () => dependencies.sessionMemory!.agentMemory;
+      agentConfig.memory = ({ requestContext }) => {
+        const memoryState = requestContext.get(ORCHESTRATOR_REQUEST_CONTEXT_KEY);
+        return memoryState?.memoryDegraded
+          ? dependencies.sessionMemory!.degradedAgentMemory ?? dependencies.sessionMemory!.agentMemory
+          : dependencies.sessionMemory!.agentMemory;
+      };
     }
     this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))(agentConfig);
   }
@@ -550,7 +560,18 @@ export class OrchestratorAgent {
             return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
           }
           if (body === undefined) {
-            throw new Error('Orchestrator returned an empty response.');
+            if (hasMalformedWorkingMemoryToolCall(result)) {
+              this.recordMemoryOutcome(failedWorkingMemoryOutcome(
+                'update',
+                'working_memory_update_rejected',
+                'validation_rejected',
+                'never',
+              ));
+            }
+            if (invocation.memoryFailures.length !== 0) {
+              body = await this.ensureMemoryFailureResponse(message, undefined, invocation, signal);
+            }
+            if (body === undefined) throw new Error('Orchestrator returned an empty response.');
           }
           const unsafeMatchCategory = userFacingSafetyMatchCategory(body);
           if (unsafeMatchCategory !== undefined) {
@@ -618,7 +639,7 @@ export class OrchestratorAgent {
       ? context.input.memory
       : context.input;
     const candidate = parseWorkingMemoryToolInput(rawCandidate);
-    const parsed = HouseholdWorkingMemoryPatchSchema.safeParse(candidate);
+    const parsed = HouseholdWorkingMemoryAgentPatchSchema.safeParse(candidate);
     if (!parsed.success) {
       const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
       this.recordMemoryOutcome(outcome);
@@ -748,18 +769,21 @@ export class OrchestratorAgent {
     signal: AbortSignal,
   ): Promise<string> {
     if (memoryFailureResponseIsSafe(candidate)) return candidate!;
-    const result = await abortable(this.agent.generate(
-      memoryFailureSynthesisPrompt(message, invocation.memoryFailures, candidate),
-      {
-        ...this.orchestratorGenerateOptions(message, invocation.requestContext),
-        stopWhen: stopAfterSemanticModelSteps(1),
-        toolChoice: 'none',
-        prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-        abortSignal: signal,
-      },
-    ), signal);
-    const synthesized = finalStepResponseText(result);
-    if (memoryFailureResponseIsSafe(synthesized)) return synthesized;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await abortable(this.agent.generate(
+        memoryFailureSynthesisPrompt(message, invocation.memoryFailures, candidate),
+        {
+          ...this.orchestratorGenerateOptions(message, invocation.requestContext),
+          stopWhen: stopAfterSemanticModelSteps(1),
+          toolChoice: 'none',
+          prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
+          abortSignal: signal,
+        },
+      ), signal);
+      const synthesized = finalStepResponseText(result);
+      if (memoryFailureResponseIsSafe(synthesized)) return synthesized;
+      candidate = synthesized;
+    }
     throw new PlusOneError({
       category: 'runtime_failure',
       code: 'working_memory_response_failed',
@@ -1119,6 +1143,18 @@ function finalStepResponseText(result: unknown): string | undefined {
 
 function hasToolCalls(step: unknown): boolean {
   return isRecord(step) && Array.isArray(step.toolCalls) && step.toolCalls.length > 0;
+}
+
+function hasMalformedWorkingMemoryToolCall(result: unknown): boolean {
+  if (!isRecord(result) || !Array.isArray(result.steps)) return false;
+  return result.steps.some((step) => {
+    if (!isRecord(step) || !Array.isArray(step.toolCalls)) return false;
+    return step.toolCalls.some((toolCall) => {
+      if (!isRecord(toolCall) || typeof toolCall.toolName !== 'string') return false;
+      if (!WORKING_MEMORY_TOOL_NAMES.has(toolCall.toolName)) return false;
+      return toolCall.args === undefined || toolCall.args === null;
+    });
+  });
 }
 
 function delegationCommentary(team: string, request: unknown): string {

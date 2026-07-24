@@ -107,3 +107,11 @@ export const HouseholdWorkingMemoryPatchSchema = z.object({
   members: boundedRecord(memberPatch.nullable()).nullable().optional(),
 }).strict();
 export type HouseholdWorkingMemoryPatch = z.infer<typeof HouseholdWorkingMemoryPatchSchema>;
+
+export const HouseholdWorkingMemoryAgentPatchSchema = HouseholdWorkingMemoryPatchSchema.transform((patch) => {
+  const result = { ...patch };
+  for (const key of ['goals', 'savingPreferences', 'communication', 'conventions', 'members'] as const) {
+    if (result[key] === null) delete result[key];
+  }
+  return result;
+});
