@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
+import { deepMergeWorkingMemory } from '@mastra/memory';
 import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
 import { ZodError } from 'zod';
@@ -15,6 +16,7 @@ import {
   OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV2,
   HouseholdWorkingMemoryPatchSchema,
+  HouseholdWorkingMemorySchema,
   PlusOneError,
   type ChannelKindV1,
   type ErrorCategoryV1,
@@ -608,16 +610,41 @@ export class OrchestratorAgent {
     active.memoryState.memoryDegraded = true;
   }
 
-  private beforeWorkingMemoryToolCall(context: { toolName: string; input: unknown }) {
+  private async beforeWorkingMemoryToolCall(context: { toolName: string; input: unknown }) {
     if (!WORKING_MEMORY_TOOL_NAMES.has(context.toolName)) return;
     const active = this.activeInvocation.getStore();
     if (active === undefined) return;
-    const candidate = isRecord(context.input) && 'memory' in context.input
+    const rawCandidate = isRecord(context.input) && 'memory' in context.input
       ? context.input.memory
       : context.input;
+    const candidate = parseWorkingMemoryToolInput(rawCandidate);
     const parsed = HouseholdWorkingMemoryPatchSchema.safeParse(candidate);
     if (!parsed.success) {
       const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
+      this.recordMemoryOutcome(outcome);
+      return { proceed: false as const, output: outcome };
+    }
+
+    try {
+      const current = await this.dependencies.sessionMemory?.readWorkingMemory({
+        threadId: active.message.conversationId,
+        resourceId: active.message.householdId,
+      });
+      if (current?.status === 'failed') {
+        this.recordMemoryOutcome(current.outcome);
+        return { proceed: false as const, output: current.outcome };
+      }
+      const merged = deepMergeWorkingMemory(
+        current?.value as Record<string, unknown> | undefined ?? {},
+        parsed.data as Record<string, unknown>,
+      );
+      if (!HouseholdWorkingMemorySchema.safeParse(merged).success) {
+        const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
+        this.recordMemoryOutcome(outcome);
+        return { proceed: false as const, output: outcome };
+      }
+    } catch {
+      const outcome = failedWorkingMemoryOutcome('read', 'working_memory_read_failed', 'storage_unavailable', 'after_backoff');
       this.recordMemoryOutcome(outcome);
       return { proceed: false as const, output: outcome };
     }
@@ -640,7 +667,7 @@ export class OrchestratorAgent {
     if (!WORKING_MEMORY_TOOL_NAMES.has(context.toolName)) return;
     if (isRecord(context.output) && context.output.status === 'failed') return;
     if (context.error !== undefined) {
-      this.recordMemoryOutcome(memoryOutcomeFromError(context.error, 'update'));
+      this.recordMemoryOutcome(failedWorkingMemoryOutcome('update', 'working_memory_write_failed', 'storage_unavailable', 'after_backoff'));
       return;
     }
     if (isRecord(context.output) && context.output.success === false) {
@@ -971,6 +998,15 @@ function failedWorkingMemoryOutcome(
   retry: RetryDirectiveV1,
 ): WorkingMemoryOperationOutcome {
   return { operation, status: 'failed', code, category, retry };
+}
+
+function parseWorkingMemoryToolInput(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function memoryFailureFromOutcome(outcome: WorkingMemoryOperationOutcome): OrchestratorMemoryFailure {

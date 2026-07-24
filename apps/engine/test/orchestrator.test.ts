@@ -1514,7 +1514,7 @@ describe('OrchestratorAgent', () => {
     const generate = vi.fn(async () => {
       beforeResult = await hooks?.beforeToolCall?.({
         toolName: 'updateWorkingMemory',
-        input: { memory: { members: { 'telegram:user:other': { nickname: 'Not me' } } } },
+        input: { memory: JSON.stringify({ members: { 'telegram:user:other': { nickname: 'Not me' } } }) },
         context: {},
       });
       return { text: 'I could not save that preference because it was not associated with the authenticated speaker.' };
