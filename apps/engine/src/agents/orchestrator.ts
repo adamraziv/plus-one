@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
+import { RequestContext } from '@mastra/core/request-context';
 import { ZodError } from 'zod';
 import {
   AccountingJournalMutationProposalSchemaV1,
@@ -13,9 +14,13 @@ import {
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV2,
+  HouseholdWorkingMemoryPatchSchema,
+  PlusOneError,
   type ChannelKindV1,
+  type ErrorCategoryV1,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
+  type RetryDirectiveV1,
   type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import {
@@ -32,7 +37,11 @@ import {
   withLogContext,
 } from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
-import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
+import type {
+  OrchestratorSessionMemoryPort,
+  WorkingMemoryOperation,
+  WorkingMemoryOperationOutcome,
+} from '../memory/orchestrator-session-memory.js';
 import {
   internalIdentifierMatchCategory,
   type InternalIdentifierMatchCategory,
@@ -46,6 +55,7 @@ import {
   type OrchestratorTeamRuntime,
 } from '../tools/delegate-team.js';
 import { requestForRuntime } from '../tools/delegate-team-schemas.js';
+import { createForgetEverythingTool } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
 
 const orchestratorInstructions = [
@@ -85,6 +95,11 @@ const orchestratorInstructions = [
   'If the user chooses a new category and also supplies any pending transaction details in that turn, first delegate transaction_capture with every newly supplied detail so the durable transaction draft is updated. After that checked result, delegate chart_of_accounts create_account with the requested category name and transaction currency. Use expense with normal debit for spending/outflows and income with normal credit for income/inflows. Category creation is a prerequisite of the original transaction, not a replacement task.',
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
   'After delegateTeam returns, explain the checked result to the user in concise natural language.',
+  'Working Memory is durable household context, scoped to the authenticated household resource and the current conversation thread.',
+  'Use the native updateWorkingMemory tool only for durable user-provided facts such as long-term goals, saving preferences, names, nicknames, communication preferences, and household conventions.',
+  'Use forgetEverything when the user explicitly asks to forget all saved Working Memory; it does not delete accounting facts, transactions, channel history, or workflow snapshots.',
+  'Treat authenticated principal context as internal authorization context. Never expose or ask for principal, household, thread, or other system identifiers.',
+  'When an internal memory-operation event says Working Memory failed, explain the failure naturally, do not claim the information was saved or cleared, and continue with only information that remains verified.',
   'Return only the user-facing reply text when you are not calling a tool.',
 ].join('\n');
 
@@ -92,6 +107,46 @@ const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
 const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
 const MAX_ORCHESTRATOR_STEPS = 6;
 const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
+const ORCHESTRATOR_REQUEST_CONTEXT_KEY = 'plus-one.orchestrator' as const;
+const WORKING_MEMORY_TOOL_NAMES = new Set(['updateWorkingMemory', 'setWorkingMemory', 'update-working-memory']);
+
+type OrchestratorMemoryFailure = {
+  operation: WorkingMemoryOperation;
+  status: 'failed';
+  code: string;
+  category: ErrorCategoryV1;
+  retry: RetryDirectiveV1;
+  mustReportToUser: true;
+  mustNotClaimSuccess: true;
+};
+
+type OrchestratorMemoryState = {
+  memoryDegraded: boolean;
+  memoryFailures: OrchestratorMemoryFailure[];
+};
+
+type OrchestratorRequestContextValues = {
+  [ORCHESTRATOR_REQUEST_CONTEXT_KEY]: OrchestratorMemoryState;
+};
+
+type OrchestratorRequestContext = RequestContext<OrchestratorRequestContextValues>;
+type OrchestratorAgentInstance = Agent<string, ToolsInput, undefined, OrchestratorRequestContextValues>;
+type OrchestratorAgentConfig = ConstructorParameters<typeof Agent<string, ToolsInput, undefined, OrchestratorRequestContextValues>>[0];
+
+type OrchestratorInvocation = {
+  message: InboundChannelMessageV1;
+  signal: AbortSignal;
+  requestContext: OrchestratorRequestContext;
+  memoryState: OrchestratorMemoryState;
+  memoryRetryUsed: boolean;
+  teamResults: TeamResultEnvelopeV2[];
+  memoryOutcomes: WorkingMemoryOperationOutcome[];
+  memoryFailures: OrchestratorMemoryFailure[];
+  delegationCount: number;
+  delegationFailed: boolean;
+  transactionCaptureContinuation?: TransactionCaptureContinuationV1;
+  channelEvents?: ChannelEventSink;
+};
 
 export type OrchestratorTurnResult =
   | { kind: 'final'; response: OrchestratorFinalResponseV1 }
@@ -117,17 +172,12 @@ export function confirmationDecision(body: string): ConfirmationDecision {
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
-  private readonly activeInvocation = new AsyncLocalStorage<{
-    message: InboundChannelMessageV1;
-    signal: AbortSignal;
-    teamResults: TeamResultEnvelopeV2[];
-    delegationCount: number;
-    delegationFailed: boolean;
-    transactionCaptureContinuation?: TransactionCaptureContinuationV1;
-    channelEvents?: ChannelEventSink;
-  }>();
-  readonly agent: Agent<string, ToolsInput, unknown>;
-  readonly agentTools: { delegateTeam: ReturnType<typeof createDelegateTeamTool> };
+  private readonly activeInvocation = new AsyncLocalStorage<OrchestratorInvocation>();
+  readonly agent: OrchestratorAgentInstance;
+  readonly agentTools: {
+    delegateTeam: ReturnType<typeof createDelegateTeamTool>;
+    forgetEverything?: ReturnType<typeof createForgetEverythingTool>;
+  };
 
   constructor(private readonly dependencies: {
     model: EngineLlmModelConfig;
@@ -135,8 +185,7 @@ export class OrchestratorAgent {
     teamRuntime: OrchestratorTeamRuntime;
     sessionMemory?: OrchestratorSessionMemoryPort;
     channelEvents?: ChannelEventSink;
-    agentFactory?: (config: ConstructorParameters<typeof Agent<string, ToolsInput, unknown>>[0]) =>
-      Agent<string, ToolsInput, unknown>;
+    agentFactory?: (config: OrchestratorAgentConfig) => OrchestratorAgentInstance;
   }) {
     this.teams = new Map(dependencies.teams.map((team) => [team.team, team]));
     const teamRuntime: OrchestratorTeamRuntime = {
@@ -208,16 +257,38 @@ export class OrchestratorAgent {
         getActiveInvocation: () => this.activeInvocation.getStore(),
       }),
     };
-    this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))({
+    if (dependencies.sessionMemory !== undefined) {
+      this.agentTools.forgetEverything = createForgetEverythingTool({
+        memory: dependencies.sessionMemory,
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+          };
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+    }
+    const agentConfig: OrchestratorAgentConfig = {
       id: 'orchestrator',
       name: 'Orchestrator',
       description: 'The single entrypoint agent that responds to users and delegates specialized work to team leads.',
       instructions: orchestratorInstructions,
-      model: toMastraModel(dependencies.model),
+      model: toMastraModel(dependencies.model) as OrchestratorAgentConfig['model'],
       maxRetries: 0,
       tools: this.agentTools,
+      hooks: {
+        beforeToolCall: (context) => this.beforeWorkingMemoryToolCall(context),
+        afterToolCall: (context) => this.afterWorkingMemoryToolCall(context),
+      },
       inputProcessors: [new TokenLimiter({ limit: ORCHESTRATOR_INPUT_TOKEN_LIMIT, trimMode: 'best-fit' })],
-    });
+    };
+    if (dependencies.sessionMemory !== undefined) {
+      agentConfig.memory = () => dependencies.sessionMemory!.agentMemory;
+    }
+    this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))(agentConfig);
   }
 
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
@@ -342,10 +413,21 @@ export class OrchestratorAgent {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
     const signal = input.signal ?? timeoutSignal!.signal;
-    const invocation = {
+    const memoryState: OrchestratorMemoryState = {
+      memoryDegraded: false,
+      memoryFailures: [],
+    };
+    const requestContext = new RequestContext<OrchestratorRequestContextValues>();
+    requestContext.set(ORCHESTRATOR_REQUEST_CONTEXT_KEY, memoryState);
+    const invocation: OrchestratorInvocation = {
       message,
       signal,
+      requestContext,
+      memoryState,
+      memoryRetryUsed: false,
       teamResults: [] as TeamResultEnvelopeV2[],
+      memoryOutcomes: [],
+      memoryFailures: memoryState.memoryFailures,
       delegationCount: 0,
       delegationFailed: false,
       ...(input.transactionContinuation === undefined
@@ -364,7 +446,8 @@ export class OrchestratorAgent {
         const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
           const contextStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          const prompt = await abortable(this.orchestratorInput(message), signal);
+          await this.preflightWorkingMemory(invocation);
+          const prompt = await abortable(this.orchestratorInput(message, invocation), signal);
           logger.info('turn.context.prepared', {
             fields: {
               durationMs: Date.now() - contextStartedAt,
@@ -376,41 +459,40 @@ export class OrchestratorAgent {
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
           let result: Awaited<ReturnType<typeof this.agent.generate>>;
           try {
-            result = await abortable(this.agent.generate(prompt, {
-              ...this.orchestratorGenerateOptions(message),
-              stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
-              errorProcessors: [createTransientModelRetryProcessor({
-                maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
-              })],
-              maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
-              toolChoice: 'auto',
-              prepareStep: async () => canDelegateAnotherSubstep(invocation)
-                ? { activeTools: ['delegateTeam'], toolChoice: 'auto' as const }
-                : { activeTools: [], toolChoice: 'none' as const },
-              abortSignal: signal,
-              onStepFinish: (step) => {
-                const usage = step.usage ?? {};
-                logger.info('orchestrator.step.completed', {
-                  fields: {
-                    step: ++stepOrdinal,
-                    durationMs: Date.now() - stepStartedAt,
-                    inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
-                    outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
-                    toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
-                  },
-                });
-                stepStartedAt = Date.now();
-              },
+            result = await abortable(this.generateOrchestratorTurn(prompt, message, invocation, signal, {
+              nextStep: () => ++stepOrdinal,
+              getStepStartedAt: () => stepStartedAt,
+              setStepStartedAt: (value) => { stepStartedAt = value; },
+              logger,
             }), signal);
           } catch (error) {
-            if (
-              !signal.aborted
-              && !invocation.delegationFailed
-              && invocation.teamResults.length !== 0
-            ) {
-              return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+            if (!signal.aborted && isWorkingMemoryFailure(error) && !invocation.memoryRetryUsed) {
+              invocation.memoryRetryUsed = true;
+              this.recordMemoryOutcome(memoryOutcomeFromError(error));
+              const retryPrompt = await abortable(this.orchestratorInput(message, invocation), signal);
+              try {
+                result = await abortable(this.generateOrchestratorTurn(retryPrompt, message, invocation, signal, {
+                  nextStep: () => ++stepOrdinal,
+                  getStepStartedAt: () => stepStartedAt,
+                  setStepStartedAt: (value) => { stepStartedAt = value; },
+                  logger,
+                }), signal);
+              } catch (retryError) {
+                if (isWorkingMemoryFailure(retryError)) this.recordMemoryOutcome(memoryOutcomeFromError(retryError));
+                throw retryError;
+              }
+            } else {
+              if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
+              if (
+                !signal.aborted
+                && invocation.memoryFailures.length === 0
+                && !invocation.delegationFailed
+                && invocation.teamResults.length !== 0
+              ) {
+                return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+              }
+              throw error;
             }
-            throw error;
           }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
           if (modelResultEndedOnRetry(result)) {
@@ -460,7 +542,10 @@ export class OrchestratorAgent {
               : selected === undefined
                 ? undefined
                 : checkedResultFallback(selected);
-            return turnFromTeamResults(message, invocation.teamResults, safeBody, invocation.transactionCaptureContinuation);
+            const memorySafeBody = invocation.memoryFailures.length === 0
+              ? safeBody
+              : await this.ensureMemoryFailureResponse(message, safeBody, invocation, signal);
+            return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
           }
           if (body === undefined) {
             throw new Error('Orchestrator returned an empty response.');
@@ -472,17 +557,15 @@ export class OrchestratorAgent {
             });
             body = 'I could not prepare a safe response. Please try again.';
           }
+          if (invocation.memoryFailures.length !== 0) {
+            body = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+          }
           return {
             kind: 'final',
             response: responseFromText(message, body, invocation.teamResults),
           };
         });
         if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-        const persistence = this.dependencies.sessionMemory?.persistTurn({
-          message,
-          assistantText: turn.response.body,
-        });
-        if (persistence !== undefined) await abortable(persistence, signal);
         logger.info('turn.completed', {
           fields: { status: turn.kind, durationMs: Date.now() - startedAt },
         });
@@ -501,20 +584,193 @@ export class OrchestratorAgent {
     });
   }
 
-  private async orchestratorInput(message: InboundChannelMessageV1) {
+  private async preflightWorkingMemory(invocation: OrchestratorInvocation): Promise<void> {
+    if (this.dependencies.sessionMemory === undefined) return;
+    try {
+      const result = await abortable(this.dependencies.sessionMemory.readWorkingMemory({
+        threadId: invocation.message.conversationId,
+        resourceId: invocation.message.householdId,
+      }), invocation.signal);
+      if (result.status === 'failed') this.recordMemoryOutcome(result.outcome);
+    } catch (error) {
+      if (invocation.signal.aborted) throw error;
+      this.recordMemoryOutcome(memoryOutcomeFromError(error));
+    }
+  }
+
+  private recordMemoryOutcome(outcome: WorkingMemoryOperationOutcome): void {
+    const active = this.activeInvocation.getStore();
+    if (active === undefined) return;
+    active.memoryOutcomes.push(outcome);
+    if (outcome.status !== 'failed') return;
+    const failure = memoryFailureFromOutcome(outcome);
+    active.memoryFailures.push(failure);
+    active.memoryState.memoryDegraded = true;
+  }
+
+  private beforeWorkingMemoryToolCall(context: { toolName: string; input: unknown }) {
+    if (!WORKING_MEMORY_TOOL_NAMES.has(context.toolName)) return;
+    const active = this.activeInvocation.getStore();
+    if (active === undefined) return;
+    const candidate = isRecord(context.input) && 'memory' in context.input
+      ? context.input.memory
+      : context.input;
+    const parsed = HouseholdWorkingMemoryPatchSchema.safeParse(candidate);
+    if (!parsed.success) {
+      const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
+      this.recordMemoryOutcome(outcome);
+      return { proceed: false as const, output: outcome };
+    }
+    const members = parsed.data.members;
+    if (members === null || (members !== undefined
+      && Object.keys(members).some((principalRef) => principalRef !== active.message.speaker.principalRef))) {
+      const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
+      this.recordMemoryOutcome(outcome);
+      return { proceed: false as const, output: outcome };
+    }
+    return;
+  }
+
+  private afterWorkingMemoryToolCall(context: {
+    toolName: string;
+    input: unknown;
+    output?: unknown;
+    error?: unknown;
+  }): void {
+    if (!WORKING_MEMORY_TOOL_NAMES.has(context.toolName)) return;
+    if (isRecord(context.output) && context.output.status === 'failed') return;
+    if (context.error !== undefined) {
+      this.recordMemoryOutcome(memoryOutcomeFromError(context.error, 'update'));
+      return;
+    }
+    if (isRecord(context.output) && context.output.success === false) {
+      this.recordMemoryOutcome(failedWorkingMemoryOutcome('update', 'working_memory_write_failed', 'storage_unavailable', 'after_backoff'));
+      return;
+    }
+    this.recordMemoryOutcome({
+      operation: 'update',
+      status: 'succeeded',
+      code: 'working_memory_update_succeeded',
+    });
+  }
+
+  private async generateOrchestratorTurn(
+    prompt: string | MastraDBMessage[],
+    message: InboundChannelMessageV1,
+    invocation: OrchestratorInvocation,
+    signal: AbortSignal,
+    input: {
+      nextStep(): number;
+      getStepStartedAt(): number;
+      setStepStartedAt(value: number): void;
+      logger: ReturnType<typeof getLogger>;
+    },
+  ) {
+    const generationOptions = {
+      ...this.orchestratorGenerateOptions(message, invocation.requestContext),
+      stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
+      errorProcessors: [createTransientModelRetryProcessor({
+        maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+      })],
+      maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+      toolChoice: 'auto',
+      prepareStep: async () => {
+        const activeTools = this.orchestratorToolNames(invocation);
+        if (canDelegateAnotherSubstep(invocation)) {
+          return { activeTools, toolChoice: 'auto' as const };
+        }
+        return activeTools.length === 0
+          ? { activeTools: [], toolChoice: 'none' as const }
+          : { activeTools, toolChoice: 'auto' as const };
+      },
+      abortSignal: signal,
+      onStepFinish: (step: {
+        usage?: { inputTokens?: number; outputTokens?: number };
+        toolCalls?: unknown[];
+      }) => {
+        const usage = step.usage ?? {};
+        input.logger.info('orchestrator.step.completed', {
+          fields: {
+            step: input.nextStep(),
+            durationMs: Date.now() - input.getStepStartedAt(),
+            inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
+            outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : 0,
+            toolCallCount: Array.isArray(step.toolCalls) ? step.toolCalls.length : 0,
+          },
+        });
+        input.setStepStartedAt(Date.now());
+      },
+    };
+    return this.agent.generate(prompt, generationOptions as never);
+  }
+
+  private orchestratorToolNames(invocation: OrchestratorInvocation): string[] {
+    const names: string[] = [];
+    if (this.dependencies.sessionMemory !== undefined && !invocation.memoryState.memoryDegraded) {
+      names.push('updateWorkingMemory', 'recall');
+    }
+    if (this.agentTools.forgetEverything !== undefined) names.push('forgetEverything');
+    if (canDelegateAnotherSubstep(invocation)) names.unshift('delegateTeam');
+    return names;
+  }
+
+  private async ensureMemoryFailureResponse(
+    message: InboundChannelMessageV1,
+    candidate: string | undefined,
+    invocation: OrchestratorInvocation,
+    signal: AbortSignal,
+  ): Promise<string> {
+    if (memoryFailureResponseIsSafe(candidate)) return candidate!;
+    const result = await abortable(this.agent.generate(
+      memoryFailureSynthesisPrompt(message, invocation.memoryFailures, candidate),
+      {
+        ...this.orchestratorGenerateOptions(message, invocation.requestContext),
+        stopWhen: stopAfterSemanticModelSteps(1),
+        toolChoice: 'none',
+        prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
+        abortSignal: signal,
+      },
+    ), signal);
+    const synthesized = finalStepResponseText(result);
+    if (memoryFailureResponseIsSafe(synthesized)) return synthesized;
+    throw new PlusOneError({
+      category: 'runtime_failure',
+      code: 'working_memory_response_failed',
+      message: 'Working Memory failure response could not be synthesized.',
+      retry: 'after_backoff',
+      receiptLookupRequired: false,
+    });
+  }
+
+  private async orchestratorInput(message: InboundChannelMessageV1, invocation?: OrchestratorInvocation) {
     if (this.dependencies.sessionMemory !== undefined) {
-      return [dateContextMessage(message), ...(await this.dependencies.sessionMemory.prepareInput({ message }))];
+      return [
+        dateContextMessage(message),
+        authenticatedPrincipalMessage(message),
+        ...(invocation === undefined ? [] : memoryFailureMessages(invocation.memoryFailures)),
+        userMessage(message),
+      ];
     }
     return inboundContextPrompt(message);
   }
 
-  private orchestratorGenerateOptions(message: InboundChannelMessageV1) {
-    if (this.dependencies.sessionMemory !== undefined) return {};
+  private orchestratorGenerateOptions(message: InboundChannelMessageV1, requestContext?: OrchestratorRequestContext) {
+    const memoryDegraded = requestContext?.get(ORCHESTRATOR_REQUEST_CONTEXT_KEY)?.memoryDegraded === true;
     return {
       memory: {
         thread: message.conversationId,
         resource: message.householdId,
+        ...(memoryDegraded ? {
+          options: {
+            readOnly: true as const,
+            lastMessages: false as const,
+            semanticRecall: false as const,
+            observationalMemory: false as const,
+            workingMemory: { enabled: false as const },
+          },
+        } : {}),
       },
+      ...(requestContext === undefined ? {} : { requestContext }),
     };
   }
 
@@ -524,7 +780,9 @@ export class OrchestratorAgent {
     signal: AbortSignal,
   ): Promise<string | undefined> {
     try {
+      const active = this.activeInvocation.getStore();
       const result = await abortable(this.agent.generate(finalSynthesisPrompt(message, teamResults), {
+        ...this.orchestratorGenerateOptions(message, active?.requestContext),
         stopWhen: stopAfterSemanticModelSteps(1),
         toolChoice: 'none',
         prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
@@ -586,6 +844,144 @@ function dateContextMessage(message: InboundChannelMessageV1): MastraDBMessage {
       content: dateContextText(message),
       parts: [{ type: 'text', text: dateContextText(message) }],
     },
+  };
+}
+
+function authenticatedPrincipalMessage(message: InboundChannelMessageV1): MastraDBMessage {
+  const displayName = message.speaker.displayName === undefined
+    ? 'not provided'
+    : message.speaker.displayName;
+  const content = [
+    `Authenticated speaker principal reference: ${message.speaker.principalRef}.`,
+    `Authenticated speaker display name: ${displayName}.`,
+    'Use this only to scope member Working Memory updates. Never include the principal reference in a user-facing response.',
+  ].join(' ');
+  return {
+    id: `orchestrator-principal-context-${message.externalMessageId}`,
+    role: 'system',
+    createdAt: new Date(message.receivedAt),
+    content: {
+      format: 2,
+      content,
+      parts: [{ type: 'text', text: content }],
+    },
+  };
+}
+
+function userMessage(message: InboundChannelMessageV1): MastraDBMessage {
+  return {
+    id: message.externalMessageId,
+    role: 'user',
+    createdAt: new Date(message.receivedAt),
+    threadId: message.conversationId,
+    resourceId: message.householdId,
+    content: {
+      format: 2,
+      content: message.body,
+      parts: [{ type: 'text', text: message.body }],
+    },
+  };
+}
+
+function memoryFailureMessages(failures: readonly OrchestratorMemoryFailure[]): MastraDBMessage[] {
+  return failures.map((failure, index) => {
+    const content = [
+      'Internal operation event. Do not quote these fields or expose implementation details.',
+      `Working Memory operation failed: ${JSON.stringify(failure)}.`,
+      'Explain the failure naturally if it affects the user request. Do not claim that the failed operation succeeded.',
+    ].join(' ');
+    return {
+      id: `orchestrator-working-memory-failure-${index}`,
+      role: 'system',
+      createdAt: new Date(),
+      content: {
+        format: 2,
+        content,
+        parts: [{ type: 'text', text: content }],
+      },
+    };
+  });
+}
+
+function memoryFailureSynthesisPrompt(
+  message: InboundChannelMessageV1,
+  failures: readonly OrchestratorMemoryFailure[],
+  candidate: string | undefined,
+): string {
+  return [
+    dateContextText(message),
+    `User request: ${message.body}`,
+    `Internal Working Memory outcomes: ${JSON.stringify(failures)}`,
+    candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
+    'Return only a concise user-facing response. Explain what could not be completed, do not claim the failed save or clear succeeded, and continue with verified information. Do not mention internal codes, schemas, tools, or identifiers.',
+  ].filter((part) => part.length > 0).join('\n\n');
+}
+
+function memoryFailureResponseIsSafe(value: string | undefined): value is string {
+  if (value === undefined || !memoryFailureAcknowledges(value) || memoryFailureClaimsSuccess(value)) return false;
+  return userFacingSafetyMatchCategory(value) === undefined;
+}
+
+function memoryFailureAcknowledges(value: string): boolean {
+  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|not available|unavailable|didn['’]t|did not|cannot|can['’]t|without)\b/i.test(value);
+}
+
+function memoryFailureClaimsSuccess(value: string): boolean {
+  return /\b(?:I|we|Plus One|the system)\s+(?:have\s+|has\s+|did\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value)
+    || /\b(?:is|was|has been)\s+(?:now\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value);
+}
+
+function isWorkingMemoryFailure(error: unknown): error is PlusOneError {
+  return error instanceof PlusOneError
+    && (/^working_memory_/.test(error.code) || /^observational_memory_/.test(error.code));
+}
+
+function memoryOperationFromCode(code: string): WorkingMemoryOperation {
+  if (/clear/i.test(code)) return 'clear';
+  if (/update|write/i.test(code)) return 'update';
+  if (/observation/i.test(code)) return 'observation';
+  return 'read';
+}
+
+function memoryOutcomeFromError(
+  error: unknown,
+  operation?: WorkingMemoryOperation,
+): WorkingMemoryOperationOutcome {
+  if (error instanceof PlusOneError) {
+    return {
+      operation: operation ?? memoryOperationFromCode(error.code),
+      status: 'failed',
+      code: error.code,
+      category: error.category,
+      retry: error.retry,
+    };
+  }
+  return failedWorkingMemoryOutcome(
+    operation ?? 'read',
+    `working_memory_${operation ?? 'read'}_failed`,
+    'runtime_failure',
+    'after_backoff',
+  );
+}
+
+function failedWorkingMemoryOutcome(
+  operation: WorkingMemoryOperation,
+  code: string,
+  category: ErrorCategoryV1,
+  retry: RetryDirectiveV1,
+): WorkingMemoryOperationOutcome {
+  return { operation, status: 'failed', code, category, retry };
+}
+
+function memoryFailureFromOutcome(outcome: WorkingMemoryOperationOutcome): OrchestratorMemoryFailure {
+  return {
+    operation: outcome.operation,
+    status: 'failed',
+    code: outcome.code,
+    category: outcome.category ?? 'runtime_failure',
+    retry: outcome.retry ?? 'after_backoff',
+    mustReportToUser: true,
+    mustNotClaimSuccess: true,
   };
 }
 
