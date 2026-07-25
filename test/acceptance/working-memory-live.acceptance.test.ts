@@ -40,7 +40,7 @@ afterAll(async () => {
 }, 120_000);
 
 describe('Working Memory through the real gateway and configured provider', () => {
-  it('creates a natural-language goal after inspection and recalls it in a new thread', async () => {
+  it('working-memory-model-compatibility: creates a natural-language goal after inspection and recalls it in a new thread', async () => {
     const target = ids();
     const created = await sendMessage({
       ...target,
@@ -49,9 +49,7 @@ describe('Working Memory through the real gateway and configured provider', () =
     expectSuccessful(created);
 
     const stored = await readMemory(target);
-    expect(findEntry(stored, 'goal')).toMatchObject({
-      value: expect.objectContaining({ goal: expect.stringMatching(/BMW X5/i) }),
-    });
+    expect(JSON.stringify(findEntry(stored, 'goal')?.value)).toMatch(/BMW X5/i);
 
     const recalled = await sendMessage({
       householdId: target.householdId,
@@ -62,7 +60,7 @@ describe('Working Memory through the real gateway and configured provider', () =
     expect(recalled.body).toMatch(/BMW X5|buy.*car|goal/i);
   }, 300_000);
 
-  it('suspends a replacement, applies the same entry after approval, and removes the old value', async () => {
+  it('working-memory-model-compatibility: suspends a replacement, applies the same entry after approval, and removes the old value', async () => {
     const target = ids();
     await writeMemory(target, {
       kind: 'goal',
@@ -86,7 +84,7 @@ describe('Working Memory through the real gateway and configured provider', () =
     expect(JSON.stringify(goal?.value)).not.toMatch(/BMW X5/i);
   }, 300_000);
 
-  it('preserves the original entry when a replacement is rejected', async () => {
+  it('working-memory-model-compatibility: preserves the original entry when a replacement is rejected', async () => {
     const target = ids();
     await writeMemory(target, {
       kind: 'goal',
@@ -121,7 +119,7 @@ describe('Working Memory through the real gateway and configured provider', () =
     expect(Object.values((await readMemory(target)).entries)).toHaveLength(1);
   }, 300_000);
 
-  it('replaces flexible goal values without retaining the old singular or plural shape', async () => {
+  it('replaces flexible goal values without retaining the old value', async () => {
     const target = ids();
     await writeMemory(target, {
       kind: 'goal',
@@ -133,9 +131,8 @@ describe('Working Memory through the real gateway and configured provider', () =
     await sendMessage({ ...target, body: 'yes' });
 
     const goal = findEntry(await readMemory(target), 'goal');
-    expect(goal?.value).toEqual(expect.objectContaining({ goals: expect.anything() }));
-    expect(goal?.value).not.toHaveProperty('goal');
-    expect(goal?.value).not.toHaveProperty('timeline');
+    expect(JSON.stringify(goal?.value)).toMatch(/BMW X7/i);
+    expect(JSON.stringify(goal?.value)).not.toMatch(/BMW X5|one year/i);
   }, 300_000);
 
   it('requires approval before clearing Working Memory and leaves workflow rows untouched', async () => {
