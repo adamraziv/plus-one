@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
-import { deepMergeWorkingMemory } from '@mastra/memory';
 import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
 import { ZodError } from 'zod';
@@ -12,11 +11,10 @@ import {
 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
-  HouseholdWorkingMemoryAgentPatchSchema,
   MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  PendingWorkingMemoryMutationSchema,
   TeamResultEnvelopeSchemaV2,
-  HouseholdWorkingMemorySchema,
   PlusOneError,
   type ChannelKindV1,
   type ErrorCategoryV1,
@@ -24,6 +22,7 @@ import {
   type OrchestratorFinalResponseV1,
   type RetryDirectiveV1,
   type TeamResultEnvelopeV2,
+  type PendingWorkingMemoryMutation,
 } from '@plus-one/contracts';
 import {
   createTransientModelRetryProcessor,
@@ -41,9 +40,11 @@ import {
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import type {
   OrchestratorSessionMemoryPort,
+  WorkingMemoryMutationOperation,
   WorkingMemoryOperation,
   WorkingMemoryOperationOutcome,
 } from '../memory/orchestrator-session-memory.js';
+import { proposalExpired } from '../memory/working-memory-document.js';
 import {
   internalIdentifierMatchCategory,
   type InternalIdentifierMatchCategory,
@@ -57,7 +58,11 @@ import {
   type OrchestratorTeamRuntime,
 } from '../tools/delegate-team.js';
 import { requestForRuntime } from '../tools/delegate-team-schemas.js';
-import { createForgetEverythingTool } from '../tools/working-memory.js';
+import {
+  createInspectWorkingMemoryTool,
+  createMutateWorkingMemoryTool,
+  type WorkingMemoryInspectionContext,
+} from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
 
 const orchestratorInstructions = [
@@ -98,13 +103,13 @@ const orchestratorInstructions = [
   'Do not execute payments, trades, tax filings, provider account changes, or external financial actions.',
   'After delegateTeam returns, explain the checked result to the user in concise natural language.',
   'Working Memory is durable household context, scoped to the authenticated household resource and the current conversation thread.',
-  'Use the native updateWorkingMemory tool only for durable user-provided facts such as long-term goals, saving preferences, names, nicknames, communication preferences, and household conventions.',
-  'When the user asks you to remember, save, store, or update a durable fact, you MUST call the native updateWorkingMemory tool before replying.',
-  'The native updateWorkingMemory tool takes one object parameter named memory; put the Working Memory patch inside that memory field.',
-  'Preserve every explicit structured value the user provides in Working Memory. Do not silently summarize, omit, or replace fields; for an exact list replacement, pass the complete replacement array to the tool.',
-  'When the user asks to forget one saved field, call native updateWorkingMemory with that field set to null; use forgetEverything only when the user asks to clear all saved Working Memory.',
-  'Never claim a durable Working Memory save succeeded unless the native tool reports success.',
-  'Use forgetEverything when the user explicitly asks to forget all saved Working Memory; it does not delete accounting facts, transactions, channel history, or workflow snapshots.',
+  'Use Working Memory only for durable user-provided conversational context such as goals, saving preferences, names, communication preferences, and household conventions.',
+  'Before every create, replace, delete, or clear, call inspectWorkingMemory in this same turn.',
+  'Pass the exact revision returned by inspection to mutateWorkingMemory.',
+  'Use create for a new entry and an inspected entryId for replace or delete.',
+  'Never invent an entryId or revision, and never provide household, thread, or principal identifiers to either tool.',
+  'When confirmation is required, explain the proposed change naturally and ask for approval.',
+  'Never claim a mutation succeeded unless the tool reports working_memory_mutation_succeeded.',
   'Treat authenticated principal context as internal authorization context. Never expose or ask for principal, household, thread, or other system identifiers.',
   'When an internal memory-operation event says Working Memory failed, explain the failure naturally, do not claim the information was saved or cleared, and continue with only information that remains verified.',
   'Return only the user-facing reply text when you are not calling a tool.',
@@ -115,7 +120,6 @@ const FINAL_REPLY_FORMAT = 'mrkdwn' as const;
 const MAX_ORCHESTRATOR_STEPS = 6;
 const ORCHESTRATOR_MODEL_STEP_RETRIES = 2;
 const ORCHESTRATOR_REQUEST_CONTEXT_KEY = 'plus-one.orchestrator' as const;
-const WORKING_MEMORY_TOOL_NAMES = new Set(['updateWorkingMemory', 'setWorkingMemory', 'update-working-memory']);
 
 type OrchestratorMemoryFailure = {
   operation: WorkingMemoryOperation;
@@ -152,7 +156,16 @@ type OrchestratorInvocation = {
   delegationCount: number;
   delegationFailed: boolean;
   transactionCaptureContinuation?: TransactionCaptureContinuationV1;
+  workingMemoryInspection?: WorkingMemoryInspectionContext;
+  pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
   channelEvents?: ChannelEventSink;
+};
+
+type WorkingMemorySynthesisEvent = {
+  kind: 'confirmation' | 'applied' | 'rejected' | 'failed';
+  operation: WorkingMemoryMutationOperation;
+  summary: string;
+  directive: string;
 };
 
 export type OrchestratorTurnResult =
@@ -161,6 +174,7 @@ export type OrchestratorTurnResult =
       kind: 'ask-user';
       response: OrchestratorFinalResponseV1;
       pendingMutation?: TeamResultEnvelopeV2;
+      pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
       transactionContinuation?: TransactionCaptureContinuationV1;
     };
 
@@ -183,7 +197,8 @@ export class OrchestratorAgent {
   readonly agent: OrchestratorAgentInstance;
   readonly agentTools: {
     delegateTeam: ReturnType<typeof createDelegateTeamTool>;
-    forgetEverything?: ReturnType<typeof createForgetEverythingTool>;
+    inspectWorkingMemory?: ReturnType<typeof createInspectWorkingMemoryTool>;
+    mutateWorkingMemory?: ReturnType<typeof createMutateWorkingMemoryTool>;
   };
 
   constructor(private readonly dependencies: {
@@ -265,7 +280,7 @@ export class OrchestratorAgent {
       }),
     };
     if (dependencies.sessionMemory !== undefined) {
-      this.agentTools.forgetEverything = createForgetEverythingTool({
+      this.agentTools.inspectWorkingMemory = createInspectWorkingMemoryTool({
         memory: dependencies.sessionMemory,
         getActiveInvocation: () => {
           const active = this.activeInvocation.getStore();
@@ -273,7 +288,34 @@ export class OrchestratorAgent {
           return {
             message: active.message,
             signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
           };
+        },
+        recordInspection: (inspection) => {
+          const active = this.activeInvocation.getStore();
+          if (active !== undefined) active.workingMemoryInspection = inspection;
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+      this.agentTools.mutateWorkingMemory = createMutateWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        now: () => new Date(),
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
+        },
+        recordPendingMutation: (proposal) => {
+          const active = this.activeInvocation.getStore();
+          if (active !== undefined) active.pendingWorkingMemoryMutation = proposal;
         },
         recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
       });
@@ -286,10 +328,6 @@ export class OrchestratorAgent {
       model: toMastraModel(dependencies.model) as OrchestratorAgentConfig['model'],
       maxRetries: 0,
       tools: this.agentTools,
-      hooks: {
-        beforeToolCall: (context) => this.beforeWorkingMemoryToolCall(context),
-        afterToolCall: (context) => this.afterWorkingMemoryToolCall(context),
-      },
       inputProcessors: [new TokenLimiter({ limit: ORCHESTRATOR_INPUT_TOKEN_LIMIT, trimMode: 'best-fit' })],
     };
     if (dependencies.sessionMemory !== undefined) {
@@ -377,6 +415,129 @@ export class OrchestratorAgent {
     }
   }
 
+  async resolvePendingWorkingMemoryMutation(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    transactionContinuation?: TransactionCaptureContinuationV1;
+    signal?: AbortSignal;
+  }): Promise<OrchestratorTurnResult> {
+    void input.transactionContinuation;
+    const pending = PendingWorkingMemoryMutationSchema.parse(input.pending);
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      if (pending.householdId !== input.message.householdId
+        || pending.conversationId !== input.message.conversationId
+        || pending.speakerPrincipalRef !== input.message.speaker.principalRef) {
+        throw new PlusOneError({
+          category: 'validation_rejected',
+          code: 'working_memory_pending_mismatch',
+          message: 'Working Memory proposal does not match the authenticated conversation.',
+          retry: 'never',
+          receiptLookupRequired: false,
+        });
+      }
+
+      if (proposalExpired(pending.expiresAt, new Date())) {
+        const response = await this.synthesizeWorkingMemoryOutcome({
+          message: input.message,
+          event: workingMemoryEvent(pending, 'failed', 'The proposal expired before it was approved.'),
+          signal,
+        });
+        return { kind: 'final', response };
+      }
+
+      const decision = confirmationDecision(input.message.body);
+      if (decision === 'reject') {
+        const response = await this.synthesizeWorkingMemoryOutcome({
+          message: input.message,
+          event: workingMemoryEvent(pending, 'rejected', 'Do not make this change.'),
+          signal,
+        });
+        return { kind: 'final', response };
+      }
+      if (decision === 'unclear') {
+        const response = await this.synthesizeWorkingMemoryOutcome({
+          message: input.message,
+          event: workingMemoryConfirmationEvent(pending),
+          signal,
+        });
+        return {
+          kind: 'ask-user',
+          response,
+          pendingWorkingMemoryMutation: pending,
+        };
+      }
+
+      const memory = this.dependencies.sessionMemory;
+      if (memory === undefined) {
+        const response = await this.synthesizeWorkingMemoryOutcome({
+          message: input.message,
+          event: workingMemoryEvent(pending, 'failed', 'The change could not be stored.'),
+          signal,
+        });
+        return { kind: 'final', response };
+      }
+      const applied = await memory.applyWorkingMemoryMutation({
+        threadId: input.message.conversationId,
+        resourceId: input.message.householdId,
+        principalRef: input.message.speaker.principalRef,
+        basedOnRevision: pending.basedOnRevision,
+        mutation: pending.mutation,
+      });
+      if (applied.status === 'failed') {
+        const directive = applied.code === 'working_memory_revision_stale'
+          ? 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.'
+          : 'Do not say the change was completed because storage did not verify it.';
+        const response = await this.synthesizeWorkingMemoryOutcome({
+          message: input.message,
+          event: workingMemoryEvent(pending, 'failed', directive),
+          signal,
+        });
+        return { kind: 'final', response };
+      }
+      const response = await this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryEvent(pending, 'applied', 'Confirm that the change was verified and completed.'),
+        signal,
+      });
+      return { kind: 'final', response };
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  private async synthesizeWorkingMemoryOutcome(input: {
+    message: InboundChannelMessageV1;
+    event: WorkingMemorySynthesisEvent;
+    signal: AbortSignal;
+  }): Promise<OrchestratorFinalResponseV1> {
+    let candidate: string | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await abortable(this.agent.generate(
+        workingMemorySynthesisPrompt(input.message, input.event, candidate),
+        {
+          ...this.orchestratorGenerateOptions(input.message),
+          stopWhen: stopAfterSemanticModelSteps(1),
+          toolChoice: 'none',
+          prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
+          abortSignal: input.signal,
+        },
+      ), input.signal);
+      candidate = finalStepResponseText(result);
+      if (workingMemorySynthesisResponseIsSafe(candidate, input.event)) {
+        return responseFromText(input.message, candidate);
+      }
+    }
+    throw new PlusOneError({
+      category: 'runtime_failure',
+      code: 'working_memory_response_failed',
+      message: 'Working Memory outcome response could not be synthesized.',
+      retry: 'after_backoff',
+      receiptLookupRequired: false,
+    });
+  }
+
   private async continueTransactionCapture(input: {
     message: InboundChannelMessageV1;
     pending: TeamResultEnvelopeV2;
@@ -458,7 +619,6 @@ export class OrchestratorAgent {
         const turn: OrchestratorTurnResult = await this.activeInvocation.run(invocation, async () => {
           const contextStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          await this.preflightWorkingMemory(invocation);
           const prompt = await abortable(this.orchestratorInput(message, invocation), signal);
           logger.info('turn.context.prepared', {
             fields: {
@@ -519,6 +679,18 @@ export class OrchestratorAgent {
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
             throw new Error('Delegated team did not return a checked result.');
           }
+          if (invocation.pendingWorkingMemoryMutation !== undefined) {
+            const response = await this.synthesizeWorkingMemoryOutcome({
+              message,
+              event: workingMemoryConfirmationEvent(invocation.pendingWorkingMemoryMutation),
+              signal,
+            });
+            return {
+              kind: 'ask-user',
+              response,
+              pendingWorkingMemoryMutation: invocation.pendingWorkingMemoryMutation,
+            };
+          }
           let body = finalStepResponseText(result);
           if (invocation.teamResults.length !== 0) {
             const selected = selectTeamResult(invocation.teamResults);
@@ -560,14 +732,6 @@ export class OrchestratorAgent {
             return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
           }
           if (body === undefined) {
-            if (hasMalformedWorkingMemoryToolCall(result)) {
-              this.recordMemoryOutcome(failedWorkingMemoryOutcome(
-                'update',
-                'working_memory_update_rejected',
-                'validation_rejected',
-                'never',
-              ));
-            }
             if (invocation.memoryFailures.length !== 0) {
               body = await this.ensureMemoryFailureResponse(message, undefined, invocation, signal);
             }
@@ -607,20 +771,6 @@ export class OrchestratorAgent {
     });
   }
 
-  private async preflightWorkingMemory(invocation: OrchestratorInvocation): Promise<void> {
-    if (this.dependencies.sessionMemory === undefined) return;
-    try {
-      const result = await abortable(this.dependencies.sessionMemory.readWorkingMemory({
-        threadId: invocation.message.conversationId,
-        resourceId: invocation.message.householdId,
-      }), invocation.signal);
-      if (result.status === 'failed') this.recordMemoryOutcome(result.outcome);
-    } catch (error) {
-      if (invocation.signal.aborted) throw error;
-      this.recordMemoryOutcome(memoryOutcomeFromError(error));
-    }
-  }
-
   private recordMemoryOutcome(outcome: WorkingMemoryOperationOutcome): void {
     const active = this.activeInvocation.getStore();
     if (active === undefined) return;
@@ -629,77 +779,6 @@ export class OrchestratorAgent {
     const failure = memoryFailureFromOutcome(outcome);
     active.memoryFailures.push(failure);
     active.memoryState.memoryDegraded = true;
-  }
-
-  private async beforeWorkingMemoryToolCall(context: { toolName: string; input: unknown }) {
-    if (!WORKING_MEMORY_TOOL_NAMES.has(context.toolName)) return;
-    const active = this.activeInvocation.getStore();
-    if (active === undefined) return;
-    const rawCandidate = isRecord(context.input) && 'memory' in context.input
-      ? context.input.memory
-      : context.input;
-    const candidate = parseWorkingMemoryToolInput(rawCandidate);
-    const parsed = HouseholdWorkingMemoryAgentPatchSchema.safeParse(candidate);
-    if (!parsed.success) {
-      const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
-      this.recordMemoryOutcome(outcome);
-      return { proceed: false as const, output: outcome };
-    }
-
-    try {
-      const current = await this.dependencies.sessionMemory?.readWorkingMemory({
-        threadId: active.message.conversationId,
-        resourceId: active.message.householdId,
-      });
-      if (current?.status === 'failed') {
-        this.recordMemoryOutcome(current.outcome);
-        return { proceed: false as const, output: current.outcome };
-      }
-      const merged = deepMergeWorkingMemory(
-        current?.value as Record<string, unknown> | undefined ?? {},
-        parsed.data as Record<string, unknown>,
-      );
-      if (!HouseholdWorkingMemorySchema.safeParse(merged).success) {
-        const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
-        this.recordMemoryOutcome(outcome);
-        return { proceed: false as const, output: outcome };
-      }
-    } catch {
-      const outcome = failedWorkingMemoryOutcome('read', 'working_memory_read_failed', 'storage_unavailable', 'after_backoff');
-      this.recordMemoryOutcome(outcome);
-      return { proceed: false as const, output: outcome };
-    }
-    const members = parsed.data.members;
-    if (members === null || (members !== undefined
-      && Object.keys(members).some((principalRef) => principalRef !== active.message.speaker.principalRef))) {
-      const outcome = failedWorkingMemoryOutcome('update', 'working_memory_update_rejected', 'validation_rejected', 'never');
-      this.recordMemoryOutcome(outcome);
-      return { proceed: false as const, output: outcome };
-    }
-    return;
-  }
-
-  private afterWorkingMemoryToolCall(context: {
-    toolName: string;
-    input: unknown;
-    output?: unknown;
-    error?: unknown;
-  }): void {
-    if (!WORKING_MEMORY_TOOL_NAMES.has(context.toolName)) return;
-    if (isRecord(context.output) && context.output.status === 'failed') return;
-    if (context.error !== undefined) {
-      this.recordMemoryOutcome(failedWorkingMemoryOutcome('update', 'working_memory_write_failed', 'storage_unavailable', 'after_backoff'));
-      return;
-    }
-    if (isRecord(context.output) && context.output.success === false) {
-      this.recordMemoryOutcome(failedWorkingMemoryOutcome('update', 'working_memory_write_failed', 'storage_unavailable', 'after_backoff'));
-      return;
-    }
-    this.recordMemoryOutcome({
-      operation: 'update',
-      status: 'succeeded',
-      code: 'working_memory_update_succeeded',
-    });
   }
 
   private async generateOrchestratorTurn(
@@ -755,9 +834,9 @@ export class OrchestratorAgent {
   private orchestratorToolNames(invocation: OrchestratorInvocation): string[] {
     const names: string[] = [];
     if (this.dependencies.sessionMemory !== undefined && !invocation.memoryState.memoryDegraded) {
-      names.push('updateWorkingMemory', 'recall');
+      if (this.agentTools.inspectWorkingMemory !== undefined) names.push('inspectWorkingMemory');
+      if (this.agentTools.mutateWorkingMemory !== undefined) names.push('mutateWorkingMemory');
     }
-    if (this.agentTools.forgetEverything !== undefined) names.push('forgetEverything');
     if (canDelegateAnotherSubstep(invocation)) names.unshift('delegateTeam');
     return names;
   }
@@ -973,6 +1052,75 @@ function memoryFailureResponseIsSafe(value: string | undefined): value is string
   return userFacingSafetyMatchCategory(value) === undefined;
 }
 
+function workingMemoryConfirmationEvent(
+  pending: PendingWorkingMemoryMutation,
+): WorkingMemorySynthesisEvent {
+  return workingMemoryEvent(
+    pending,
+    'confirmation',
+    'Explain the proposed change and ask the user to approve or decline it. Do not say it has been completed.',
+  );
+}
+
+function workingMemoryEvent(
+  pending: PendingWorkingMemoryMutation,
+  kind: WorkingMemorySynthesisEvent['kind'],
+  directive: string,
+): WorkingMemorySynthesisEvent {
+  return {
+    kind,
+    operation: pending.mutation.operation,
+    summary: workingMemoryMutationSummary(pending),
+    directive,
+  };
+}
+
+function workingMemoryMutationSummary(pending: PendingWorkingMemoryMutation): string {
+  const mutation = pending.mutation;
+  if (mutation.operation === 'clear') return 'all Working Memory';
+  if (mutation.operation === 'delete') return 'the selected Working Memory entry';
+  return mutation.entry.summary.replace(/\b(?:wme|wmproposal)_[A-Za-z0-9_-]+\b/gi, 'the selected entry');
+}
+
+function workingMemorySynthesisPrompt(
+  message: InboundChannelMessageV1,
+  event: WorkingMemorySynthesisEvent,
+  candidate: string | undefined,
+): string {
+  return [
+    dateContextText(message),
+    `User message: ${message.body}`,
+    `Working Memory operation: ${event.operation}`,
+    `Safe change summary: ${event.summary}`,
+    `Required response behavior: ${event.directive}`,
+    candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
+    'Return only a concise, natural user-facing response. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
+  ].filter((part) => part.length > 0).join('\n\n');
+}
+
+function workingMemorySynthesisResponseIsSafe(
+  value: string | undefined,
+  event: WorkingMemorySynthesisEvent,
+): value is string {
+  if (value === undefined || userFacingSafetyMatchCategory(value) !== undefined) return false;
+  if (event.kind === 'confirmation') {
+    return value.includes('?') && !memoryFailureClaimsSuccess(value) && !workingMemoryClaimsFailure(value);
+  }
+  if (event.kind === 'applied') {
+    return /\b(?:saved|stored|updated|remembered|applied|cleared|completed|done)\b/i.test(value)
+      && !workingMemoryClaimsFailure(value);
+  }
+  if (event.kind === 'rejected') {
+    return /\b(?:won['’]t|will not|not make|cancel|cancelled|canceled|declined|rejected|skipped)\b/i.test(value)
+      && !memoryFailureClaimsSuccess(value);
+  }
+  return workingMemoryClaimsFailure(value) && !memoryFailureClaimsSuccess(value);
+}
+
+function workingMemoryClaimsFailure(value: string): boolean {
+  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|expired|stale|changed|not completed|didn['’]t|did not|cannot|can['’]t|won['’]t|will not|not make|not stored|not saved|not updated)\b/i.test(value);
+}
+
 function memoryFailureAcknowledges(value: string): boolean {
   return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|not available|unavailable|didn['’]t|did not|cannot|can['’]t|without)\b/i.test(value);
 }
@@ -1022,15 +1170,6 @@ function failedWorkingMemoryOutcome(
   retry: RetryDirectiveV1,
 ): WorkingMemoryOperationOutcome {
   return { operation, status: 'failed', code, category, retry };
-}
-
-function parseWorkingMemoryToolInput(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
 }
 
 function memoryFailureFromOutcome(outcome: WorkingMemoryOperationOutcome): OrchestratorMemoryFailure {
@@ -1143,18 +1282,6 @@ function finalStepResponseText(result: unknown): string | undefined {
 
 function hasToolCalls(step: unknown): boolean {
   return isRecord(step) && Array.isArray(step.toolCalls) && step.toolCalls.length > 0;
-}
-
-function hasMalformedWorkingMemoryToolCall(result: unknown): boolean {
-  if (!isRecord(result) || !Array.isArray(result.steps)) return false;
-  return result.steps.some((step) => {
-    if (!isRecord(step) || !Array.isArray(step.toolCalls)) return false;
-    return step.toolCalls.some((toolCall) => {
-      if (!isRecord(toolCall) || typeof toolCall.toolName !== 'string') return false;
-      if (!WORKING_MEMORY_TOOL_NAMES.has(toolCall.toolName)) return false;
-      return toolCall.args === undefined || toolCall.args === null;
-    });
-  });
 }
 
 function delegationCommentary(team: string, request: unknown): string {
