@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMastraMemoryStorage } from '@plus-one/database';
+import { FlexibleWorkingMemorySchema, WorkingMemoryEntryIdSchema } from '@plus-one/contracts';
 import { createOrchestratorSessionMemory } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
+import { workingMemoryRevision } from '../../apps/engine/src/memory/working-memory-document.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const model = {
@@ -167,5 +169,71 @@ describe('orchestrator session memory', () => {
     });
 
     expect(messages?.messages).toEqual([]);
+  });
+
+  it('migrates legacy storage through Mastra and recalls the same resource across threads', async () => {
+    context = await createPostgresTestContext('orchestrator_working_memory_migration');
+    const first = createOrchestratorSessionMemory({ connectionString: context.roleUrls.memory, model });
+    closables.push(first);
+    await first.agentMemory.updateWorkingMemory({
+      threadId: firstThreadId,
+      resourceId,
+      workingMemory: JSON.stringify({ goals: { car: { summary: 'Buy a BMW X5.', horizon: 'one year' } } }),
+    });
+
+    const inspected = await first.inspectWorkingMemory({
+      threadId: firstThreadId,
+      resourceId,
+      principalRef: 'telegram:user:test',
+    });
+    expect(inspected).toMatchObject({ status: 'succeeded', inspection: { entries: [{ kind: 'goal' }] } });
+
+    const second = createOrchestratorSessionMemory({ connectionString: context.roleUrls.memory, model });
+    closables.push(second);
+    await expect(second.inspectWorkingMemory({
+      threadId: secondThreadId,
+      resourceId,
+      principalRef: 'telegram:user:test',
+    })).resolves.toMatchObject({ status: 'succeeded', inspection: { entries: [{ kind: 'goal' }] } });
+  });
+
+  it('rejects an approval based on an old inspection after another complete write', async () => {
+    context = await createPostgresTestContext('orchestrator_working_memory_stale');
+    const memory = createOrchestratorSessionMemory({ connectionString: context.roleUrls.memory, model });
+    closables.push(memory);
+    const empty = FlexibleWorkingMemorySchema.parse({ version: 1, entries: {} });
+    const firstEntryId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    const secondEntryId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAW');
+    const inspected = await memory.inspectWorkingMemory({
+      threadId: firstThreadId,
+      resourceId,
+      principalRef: 'telegram:user:test',
+    });
+    expect(inspected.status).toBe('succeeded');
+    if (inspected.status !== 'succeeded') throw new Error('Expected inspection success');
+
+    await expect(memory.applyWorkingMemoryMutation({
+      threadId: firstThreadId,
+      resourceId,
+      principalRef: 'telegram:user:test',
+      basedOnRevision: workingMemoryRevision(empty),
+      mutation: {
+        operation: 'create',
+        entryId: firstEntryId,
+        entry: { kind: 'goal', summary: 'Buy a BMW X5.', scope: 'household', value: { goal: 'BMW X5' } },
+      },
+    })).resolves.toMatchObject({ status: 'succeeded' });
+
+    await expect(memory.applyWorkingMemoryMutation({
+      threadId: firstThreadId,
+      resourceId,
+      principalRef: 'telegram:user:test',
+      basedOnRevision: inspected.inspection.revision,
+      mutation: {
+        operation: 'create',
+        entryId: secondEntryId,
+        entry: { kind: 'goal', summary: 'Buy a BMW X7.', scope: 'household', value: { goal: 'BMW X7' } },
+      },
+    })).resolves.toMatchObject({ status: 'failed', code: 'working_memory_revision_stale' });
   });
 });
