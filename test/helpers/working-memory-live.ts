@@ -1,8 +1,7 @@
 import { Pool } from 'pg';
 import {
-  HouseholdWorkingMemorySchema,
-  type HouseholdWorkingMemory,
-  type HouseholdWorkingMemoryPatch,
+  type FlexibleWorkingMemory,
+  type ResolvedWorkingMemoryMutation,
 } from '@plus-one/contracts';
 import {
   createOrchestratorSessionMemory,
@@ -96,20 +95,22 @@ export async function readLiveWorkingMemory(input: {
   model: EngineLlmModelConfig;
   threadId: string;
   resourceId: string;
-}): Promise<HouseholdWorkingMemory> {
+  principalRef: string;
+}): Promise<FlexibleWorkingMemory> {
   const memory = createOrchestratorSessionMemory({
     connectionString: input.connectionString,
     model: input.model,
   });
   try {
-    const result = await memory.readWorkingMemory({
+    const result = await memory.inspectWorkingMemory({
       threadId: input.threadId,
       resourceId: input.resourceId,
+      principalRef: input.principalRef,
     });
     if (result.status === 'failed') {
       throw new Error(`Working Memory readback failed with ${result.outcome.code}.`);
     }
-    return HouseholdWorkingMemorySchema.parse(result.value);
+    return result.document;
   } finally {
     await memory.close();
   }
@@ -120,17 +121,28 @@ export async function writeLiveWorkingMemory(input: {
   model: EngineLlmModelConfig;
   threadId: string;
   resourceId: string;
-  patch: HouseholdWorkingMemoryPatch;
+  principalRef: string;
+  mutation: ResolvedWorkingMemoryMutation;
 }): Promise<void> {
   const memory: OrchestratorSessionMemoryPort = createOrchestratorSessionMemory({
     connectionString: input.connectionString,
     model: input.model,
   });
   try {
-    const outcome = await memory.applyWorkingMemoryPatch({
+    const inspected = await memory.inspectWorkingMemory({
       threadId: input.threadId,
       resourceId: input.resourceId,
-      patch: input.patch,
+      principalRef: input.principalRef,
+    });
+    if (inspected.status !== 'succeeded') {
+      throw new Error(`Working Memory seed inspection failed with ${inspected.outcome.code}.`);
+    }
+    const outcome = await memory.applyWorkingMemoryMutation({
+      threadId: input.threadId,
+      resourceId: input.resourceId,
+      principalRef: input.principalRef,
+      basedOnRevision: inspected.inspection.revision,
+      mutation: input.mutation,
     });
     if (outcome.status !== 'succeeded') {
       throw new Error(`Working Memory seed failed with ${outcome.code}.`);

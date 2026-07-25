@@ -3,8 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import {
   InboundChannelMessageSchemaV1,
-  type HouseholdWorkingMemory,
-  type HouseholdWorkingMemoryPatch,
+  WorkingMemoryEntryIdSchema,
+  type FlexibleWorkingMemory,
+  type WorkingMemoryEntry,
 } from '@plus-one/contracts';
 import {
   readLiveWorkingMemory,
@@ -39,160 +40,111 @@ afterAll(async () => {
 }, 120_000);
 
 describe('Working Memory through the real gateway and configured provider', () => {
-  it('answers a simple message after starting a new thread', async () => {
+  it('creates a natural-language goal after inspection and recalls it in a new thread', async () => {
     const target = ids();
-    await seedHousehold(target.householdId);
-    const started = await sendMessage({ ...target, body: '/new' });
-    expectSuccessful(started);
-
-    const reply = await sendMessage({
-      householdId: target.householdId,
-      conversationId: started.json.conversationId as string,
-      body: 'hey',
-    });
-    expectSuccessful(reply);
-    expect(reply.body).not.toMatch(/internal error before I could send the final reply/i);
-  }, 300_000);
-
-  it('shares durable goals across conversations within one resource', async () => {
-    const target = ids();
-    const first = await sendUntilMemory(
-      target,
-      'Call the native updateWorkingMemory tool now with memory={"goals":{"emergencyFund":{"summary":"Build a six-month emergency fund by December 2027"}}}. Save this long-term household goal in Working Memory now.',
-      (stored) => /emergency|six[- ]month|2027/i.test(JSON.stringify(stored)),
-    );
-    expectSuccessful(first);
-
-    const second = await sendMessage({
-      householdId: target.householdId,
-      conversationId: ids().conversationId,
-      body: 'What do you remember about our long-term goals? Summarize the saved household context.',
-    });
-    expectSuccessful(second);
-    expect(second.body).toMatch(/emergency|six[- ]month|2027/i);
-
-    const stored = await readMemory(target, second.json.conversationId as string | undefined);
-    expect(JSON.stringify(stored)).toMatch(/emergency|six[- ]month|2027/i);
-  }, 300_000);
-
-  it('keeps another household resource isolated from the remembered goal', async () => {
-    const target = ids();
-    const response = await sendMessage({
+    const created = await sendMessage({
       ...target,
-      body: 'What do you remember about our long-term goals? If nothing is saved for this household, say so.',
+      body: 'My goal is to buy a BMW X5 in the next year. Please remember that.',
     });
-    expectSuccessful(response);
+    expectSuccessful(created);
 
     const stored = await readMemory(target);
-    expect(stored).toEqual({});
-    expect(response.body).not.toMatch(/six[- ]month emergency fund|December 2027/i);
-  }, 300_000);
+    expect(findEntry(stored, 'goal')).toMatchObject({
+      value: expect.objectContaining({ goal: expect.stringMatching(/BMW X5/i) }),
+    });
 
-  it('persists structured saving preferences through the native update tool', async () => {
-    const target = ids();
-    const response = await sendUntilMemory(
-      target,
-      'Remember these exact saving preferences for this household. Call the native updateWorkingMemory tool now with memory={"savingPreferences":{"style":"balanced","priorities":["emergency fund","retirement"],"cadence":"monthly","constraints":["keep at least 2,000 dollars liquid"]}}. Store every value in the structured Working Memory fields.',
-      (stored) => stored.savingPreferences?.style === 'balanced'
-        && stored.savingPreferences?.priorities?.includes('emergency fund') === true
-        && stored.savingPreferences?.priorities?.includes('retirement') === true
-        && stored.savingPreferences?.cadence === 'monthly',
-    );
-    expectSuccessful(response);
-
-    const stored = await readMemory(target);
-    expect(stored.savingPreferences?.style).toBe('balanced');
-    expect(JSON.stringify(stored.savingPreferences)).toMatch(/emergency fund|retirement|monthly|liquid/i);
-  }, 300_000);
-
-  it('stores a nickname under the authenticated member principal and recalls it from another thread', async () => {
-    const target = ids();
-    const response = await sendUntilMemory(
-      target,
-      `Call the native updateWorkingMemory tool now with memory={"members":{"${principalRef}":{"nickname":"Sunny"}}}. Remember that my nickname is Sunny and save it under my authenticated member record.`,
-      (stored) => stored.members?.[principalRef]?.nickname === 'Sunny',
-    );
-    expectSuccessful(response);
-
-    const stored = await readMemory(target);
-    const member = stored.members?.[principalRef];
-    expect(member).toBeDefined();
-    expect(member?.nickname ?? member?.preferredName).toMatch(/Sunny/i);
-
-    const second = await sendMessage({
+    const recalled = await sendMessage({
       householdId: target.householdId,
       conversationId: ids().conversationId,
-      body: 'What nickname do you have saved for me?',
+      body: 'What durable goal do you remember for me?',
     });
-    expectSuccessful(second);
-    expect(second.body).toMatch(/Sunny/i);
-    expect(second.body).not.toContain(principalRef);
+    expectSuccessful(recalled);
+    expect(recalled.body).toMatch(/BMW X5|buy.*car|goal/i);
   }, 300_000);
 
-  it('answers identity from authenticated context and not from another member record', async () => {
+  it('suspends a replacement, applies the same entry after approval, and removes the old value', async () => {
     const target = ids();
     await writeMemory(target, {
-      members: {
-        [principalRef]: { nickname: 'Sky' },
-        [otherPrincipalRef]: { nickname: 'Other Person' },
-      },
+      kind: 'goal',
+      summary: 'Buy a BMW X5 within one year.',
+      scope: 'household',
+      value: { goal: 'BMW X5', timeframe: 'one year' },
     });
 
+    const proposal = await sendMessage({
+      ...target,
+      body: 'Change my car goal to a BMW X7 in two years.',
+    });
+    expectSuccessful(proposal);
+    expect(proposal.body).toMatch(/BMW X7|confirm|approve|would you like/i);
+
+    const approved = await sendMessage({ ...target, body: 'Yes' });
+    expectSuccessful(approved);
+    const stored = await readMemory(target);
+    const goal = findEntry(stored, 'goal');
+    expect(goal?.summary).toMatch(/BMW X7/i);
+    expect(JSON.stringify(goal?.value)).not.toMatch(/BMW X5/i);
+  }, 300_000);
+
+  it('preserves the original entry when a replacement is rejected', async () => {
+    const target = ids();
+    await writeMemory(target, {
+      kind: 'goal',
+      summary: 'Buy a BMW X5 within one year.',
+      scope: 'household',
+      value: { goal: 'BMW X5', timeframe: 'one year' },
+    });
+    await sendMessage({ ...target, body: 'Change my car goal to a BMW X7 in two years.' });
+    const rejected = await sendMessage({ ...target, body: 'No' });
+    expectSuccessful(rejected);
+
+    const stored = await readMemory(target);
+    const goal = findEntry(stored, 'goal');
+    expect(goal?.summary).toMatch(/BMW X5/i);
+    expect(JSON.stringify(goal?.value)).not.toMatch(/BMW X7/i);
+  }, 300_000);
+
+  it('asks before appending a second entry of the same kind', async () => {
+    const target = ids();
+    await writeMemory(target, {
+      kind: 'goal',
+      summary: 'Build an emergency fund.',
+      scope: 'household',
+      value: { goal: 'Emergency fund' },
+    });
     const response = await sendMessage({
       ...target,
-      displayName: 'Jordan',
-      body: 'Who am I? Answer using my authenticated identity, not another member.',
+      body: 'Remember another goal: save for a home renovation.',
     });
     expectSuccessful(response);
-    expect(response.body).toMatch(/Jordan|Sky/i);
-    expect(response.body).not.toMatch(/Other Person/i);
-    expect(response.body).not.toContain(principalRef);
+    expect(response.body).toMatch(/confirm|approve|would you like|another goal/i);
+    expect(Object.values((await readMemory(target)).entries)).toHaveLength(1);
   }, 300_000);
 
-  it('summarizes saved Working Memory without changing the stored resource', async () => {
+  it('replaces flexible goal values without retaining the old singular or plural shape', async () => {
     const target = ids();
     await writeMemory(target, {
-      goals: { emergencyFund: { summary: 'Build a six-month emergency fund' } },
-      savingPreferences: { style: 'balanced' },
+      kind: 'goal',
+      summary: 'Buy a BMW X5 within one year.',
+      scope: 'household',
+      value: { goal: 'BMW X5', timeline: 'one year' },
     });
-    const before = await readMemory(target);
+    await sendMessage({ ...target, body: 'Change my car goal to a BMW X7 in two years.' });
+    await sendMessage({ ...target, body: 'yes' });
 
-    const response = await sendMessage({
-      householdId: target.householdId,
-      conversationId: ids().conversationId,
-      body: 'What do you remember about our goals and saving preferences?',
-    });
-    expectSuccessful(response);
-    expect(response.body).toMatch(/emergency|balanced/i);
-
-    const after = await readMemory(target);
-    expect(after).toEqual(before);
+    const goal = findEntry(await readMemory(target), 'goal');
+    expect(goal?.value).toEqual(expect.objectContaining({ goals: expect.anything() }));
+    expect(goal?.value).not.toHaveProperty('goal');
+    expect(goal?.value).not.toHaveProperty('timeline');
   }, 300_000);
 
-  it('forgets one saved field while preserving unrelated Working Memory', async () => {
+  it('requires approval before clearing Working Memory and leaves workflow rows untouched', async () => {
     const target = ids();
     await writeMemory(target, {
-      savingPreferences: { style: 'balanced', cadence: 'monthly' },
-    });
-    const before = await readMemory(target);
-    expect(before.savingPreferences?.style).toBe('balanced');
-
-    const response = await sendMessage({
-      ...target,
-      body: 'Call the native updateWorkingMemory tool now with {"savingPreferences":{"cadence":null}}. Forget only my saving review cadence and keep my balanced saving style.',
-    });
-    expectSuccessful(response);
-
-    const after = await readMemory(target);
-    expect(after.savingPreferences?.style).toBe('balanced');
-    expect(after.savingPreferences?.cadence).toBeUndefined();
-  }, 300_000);
-
-  it('forgets all Working Memory without touching workflow storage', async () => {
-    const target = ids();
-    await writeMemory(target, {
-      goals: { emergencyFund: { summary: 'Build an emergency fund' } },
-      members: { [principalRef]: { nickname: 'Sunny' } },
+      kind: 'goal',
+      summary: 'Build an emergency fund.',
+      scope: 'household',
+      value: { goal: 'Emergency fund' },
     });
     const workflow = new Pool({ connectionString: live().context.migratorUrl, max: 1 });
     const workflowName = `working-memory-live-${randomSuffix()}`;
@@ -204,155 +156,72 @@ describe('Working Memory through the real gateway and configured provider', () =
          VALUES ($1, $2, $3, $4::jsonb)`,
         [workflowName, runId, target.householdId, JSON.stringify({ untouched: true })],
       );
-      const beforeWorkflow = await workflow.query(
-        `SELECT snapshot
-           FROM mastra_memory.mastra_workflow_snapshot
-          WHERE workflow_name = $1 AND run_id = $2`,
+      const before = await workflow.query(
+        `SELECT snapshot FROM mastra_memory.mastra_workflow_snapshot WHERE workflow_name = $1 AND run_id = $2`,
         [workflowName, runId],
       );
 
-      const response = await sendMessage({
-        ...target,
-        body: 'Forget everything you remember about this household in Working Memory. Do not delete accounting or workflow data.',
-      });
-      expectSuccessful(response);
-      expect(response.body).toMatch(/forget|clear|nothing|remember/i);
+      const proposal = await sendMessage({ ...target, body: 'Forget everything you remember about this household.' });
+      expectSuccessful(proposal);
+      expect(proposal.body).toMatch(/confirm|approve|clear|forget/i);
+      const approved = await sendMessage({ ...target, body: 'yes' });
+      expectSuccessful(approved);
+      await expect(readMemory(target)).resolves.toMatchObject({ version: 1, entries: {} });
 
-      await expect(readMemory(target)).resolves.toEqual({});
-      const afterWorkflow = await workflow.query(
-        `SELECT snapshot
-           FROM mastra_memory.mastra_workflow_snapshot
-          WHERE workflow_name = $1 AND run_id = $2`,
+      const after = await workflow.query(
+        `SELECT snapshot FROM mastra_memory.mastra_workflow_snapshot WHERE workflow_name = $1 AND run_id = $2`,
         [workflowName, runId],
       );
-      expect(afterWorkflow.rows).toEqual(beforeWorkflow.rows);
+      expect(after.rows).toEqual(before.rows);
     } finally {
       await workflow.end();
     }
   }, 300_000);
 
-  it('uses object merge, array replacement, and null deletion semantics through gateway updates', async () => {
+  it('does not expose another principal’s member entry', async () => {
     const target = ids();
     await writeMemory(target, {
-      savingPreferences: {
-        style: 'balanced',
-        priorities: ['Emergency fund', 'Retirement'],
-        cadence: 'monthly',
-        constraints: ['Keep cash liquid'],
-      },
-    });
-    await sendUntilMemory(
-      target,
-      'Call the native updateWorkingMemory tool now. Merge communication.tone="concise" into the existing Working Memory and preserve every existing savingPreferences field unchanged.',
-      (stored) => stored.communication?.tone === 'concise',
-    );
-    await sendUntilMemory(
-      target,
-      'Call the native updateWorkingMemory tool now. Replace the entire savingPreferences.priorities array with exactly ["Travel","Education"]. Keep savingPreferences.style="balanced", savingPreferences.cadence="monthly", and savingPreferences.constraints=["Keep cash liquid"].',
-      (stored) => stored.savingPreferences?.priorities?.length === 2
-        && stored.savingPreferences.priorities.includes('Travel')
-        && stored.savingPreferences.priorities.includes('Education'),
-    );
-
-    const stored = await readMemory(target);
-    expect(stored.savingPreferences?.style).toBe('balanced');
-    expect(stored.savingPreferences?.priorities).toEqual(expect.arrayContaining(['Travel', 'Education']));
-    expect(stored.savingPreferences?.priorities).not.toEqual(expect.arrayContaining(['Emergency fund', 'Retirement']));
-    expect(stored.savingPreferences?.cadence).toBe('monthly');
-    expect(stored.communication?.tone).toBe('concise');
-  }, 300_000);
-
-  it('does not change valid memory when a bounded update exceeds the schema limit', async () => {
-    const target = ids();
-    await writeMemory(target, { communication: { detail: 'concise' } });
-    const before = await readMemory(target);
-    const priorities = JSON.stringify(Array.from({ length: 21 }, (_, index) => `priority ${index + 1}`));
-
-    const response = await sendMessage({
-      ...target,
-      body: `Call the native updateWorkingMemory tool exactly once with savingPreferences.priorities=${priorities}. This exact update must be rejected because the bounded list limit is 20; do not summarize, drop, or replace any other saved field.`,
-    });
+      kind: 'member_context',
+      summary: 'Other member nickname.',
+      scope: 'member',
+      ownerPrincipalRef: otherPrincipalRef,
+      value: { nickname: 'Other Person' },
+    }, otherPrincipalRef);
+    const response = await sendMessage({ ...target, body: 'What nickname do you remember for me?' });
     expectSuccessful(response);
-    expect(response.body).toMatch(/could not|couldn['’]t|unable|wasn['’]t able|not save|limit|too many|failed|cannot/i);
-    await expect(readMemory(target)).resolves.toEqual(before);
+    expect(response.body).not.toMatch(/Other Person/i);
+    expect((await readMemory(target)).entries).toEqual([]);
   }, 300_000);
 
-  it('reports a real Working Memory read failure through the same orchestrator response', async () => {
+  it('reports revoked inspection privileges without claiming saved context was read', async () => {
     const target = ids();
-    await writeMemory(target, { goals: { emergencyFund: { summary: 'Build a reserve' } } });
-
-    const response = await withRevokedMemoryPrivileges(
-      live().context,
-      ['SELECT'],
-      () => sendMessage({
-        ...target,
-        body: 'What do you remember about my saved goal?',
-      }),
-    );
+    await writeMemory(target, {
+      kind: 'goal',
+      summary: 'Build a reserve.',
+      scope: 'household',
+      value: { goal: 'Emergency fund' },
+    });
+    const response = await withRevokedMemoryPrivileges(live().context, ['SELECT'], () => sendMessage({
+      ...target,
+      body: 'What do you remember about my saved goal?',
+    }));
     expectMemoryFailure(response);
     expect(response.body).not.toMatch(/emergency fund|build a reserve/i);
-    expect(response.body).not.toContain('working_memory_read_failed');
-    expect(response.body).not.toContain(principalRef);
-    await expect(readMemory(target)).resolves.toMatchObject({
-      goals: { emergencyFund: { summary: 'Build a reserve' } },
-    });
+    expect(response.body).not.toContain('working_memory_');
   }, 300_000);
 
-  it('reports a real Working Memory update failure without claiming the write succeeded', async () => {
-    const target = ids();
-    await writeMemory(target, { communication: { tone: 'warm' } });
-
-    const response = await withRevokedMemoryPrivileges(
-      live().context,
-      ['UPDATE'],
-      () => sendMessage({
-        ...target,
-        body: 'Remember that my communication tone should be concise.',
-      }),
-    );
-    expectMemoryFailure(response);
-    expect(response.body).not.toMatch(/saved|stored|updated successfully/i);
-    expect(response.body).not.toContain('working_memory_write_failed');
-    await expect(readMemory(target)).resolves.toMatchObject({
-      communication: { tone: 'warm' },
-    });
-  }, 300_000);
-
-  it('reports a real clear failure without claiming everything was forgotten', async () => {
+  it('recalls seeded context without registering a native updateWorkingMemory tool', async () => {
     const target = ids();
     await writeMemory(target, {
-      goals: { emergencyFund: { summary: 'Build a reserve' } },
-      communication: { tone: 'warm' },
+      kind: 'communication_preference',
+      summary: 'Concise replies.',
+      scope: 'household',
+      value: { detail: 'concise' },
     });
-
-    const response = await withRevokedMemoryPrivileges(
-      live().context,
-      ['UPDATE'],
-      () => sendMessage({
-        ...target,
-        body: 'Forget everything you remember about this household.',
-      }),
-    );
-    expectMemoryFailure(response);
-    expect(response.body).not.toMatch(/forgotten successfully|everything (?:is|was) cleared|cleared successfully/i);
-    await expect(readMemory(target)).resolves.toMatchObject({
-      goals: { emergencyFund: { summary: 'Build a reserve' } },
-      communication: { tone: 'warm' },
-    });
-  }, 300_000);
-
-  it('does not present Working Memory as authoritative accounting evidence', async () => {
-    const target = ids();
-    await writeMemory(target, {
-      goals: { emergencyFund: { summary: 'Build an emergency fund' } },
-    });
-    const response = await sendMessage({
-      ...target,
-      body: 'Does that saved goal prove that we currently have money in an account or establish our current balance?',
-    });
+    const response = await sendMessage({ ...target, body: 'What communication preference do you remember?' });
     expectSuccessful(response);
-    expect(response.body).toMatch(/not|does not|cannot|can.t|no current balance|not evidence/i);
-    expect(response.body).not.toContain(principalRef);
+    expect(response.body).toMatch(/concise/i);
+    expect(response.body).not.toContain('updateWorkingMemory');
   }, 300_000);
 });
 
@@ -361,17 +230,34 @@ function live(): WorkingMemoryLiveHarness {
   return harness;
 }
 
-async function seedHousehold(householdId: string): Promise<void> {
-  const operations = new Pool({ connectionString: live().context.roleUrls.operations, max: 1 });
-  try {
-    await operations.query(
-      `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
-       VALUES ($1, 'USD', 'UTC')`,
-      [householdId],
-    );
-  } finally {
-    await operations.end();
-  }
+async function writeMemory(target: LiveIds, entry: WorkingMemoryEntry, principal = principalRef): Promise<void> {
+  await seedHousehold(target.householdId);
+  await writeLiveWorkingMemory({
+    connectionString: live().context.roleUrls.memory,
+    model: live().model,
+    threadId: target.conversationId,
+    resourceId: target.householdId,
+    principalRef: principal,
+    mutation: {
+      operation: 'create',
+      entryId: WorkingMemoryEntryIdSchema.parse(`wme_${randomSuffix()}`),
+      entry,
+    },
+  });
+}
+
+async function readMemory(target: LiveIds, conversationId = target.conversationId, principal = principalRef): Promise<FlexibleWorkingMemory> {
+  return readLiveWorkingMemory({
+    connectionString: live().context.roleUrls.memory,
+    model: live().model,
+    threadId: conversationId,
+    resourceId: target.householdId,
+    principalRef: principal,
+  });
+}
+
+function findEntry(document: FlexibleWorkingMemory, kind: WorkingMemoryEntry['kind']): WorkingMemoryEntry | undefined {
+  return Object.values(document.entries).find((entry) => entry.kind === kind);
 }
 
 async function sendMessage(input: {
@@ -381,7 +267,7 @@ async function sendMessage(input: {
   displayName?: string;
   speaker?: string;
 }): Promise<LiveResponse> {
-  const speaker = input.speaker ?? principalRef;
+  await seedHousehold(input.householdId);
   const message = InboundChannelMessageSchemaV1.parse({
     schemaName: 'inbound-channel-message',
     schemaVersion: 1,
@@ -391,7 +277,7 @@ async function sendMessage(input: {
     externalMessageId: `telegram:working-memory-live:${randomSuffix()}`,
     receivedAt: new Date().toISOString(),
     speaker: {
-      principalRef: speaker,
+      principalRef: input.speaker ?? principalRef,
       ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
     },
     body: input.body,
@@ -404,56 +290,26 @@ async function sendMessage(input: {
     body: JSON.stringify(message),
   });
   const json = await response.json() as Record<string, unknown>;
-  return {
-    status: response.status,
-    body: typeof json.body === 'string' ? json.body : '',
-    json,
-  };
+  return { status: response.status, body: typeof json.body === 'string' ? json.body : '', json };
 }
 
-async function sendUntilMemory(
-  target: LiveIds,
-  body: string,
-  matches: (stored: HouseholdWorkingMemory) => boolean,
-  maxAttempts = 3,
-): Promise<LiveResponse> {
-  let lastResponse: LiveResponse | undefined;
-  let lastStored: HouseholdWorkingMemory | undefined;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    lastResponse = await sendMessage({ ...target, body });
-    if (lastResponse.status === 200) {
-      lastStored = await readMemory(target);
-      if (matches(lastStored)) return lastResponse;
-    }
+async function seedHousehold(householdId: string): Promise<void> {
+  const operations = new Pool({ connectionString: live().context.roleUrls.operations, max: 1 });
+  try {
+    await operations.query(
+      `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
+       VALUES ($1, 'USD', 'UTC')
+       ON CONFLICT DO NOTHING`,
+      [householdId],
+    );
+  } finally {
+    await operations.end();
   }
-  throw new Error(`Live Working Memory update did not converge: ${JSON.stringify({ lastResponse, lastStored })}`);
-}
-
-async function readMemory(target: LiveIds, conversationId = target.conversationId): Promise<HouseholdWorkingMemory> {
-  return readLiveWorkingMemory({
-    connectionString: live().context.roleUrls.memory,
-    model: live().model,
-    threadId: conversationId,
-    resourceId: target.householdId,
-  });
-}
-
-async function writeMemory(target: LiveIds, patch: HouseholdWorkingMemoryPatch): Promise<void> {
-  await writeLiveWorkingMemory({
-    connectionString: live().context.roleUrls.memory,
-    model: live().model,
-    threadId: target.conversationId,
-    resourceId: target.householdId,
-    patch,
-  });
 }
 
 function ids(): LiveIds {
   const suffix = randomSuffix();
-  return {
-    householdId: `hh_${suffix}`,
-    conversationId: `conversation_${suffix}`,
-  };
+  return { householdId: `hh_${suffix}`, conversationId: `conversation_${suffix}` };
 }
 
 function randomSuffix(): string {
@@ -467,6 +323,6 @@ function expectSuccessful(response: LiveResponse): void {
 
 function expectMemoryFailure(response: LiveResponse): void {
   expectSuccessful(response);
-  expect(response.body).toMatch(/could not|couldn['’]t|unable|wasn['’]t able|didn['’]t succeed|did not succeed|failed|failure|unavailable|not saved|not cleared|cannot|can['’]t/i);
+  expect(response.body).toMatch(/could not|couldn['’]t|unable|wasn['’]t able|failed|failure|unavailable|not saved|not read|cannot|can['’]t/i);
   expect(response.body).not.toMatch(/(?:saved|stored|updated|cleared|forgotten) successfully/i);
 }

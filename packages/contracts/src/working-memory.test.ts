@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FlexibleWorkingMemorySchema,
-  HouseholdWorkingMemoryAgentPatchSchema,
-  HouseholdWorkingMemoryPatchSchema,
-  HouseholdWorkingMemorySchema,
+  LegacyHouseholdWorkingMemorySchema,
   MAX_WORKING_MEMORY_KEY_LENGTH,
   MAX_WORKING_MEMORY_LIST_ITEMS,
   MAX_WORKING_MEMORY_RECORD_ENTRIES,
@@ -49,36 +47,36 @@ const representativeMemory = {
   },
 } as const;
 
-describe('HouseholdWorkingMemorySchema', () => {
+describe('LegacyHouseholdWorkingMemorySchema', () => {
   it('accepts an empty document and representative structured memory', () => {
-    expect(HouseholdWorkingMemorySchema.parse({})).toEqual({});
-    expect(HouseholdWorkingMemorySchema.parse(representativeMemory)).toEqual(representativeMemory);
+    expect(LegacyHouseholdWorkingMemorySchema.parse({})).toEqual({});
+    expect(LegacyHouseholdWorkingMemorySchema.parse(representativeMemory)).toEqual(representativeMemory);
   });
 
   it('accepts channel principal references and rejects unsafe member keys', () => {
-    expect(HouseholdWorkingMemorySchema.parse({
+    expect(LegacyHouseholdWorkingMemorySchema.parse({
       members: { 'telegram:user:1': { nickname: 'Alex' } },
     }).members?.['telegram:user:1']?.nickname).toBe('Alex');
 
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       members: { 'telegram user 1': { nickname: 'Alex' } },
     })).toThrow();
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       members: { '   ': { nickname: 'Alex' } },
     })).toThrow();
   });
 
   it('enforces text, key, list, and record bounds', () => {
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       conventions: { key: 'x'.repeat(MAX_WORKING_MEMORY_TEXT_LENGTH + 1) },
     })).toThrow();
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       members: { ['x'.repeat(MAX_WORKING_MEMORY_KEY_LENGTH + 1)]: { nickname: 'Alex' } },
     })).toThrow();
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       savingPreferences: { priorities: Array.from({ length: MAX_WORKING_MEMORY_LIST_ITEMS + 1 }, () => 'priority') },
     })).toThrow();
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       conventions: Object.fromEntries(
         Array.from({ length: MAX_WORKING_MEMORY_RECORD_ENTRIES + 1 }, (_, index) => [`key-${index}`, 'value']),
       ),
@@ -86,46 +84,13 @@ describe('HouseholdWorkingMemorySchema', () => {
   });
 
   it('rejects unknown fields at every structured level', () => {
-    expect(() => HouseholdWorkingMemorySchema.parse({ unexpected: 'value' })).toThrow();
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({ unexpected: 'value' })).toThrow();
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       savingPreferences: { unexpected: 'value' },
     })).toThrow();
-    expect(() => HouseholdWorkingMemorySchema.parse({
+    expect(() => LegacyHouseholdWorkingMemorySchema.parse({
       members: { 'telegram:user:1': { unexpected: 'value' } },
     })).toThrow();
-  });
-});
-
-describe('HouseholdWorkingMemoryPatchSchema', () => {
-  it('accepts null deletion patches without accepting arbitrary JSON', () => {
-    const patch = HouseholdWorkingMemoryPatchSchema.parse({
-      goals: null,
-      savingPreferences: { priorities: null },
-      communication: { tone: null },
-      conventions: { groceryCategory: null },
-      members: { 'telegram:user:1': { nickname: null } },
-    });
-
-    expect(patch).toEqual({
-      goals: null,
-      savingPreferences: { priorities: null },
-      communication: { tone: null },
-      conventions: { groceryCategory: null },
-      members: { 'telegram:user:1': { nickname: null } },
-    });
-    expect(() => HouseholdWorkingMemoryPatchSchema.parse({ arbitrary: { nested: true } })).toThrow();
-  });
-});
-
-describe('HouseholdWorkingMemoryAgentPatchSchema', () => {
-  it('strips top-level null placeholders while preserving nested field deletion', () => {
-    expect(HouseholdWorkingMemoryAgentPatchSchema.parse({
-      goals: null,
-      communication: { tone: null },
-      members: null,
-    })).toEqual({
-      communication: { tone: null },
-    });
   });
 });
 

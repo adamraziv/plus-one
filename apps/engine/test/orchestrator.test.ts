@@ -703,25 +703,6 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
 function testSessionMemory(overrides: Partial<OrchestratorSessionMemoryPort> = {}): OrchestratorSessionMemoryPort {
   return {
     agentMemory: {} as Memory,
-    readWorkingMemory: vi.fn(async () => ({
-      status: 'succeeded' as const,
-      value: {},
-      outcome: {
-        operation: 'read' as const,
-        status: 'succeeded' as const,
-        code: 'working_memory_read_succeeded',
-      },
-    })),
-    applyWorkingMemoryPatch: vi.fn(async () => ({
-      operation: 'update' as const,
-      status: 'succeeded' as const,
-      code: 'working_memory_update_succeeded',
-    })),
-    clearWorkingMemory: vi.fn(async () => ({
-      operation: 'clear' as const,
-      status: 'succeeded' as const,
-      code: 'working_memory_clear_succeeded',
-    })),
     inspectWorkingMemory: vi.fn(async () => { throw new Error('Unexpected Working Memory inspection'); }),
     validateWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory validation'); }),
     applyWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory mutation'); }),
@@ -1528,6 +1509,28 @@ describe('OrchestratorAgent', () => {
     expect(configuredAgent).toBe(orchestrator.agent);
     expect(generate).toHaveBeenCalledTimes(2);
     expect(requestContexts[0]).toBe(requestContexts[1]);
+    expect((requestContexts[1] as { get(key: string): unknown }).get('plus-one.orchestrator'))
+      .toMatchObject({ memoryDegraded: true });
+  });
+
+  it('retries Mastra memory input-processor failures through degraded memory', async () => {
+    const requestContexts: unknown[] = [];
+    const generate = vi.fn(async (_prompt: unknown, options: { requestContext?: unknown }) => {
+      requestContexts.push(options.requestContext);
+      if (generate.mock.calls.length === 1) throw new Error('Input processor error');
+      return { text: 'I continued without unavailable saved context.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      sessionMemory: testSessionMemory(),
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('What do you remember about me?') }))
+      .resolves.toMatchObject({ body: 'I continued without unavailable saved context.' });
+    expect(generate).toHaveBeenCalledTimes(2);
     expect((requestContexts[1] as { get(key: string): unknown }).get('plus-one.orchestrator'))
       .toMatchObject({ memoryDegraded: true });
   });

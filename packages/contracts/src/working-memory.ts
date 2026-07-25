@@ -60,70 +60,14 @@ const communication = z.object({
   reminders: workingMemoryText.optional(),
 }).strict();
 
-export const HouseholdWorkingMemorySchema = z.object({
+export const LegacyHouseholdWorkingMemorySchema = z.object({
   goals: boundedRecord(goal).optional(),
   savingPreferences: savingPreferences.optional(),
   communication: communication.optional(),
   conventions: boundedRecord(workingMemoryText).optional(),
   members: boundedRecord(member).optional(),
 }).strict();
-export type HouseholdWorkingMemory = z.infer<typeof HouseholdWorkingMemorySchema>;
-
-const nullableText = workingMemoryText.nullable();
-const nullableList = workingMemoryList.nullable();
-const nullablePriority = priority.nullable();
-const nullableSavingStyle = savingStyle.nullable();
-
-const memberCommunicationPatch = z.object({
-  tone: nullableText.optional(),
-  detail: nullableText.optional(),
-}).strict();
-
-const memberPatch = z.object({
-  nickname: nullableText.optional(),
-  preferredName: nullableText.optional(),
-  communication: memberCommunicationPatch.nullable().optional(),
-}).strict();
-
-const goalPatch = z.object({
-  summary: nullableText.optional(),
-  horizon: nullableText.optional(),
-  priority: nullablePriority.optional(),
-}).strict();
-
-const savingPreferencesPatch = z.object({
-  style: nullableSavingStyle.optional(),
-  priorities: nullableList.optional(),
-  cadence: nullableText.optional(),
-  constraints: nullableList.optional(),
-}).strict();
-
-const communicationPatch = z.object({
-  tone: nullableText.optional(),
-  detail: nullableText.optional(),
-  reminders: nullableText.optional(),
-}).strict();
-
-export const HouseholdWorkingMemoryPatchSchema = z.object({
-  goals: boundedRecord(goalPatch.nullable()).nullable().optional(),
-  savingPreferences: savingPreferencesPatch.nullable().optional(),
-  communication: communicationPatch.nullable().optional(),
-  conventions: boundedRecord(nullableText).nullable().optional(),
-  members: boundedRecord(memberPatch.nullable()).nullable().optional(),
-}).strict();
-export type HouseholdWorkingMemoryPatch = z.infer<typeof HouseholdWorkingMemoryPatchSchema>;
-
-export const HouseholdWorkingMemoryAgentPatchSchema = HouseholdWorkingMemoryPatchSchema.transform((patch) => {
-  const result = { ...patch };
-  for (const key of ['goals', 'savingPreferences', 'communication', 'conventions', 'members'] as const) {
-    if (result[key] === null) delete result[key];
-  }
-  return result;
-});
-
-export const LegacyHouseholdWorkingMemorySchema = HouseholdWorkingMemorySchema;
-export const LegacyHouseholdWorkingMemoryPatchSchema = HouseholdWorkingMemoryPatchSchema;
-export const LegacyHouseholdWorkingMemoryAgentPatchSchema = HouseholdWorkingMemoryAgentPatchSchema;
+export type LegacyHouseholdWorkingMemory = z.infer<typeof LegacyHouseholdWorkingMemorySchema>;
 
 export const WorkingMemoryEntryIdSchema =
   opaqueIdentifierSchema<'WorkingMemoryEntryId'>('workingMemoryEntry');
