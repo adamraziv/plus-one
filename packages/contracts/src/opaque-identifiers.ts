@@ -33,6 +33,8 @@ export const OpaqueIdentifierDefinitions = {
   tag: { prefix: 'tag', minSuffixLength: 26, maxSuffixLength: 26 },
   confirmation: { prefix: 'confirm', minSuffixLength: 26, maxSuffixLength: 26 },
   mutationReadback: { prefix: 'readback', minSuffixLength: 26, maxSuffixLength: 26 },
+  workingMemoryEntry: { prefix: 'wme', minSuffixLength: 26, maxSuffixLength: 26 },
+  workingMemoryProposal: { prefix: 'wmproposal', minSuffixLength: 26, maxSuffixLength: 26 },
   idempotency: { prefix: 'idem', minSuffixLength: 26, maxSuffixLength: 120 },
   sourceDocument: { prefix: 'source', minSuffixLength: 26, maxSuffixLength: 26 },
   importBatch: { prefix: 'import', minSuffixLength: 26, maxSuffixLength: 26 },
