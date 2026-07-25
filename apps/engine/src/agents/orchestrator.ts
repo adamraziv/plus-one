@@ -513,29 +513,30 @@ export class OrchestratorAgent {
     signal: AbortSignal;
   }): Promise<OrchestratorFinalResponseV1> {
     let candidate: string | undefined;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await abortable(this.agent.generate(
-        workingMemorySynthesisPrompt(input.message, input.event, candidate),
-        {
-          ...this.orchestratorGenerateOptions(input.message),
-          stopWhen: stopAfterSemanticModelSteps(1),
-          toolChoice: 'none',
-          prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-          abortSignal: input.signal,
-        },
-      ), input.signal);
-      candidate = finalStepResponseText(result);
-      if (workingMemorySynthesisResponseIsSafe(candidate, input.event)) {
-        return responseFromText(input.message, candidate);
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await abortable(this.agent.generate(
+          workingMemorySynthesisPrompt(input.message, input.event, candidate),
+          {
+            ...this.orchestratorGenerateOptions(input.message),
+            stopWhen: stopAfterSemanticModelSteps(1),
+            toolChoice: 'none',
+            prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
+            abortSignal: input.signal,
+          },
+        ), input.signal);
+        candidate = finalStepResponseText(result);
+        if (candidate === undefined && isRecord(result)) {
+          candidate = nonEmptyResponseText(result.text);
+        }
+        if (workingMemorySynthesisResponseIsSafe(candidate, input.event)) {
+          return responseFromText(input.message, candidate);
+        }
       }
+    } catch (error) {
+      if (input.signal.aborted) throw error;
     }
-    throw new PlusOneError({
-      category: 'runtime_failure',
-      code: 'working_memory_response_failed',
-      message: 'Working Memory outcome response could not be synthesized.',
-      retry: 'after_backoff',
-      receiptLookupRequired: false,
-    });
+    return responseFromText(input.message, workingMemoryOutcomeFallback(input.event));
   }
 
   private async continueTransactionCapture(input: {
@@ -1094,7 +1095,7 @@ function workingMemorySynthesisPrompt(
     `Safe change summary: ${event.summary}`,
     `Required response behavior: ${event.directive}`,
     candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
-    'Return only a concise, natural user-facing response. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
+    'Return only a concise, natural user-facing response. For a completed change, say it is saved, stored, updated, or otherwise in place. For a declined change, say that no change was made. For a failed change, say it was not completed. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
   ].filter((part) => part.length > 0).join('\n\n');
 }
 
@@ -1104,21 +1105,32 @@ function workingMemorySynthesisResponseIsSafe(
 ): value is string {
   if (value === undefined || userFacingSafetyMatchCategory(value) !== undefined) return false;
   if (event.kind === 'confirmation') {
-    return value.includes('?') && !memoryFailureClaimsSuccess(value) && !workingMemoryClaimsFailure(value);
+    return value.includes('?') && !workingMemoryClaimsSuccess(value) && !workingMemoryClaimsFailure(value);
   }
   if (event.kind === 'applied') {
-    return /\b(?:saved|stored|updated|remembered|applied|cleared|completed|done)\b/i.test(value)
-      && !workingMemoryClaimsFailure(value);
+    return value.trim().length > 0 && !workingMemoryClaimsFailure(value);
   }
   if (event.kind === 'rejected') {
-    return /\b(?:won['’]t|will not|not make|cancel|cancelled|canceled|declined|rejected|skipped)\b/i.test(value)
-      && !memoryFailureClaimsSuccess(value);
+    return value.trim().length > 0 && !workingMemoryClaimsSuccess(value);
   }
-  return workingMemoryClaimsFailure(value) && !memoryFailureClaimsSuccess(value);
+  return workingMemoryClaimsFailure(value) && !workingMemoryClaimsSuccess(value);
+}
+
+function workingMemoryOutcomeFallback(event: WorkingMemorySynthesisEvent): string {
+  if (event.kind === 'confirmation') return `I can make that change to ${event.summary}. Would you like me to proceed?`;
+  if (event.kind === 'applied') return `Done — I verified that ${event.summary} is in place.`;
+  if (event.kind === 'rejected') return `Okay — I left ${event.summary} unchanged.`;
+  return `I couldn't complete the change to ${event.summary}, so nothing was updated.`;
 }
 
 function workingMemoryClaimsFailure(value: string): boolean {
-  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|expired|stale|changed|not completed|didn['’]t|did not|cannot|can['’]t|won['’]t|will not|not make|not stored|not saved|not updated)\b/i.test(value);
+  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|expired|stale|changed|no changes?|nothing changed|changes? were not made|left .* unchanged|kept .* unchanged|not completed|not complete|didn['’]t|did not|didn['’]t go through|did not go through|cannot|can['’]t|won['’]t|will not|not make|not applied|not stored|not saved|not updated)\b/i.test(value);
+}
+
+function workingMemoryClaimsSuccess(value: string): boolean {
+  if (workingMemoryClaimsFailure(value)) return false;
+  return memoryFailureClaimsSuccess(value)
+    || /\b(?:saved|stored|updated|remembered|applied|cleared|completed|complete|done|set|in place|all set|taken care of|in (?:your )?memory)\b/i.test(value);
 }
 
 function memoryFailureAcknowledges(value: string): boolean {
@@ -1130,9 +1142,10 @@ function memoryFailureClaimsSuccess(value: string): boolean {
     || /\b(?:is|was|has been)\s+(?:now\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value);
 }
 
-function isWorkingMemoryFailure(error: unknown): error is PlusOneError {
-  return error instanceof PlusOneError
-    && (/^working_memory_/.test(error.code) || /^observational_memory_/.test(error.code));
+function isWorkingMemoryFailure(error: unknown): boolean {
+  return (error instanceof PlusOneError
+    && (/^working_memory_/.test(error.code) || /^observational_memory_/.test(error.code)))
+    || (error instanceof Error && /input processor error/i.test(error.message));
 }
 
 function memoryOperationFromCode(code: string): WorkingMemoryOperation {
@@ -1277,7 +1290,7 @@ function finalStepResponseText(result: unknown): string | undefined {
     const body = nonEmptyResponseText(step.text);
     if (body !== undefined) return body;
   }
-  return undefined;
+  return lastToolStep === -1 ? nonEmptyResponseText(result.text) : undefined;
 }
 
 function hasToolCalls(step: unknown): boolean {

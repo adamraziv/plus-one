@@ -253,7 +253,7 @@ describe('flexible Working Memory contracts', () => {
     })).toThrow(/bytes|size/i);
   });
 
-  it('keeps model mutation inputs separate from server-owned fields', () => {
+  it('strips model envelope extras while keeping server-owned fields separate', () => {
     const create = {
       operation: 'create',
       basedOnRevision: revision,
@@ -263,8 +263,8 @@ describe('flexible Working Memory contracts', () => {
       value: { goal: 'BMW X5' },
     } as const;
     expect(WorkingMemoryMutationDraftSchema.parse(create)).toEqual(create);
-    expect(() => WorkingMemoryMutationDraftSchema.parse({ ...create, entryId })).toThrow();
-    expect(() => WorkingMemoryMutationDraftSchema.parse({ ...create, ownerPrincipalRef: 'telegram:user:1' })).toThrow();
+    expect(WorkingMemoryMutationDraftSchema.parse({ ...create, entryId })).toEqual(create);
+    expect(WorkingMemoryMutationDraftSchema.parse({ ...create, ownerPrincipalRef: 'telegram:user:1' })).toEqual(create);
 
     expect(WorkingMemoryMutationDraftSchema.parse({
       operation: 'replace',
@@ -274,7 +274,7 @@ describe('flexible Working Memory contracts', () => {
       summary: 'Buy a BMW X7.',
       value: { goal: 'BMW X7' },
     })).toBeTruthy();
-    expect(() => WorkingMemoryMutationDraftSchema.parse({
+    expect(WorkingMemoryMutationDraftSchema.parse({
       operation: 'replace',
       basedOnRevision: revision,
       entryId,
@@ -282,10 +282,28 @@ describe('flexible Working Memory contracts', () => {
       summary: 'Buy a BMW X7.',
       scope: 'household',
       value: { goal: 'BMW X7' },
-    })).toThrow();
+    })).toEqual({
+      operation: 'replace',
+      basedOnRevision: revision,
+      entryId,
+      kind: 'goal',
+      summary: 'Buy a BMW X7.',
+      value: { goal: 'BMW X7' },
+    });
+    expect(WorkingMemoryMutationDraftSchema.parse({
+      operation: 'replace',
+      basedOnRevision: 'model-revision',
+      entryId,
+      kind: 'goal',
+      summary: 'Buy a BMW X7.',
+      value: { goal: 'BMW X7' },
+    })).toMatchObject({ basedOnRevision: 'model-revision' });
     expect(WorkingMemoryMutationDraftSchema.parse({ operation: 'delete', basedOnRevision: revision, entryId })).toBeTruthy();
     expect(WorkingMemoryMutationDraftSchema.parse({ operation: 'clear', basedOnRevision: revision })).toBeTruthy();
-    expect(() => WorkingMemoryMutationDraftSchema.parse({ operation: 'clear', basedOnRevision: revision, entryId })).toThrow();
+    expect(WorkingMemoryMutationDraftSchema.parse({ operation: 'clear', basedOnRevision: revision, entryId })).toEqual({
+      operation: 'clear',
+      basedOnRevision: revision,
+    });
   });
 
   it('validates authenticated pending proposals and their expiry window', () => {

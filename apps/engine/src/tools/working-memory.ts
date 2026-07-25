@@ -113,12 +113,14 @@ export function createMutateWorkingMemoryTool(input: {
       if (inspection === undefined || inspection.document === undefined) {
         return mutationFailureResult(operation, 'working_memory_inspection_required', 'validation_rejected', 'never');
       }
-      if (parsedDraft.data.basedOnRevision !== inspection.revision) {
-        return mutationFailureResult(operation, 'working_memory_revision_stale', 'serialization_conflict', 'after_state_resolution');
-      }
+
+      const canonicalDraft = {
+        ...parsedDraft.data,
+        basedOnRevision: inspection.revision,
+      };
 
       const resolved = resolveWorkingMemoryMutation({
-        draft: parsedDraft.data,
+        draft: canonicalDraft,
         document: inspection.document,
         principalRef: active.message.speaker.principalRef,
         ids,
@@ -132,7 +134,7 @@ export function createMutateWorkingMemoryTool(input: {
           threadId: active.message.conversationId,
           resourceId: active.message.householdId,
           principalRef: active.message.speaker.principalRef,
-          basedOnRevision: parsedDraft.data.basedOnRevision,
+          basedOnRevision: inspection.revision,
           mutation: resolved.mutation,
         });
         input.recordOutcome?.(validated.outcome);
@@ -146,7 +148,7 @@ export function createMutateWorkingMemoryTool(input: {
           conversationId: active.message.conversationId,
           speakerPrincipalRef: active.message.speaker.principalRef,
           mutation: resolved.mutation,
-          basedOnRevision: parsedDraft.data.basedOnRevision,
+          basedOnRevision: inspection.revision,
           createdAt: createdAt.toISOString(),
           expiresAt: new Date(createdAt.getTime() + 15 * 60_000).toISOString(),
         });
@@ -162,7 +164,7 @@ export function createMutateWorkingMemoryTool(input: {
         threadId: active.message.conversationId,
         resourceId: active.message.householdId,
         principalRef: active.message.speaker.principalRef,
-        basedOnRevision: parsedDraft.data.basedOnRevision,
+        basedOnRevision: inspection.revision,
         mutation: resolved.mutation,
       });
       input.recordOutcome?.(applied.outcome);

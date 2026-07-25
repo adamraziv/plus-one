@@ -3,7 +3,6 @@ import {
   FlexibleWorkingMemorySchema,
   WorkingMemoryEntryIdSchema,
   WorkingMemoryProposalIdSchema,
-  WorkingMemoryRevisionSchema,
   type PendingWorkingMemoryMutation,
   type WorkingMemoryInspectionResult,
   type WorkingMemoryMutationToolResult,
@@ -105,7 +104,7 @@ describe('createInspectWorkingMemoryTool', () => {
     const document = workingMemoryDocument();
     const inspection = inspectionFor(document);
     const memory = fakeMemory({
-      inspectWorkingMemory: vi.fn(async (input) => ({
+      inspectWorkingMemory: vi.fn(async () => ({
         status: 'succeeded' as const,
         document,
         inspection,
@@ -266,7 +265,7 @@ describe('createMutateWorkingMemoryTool', () => {
     expect(memory.applyWorkingMemoryMutation).not.toHaveBeenCalled();
   });
 
-  it('rejects adapter staleness before recording a proposal and never accepts model scope fields', async () => {
+  it('returns adapter staleness and strips model envelope fields', async () => {
     const document = workingMemoryDocument(true);
     const inspection = inspectionFor(document);
     const validateWorkingMemoryMutation = vi.fn(async () => ({
@@ -310,6 +309,39 @@ describe('createMutateWorkingMemoryTool', () => {
       summary: 'Buy a BMW X7.',
       value: { goal: 'BMW X7' },
       resourceId: 'other-household',
-    })).resolves.toMatchObject({ error: true });
+    })).resolves.toMatchObject({ status: 'rejected', code: 'working_memory_revision_stale' });
+  });
+
+  it('uses the inspected revision when a model sends a noncanonical revision', async () => {
+    const document = workingMemoryDocument();
+    const inspection = inspectionFor(document);
+    const applyWorkingMemoryMutation = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      operation: 'create' as const,
+      code: 'working_memory_mutation_succeeded' as const,
+      document,
+      outcome: successOutcome('mutate', 'working_memory_mutation_succeeded'),
+    }));
+    const memory = fakeMemory({ applyWorkingMemoryMutation });
+    const tool = createMutateWorkingMemoryTool({
+      memory,
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(inspection),
+      recordPendingMutation: vi.fn(),
+    });
+
+    await expect(executeTool(tool, {
+      operation: 'create',
+      basedOnRevision: 'model-revision',
+      kind: 'goal',
+      summary: 'Buy a BMW X5.',
+      scope: 'household',
+      value: JSON.stringify({ goal: 'BMW X5' }),
+      scopeHint: 'household',
+    })).resolves.toEqual({ status: 'applied', operation: 'create', code: 'working_memory_mutation_succeeded' });
+    expect(applyWorkingMemoryMutation).toHaveBeenCalledWith(expect.objectContaining({
+      basedOnRevision: inspection.revision,
+    }));
   });
 });

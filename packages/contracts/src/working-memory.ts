@@ -247,32 +247,34 @@ export type FlexibleWorkingMemory = z.infer<typeof FlexibleWorkingMemorySchema>;
 export const WorkingMemoryRevisionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export type WorkingMemoryRevision = z.infer<typeof WorkingMemoryRevisionSchema>;
 
+const WorkingMemoryRevisionInputSchema = z.string().trim().min(1).max(128);
+
 export const WorkingMemoryMutationDraftSchema = z.discriminatedUnion('operation', [
   z.object({
     operation: z.literal('create'),
-    basedOnRevision: WorkingMemoryRevisionSchema,
+    basedOnRevision: WorkingMemoryRevisionInputSchema,
     kind: WorkingMemoryKindSchema,
     summary: workingMemorySummary,
     scope: z.enum(['household', 'member']),
     value: WorkingMemoryValueSchema,
-  }).strict(),
+  }).strip(),
   z.object({
     operation: z.literal('replace'),
-    basedOnRevision: WorkingMemoryRevisionSchema,
+    basedOnRevision: WorkingMemoryRevisionInputSchema,
     entryId: WorkingMemoryEntryIdSchema,
     kind: WorkingMemoryKindSchema,
     summary: workingMemorySummary,
     value: WorkingMemoryValueSchema,
-  }).strict(),
+  }).strip(),
   z.object({
     operation: z.literal('delete'),
-    basedOnRevision: WorkingMemoryRevisionSchema,
+    basedOnRevision: WorkingMemoryRevisionInputSchema,
     entryId: WorkingMemoryEntryIdSchema,
-  }).strict(),
+  }).strip(),
   z.object({
     operation: z.literal('clear'),
-    basedOnRevision: WorkingMemoryRevisionSchema,
-  }).strict(),
+    basedOnRevision: WorkingMemoryRevisionInputSchema,
+  }).strip(),
 ]);
 export type WorkingMemoryMutationDraft = z.infer<typeof WorkingMemoryMutationDraftSchema>;
 

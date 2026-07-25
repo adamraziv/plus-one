@@ -1631,7 +1631,7 @@ describe('OrchestratorAgent', () => {
   it('accepts a direct create only after the custom adapter reports verified success', async () => {
     const document = workingMemoryDocument();
     const inspection = workingMemoryInspection(document);
-    const applyWorkingMemoryMutation = vi.fn(async (input: { mutation: { operation: string } }) => ({
+    const applyWorkingMemoryMutation = vi.fn(async () => ({
       status: 'succeeded' as const,
       operation: 'create' as const,
       code: 'working_memory_mutation_succeeded' as const,
@@ -1655,7 +1655,6 @@ describe('OrchestratorAgent', () => {
       })),
       applyWorkingMemoryMutation,
     });
-    let orchestrator!: OrchestratorAgent;
     const generate = vi.fn(async () => {
       await executeMemoryTool(orchestrator.agentTools.inspectWorkingMemory);
       await executeMemoryTool(orchestrator.agentTools.mutateWorkingMemory, {
@@ -1668,7 +1667,7 @@ describe('OrchestratorAgent', () => {
       });
       return { text: 'I saved that goal.' };
     });
-    orchestrator = new OrchestratorAgent({
+    const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       sessionMemory,
@@ -1696,7 +1695,7 @@ describe('OrchestratorAgent', () => {
           code: 'working_memory_inspection_succeeded',
         },
       })),
-      validateWorkingMemoryMutation: vi.fn(async (input: { mutation: { operation: string } }) => {
+      validateWorkingMemoryMutation: vi.fn(async () => {
         recordValidatedMutation();
         return {
           status: 'succeeded' as const,
@@ -1711,7 +1710,6 @@ describe('OrchestratorAgent', () => {
         };
       }),
     });
-    let orchestrator!: OrchestratorAgent;
     const generate = vi.fn(async () => {
       if (generate.mock.calls.length === 1) {
         await executeMemoryTool(orchestrator.agentTools.inspectWorkingMemory);
@@ -1727,7 +1725,7 @@ describe('OrchestratorAgent', () => {
       }
       return { text: 'I can remember that goal, but would you like me to save it?' };
     });
-    orchestrator = new OrchestratorAgent({
+    const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate }) as never,
       sessionMemory,
@@ -1754,8 +1752,8 @@ describe('OrchestratorAgent', () => {
 
   it('synthesizes approval, rejection, expiry, stale approval, and unclear feedback through the same agent', async () => {
     const scenarios = [
-      { name: 'approval', body: 'yes', text: 'I saved that goal after verifying it.', expectedKind: 'final', applyCode: undefined, expired: false },
-      { name: 'rejection', body: 'no', text: "Okay, I won't make that change.", expectedKind: 'final', applyCode: undefined, expired: false },
+      { name: 'approval', body: 'yes', text: 'The goal is now in place.', expectedKind: 'final', applyCode: undefined, expired: false },
+      { name: 'rejection', body: 'no', text: 'No changes were made.', expectedKind: 'final', applyCode: undefined, expired: false },
       { name: 'expiry', body: 'yes', text: 'That approval expired, so the change was not completed.', expectedKind: 'final', applyCode: undefined, expired: true },
       { name: 'stale approval', body: 'yes', text: 'The change was not completed because the context changed. Please ask me to review it again.', expectedKind: 'final', applyCode: 'working_memory_revision_stale', expired: false },
       { name: 'unclear', body: 'maybe', text: 'I am ready to make that change. Would you like me to approve it?', expectedKind: 'ask-user', applyCode: undefined, expired: false },
@@ -1808,6 +1806,32 @@ describe('OrchestratorAgent', () => {
         expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
       }
     }
+  });
+
+  it('keeps a verified Working Memory outcome user-visible when synthesis produces no usable text', async () => {
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate: vi.fn(async () => ({ text: '' })) }) as never,
+      sessionMemory: testSessionMemory({
+        applyWorkingMemoryMutation: vi.fn(async () => ({
+          status: 'succeeded' as const,
+          operation: 'replace' as const,
+          code: 'working_memory_mutation_succeeded' as const,
+          document: workingMemoryDocument(true),
+          outcome: { operation: 'mutate' as const, status: 'succeeded' as const, code: 'working_memory_mutation_succeeded' },
+        })),
+      }),
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    const result = await orchestrator.resolvePendingWorkingMemoryMutation({
+      message: message('yes'),
+      pending: pendingWorkingMemory(),
+    });
+
+    expect(result).toMatchObject({ kind: 'final' });
+    expect(result.response.body).toMatch(/verified|in place/i);
   });
 
   it('keeps the full checked team result for citations while exposing only a safe final-synthesis view to the model', async () => {
