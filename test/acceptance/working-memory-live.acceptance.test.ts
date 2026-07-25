@@ -39,6 +39,21 @@ afterAll(async () => {
 }, 120_000);
 
 describe('Working Memory through the real gateway and configured provider', () => {
+  it('answers a simple message after starting a new thread', async () => {
+    const target = ids();
+    await seedHousehold(target.householdId);
+    const started = await sendMessage({ ...target, body: '/new' });
+    expectSuccessful(started);
+
+    const reply = await sendMessage({
+      householdId: target.householdId,
+      conversationId: started.json.conversationId as string,
+      body: 'hey',
+    });
+    expectSuccessful(reply);
+    expect(reply.body).not.toMatch(/internal error before I could send the final reply/i);
+  }, 300_000);
+
   it('shares durable goals across conversations within one resource', async () => {
     const target = ids();
     const first = await sendUntilMemory(
@@ -344,6 +359,19 @@ describe('Working Memory through the real gateway and configured provider', () =
 function live(): WorkingMemoryLiveHarness {
   if (harness === undefined) throw new Error('Working Memory live harness is not initialized.');
   return harness;
+}
+
+async function seedHousehold(householdId: string): Promise<void> {
+  const operations = new Pool({ connectionString: live().context.roleUrls.operations, max: 1 });
+  try {
+    await operations.query(
+      `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
+       VALUES ($1, 'USD', 'UTC')`,
+      [householdId],
+    );
+  } finally {
+    await operations.end();
+  }
 }
 
 async function sendMessage(input: {
