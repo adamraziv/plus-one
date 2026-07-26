@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@mastra/core/agent';
-import { createAgentSystem } from '../src/agent-catalog.js';
+import { createAgentSystem, registerOrchestratorAgent } from '../src/agent-catalog.js';
 
 const models = {
   lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -95,14 +95,15 @@ describe('engine agent catalog', () => {
       .toEqual([]);
   });
 
-  it('includes a configured orchestrator in the Mastra agent map', () => {
-    const orchestratorAgent = { generate: vi.fn() } as unknown as Agent;
+  it('registers the constructed orchestrator into the Mastra agent map after catalog creation', () => {
     const system = createAgentSystem({
       models,
       agentFactory: () => ({ generate: vi.fn() } as unknown as Agent),
       queryTools: {},
-      orchestratorAgent,
     });
+    const orchestratorAgent = { generate: vi.fn() } as unknown as Agent;
+
+    registerOrchestratorAgent(system, orchestratorAgent);
 
     expect(system.mastraAgents.orchestrator).toBe(orchestratorAgent);
   });

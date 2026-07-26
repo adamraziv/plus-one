@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  PendingWorkingMemoryMutationSchema,
   TeamResultEnvelopeSchemaV2,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
@@ -28,6 +29,11 @@ export const OrchestratorSuspendPayloadSchemaV1 = z.discriminatedUnion('kind', [
     response: OrchestratorFinalResponseSchemaV1,
     pendingMutation: TeamResultEnvelopeSchemaV2,
     transactionContinuation: TransactionCaptureContinuationSchemaV1.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('working_memory_confirmation'),
+    response: OrchestratorFinalResponseSchemaV1,
+    pendingWorkingMemoryMutation: PendingWorkingMemoryMutationSchema,
   }).strict(),
 ]);
 
@@ -57,7 +63,7 @@ function finalResponseFromPayload(payload: unknown): OrchestratorFinalResponseV1
 }
 
 export function createOrchestratorLoopWorkflow(
-  orchestrator?: Pick<OrchestratorAgent, 'runTurn' | 'resolvePendingMutation'>,
+  orchestrator?: Pick<OrchestratorAgent, 'runTurn' | 'resolvePendingMutation' | 'resolvePendingWorkingMemoryMutation'>,
 ): OrchestratorLoopWorkflow {
   if (orchestrator === undefined) return placeholderWorkflow();
 
@@ -79,6 +85,12 @@ export function createOrchestratorLoopWorkflow(
             : { transactionContinuation: suspended.transactionContinuation }),
           signal: abortSignal,
         }), abortSignal)
+        : suspended?.kind === 'working_memory_confirmation'
+          ? await abortable(orchestrator.resolvePendingWorkingMemoryMutation({
+            message,
+            pending: suspended.pendingWorkingMemoryMutation,
+            signal: abortSignal,
+          }), abortSignal)
         : await abortable(orchestrator.runTurn({
           message,
           ...(suspended?.transactionContinuation === undefined
@@ -87,6 +99,16 @@ export function createOrchestratorLoopWorkflow(
           signal: abortSignal,
         }), abortSignal) as OrchestratorTurnResult;
       if (result.kind === 'ask-user') {
+        if (result.pendingMutation !== undefined && result.pendingWorkingMemoryMutation !== undefined) {
+          throw new Error('Orchestrator returned multiple pending mutation types.');
+        }
+        if (result.pendingWorkingMemoryMutation !== undefined) {
+          return suspend({
+            kind: 'working_memory_confirmation',
+            response: result.response,
+            pendingWorkingMemoryMutation: result.pendingWorkingMemoryMutation,
+          });
+        }
         return suspend(result.pendingMutation === undefined
           ? {
               kind: 'clarification',

@@ -26,3 +26,4 @@ export * from './reporting.js';
 export * from './runtime.js';
 export * from './team-results.js';
 export * from './time.js';
+export * from './working-memory.js';

@@ -18,16 +18,15 @@ The implemented agent surface includes:
 - `query`: the read boundary for household financial data
 - `accounting`: proposes and verifies ledger and ingestion mutations
 
-The v0.1.0 production surface includes:
+The current production surface includes:
 
-- a Telegram gateway with pairing, readiness, graceful shutdown, and replay deduplication
-- natural-language account and transaction queries
-- multi-turn expense and income capture with confirmation-backed account and category creation
-- durable continuation across clarification, confirmation, timeout, and restart boundaries
-- governed query results, checked mutations, append-only accounting facts, and verified readback
-- an operator CLI and TUI for running and inspecting the gateway
-
-The repository also contains foundations for ingestion, planning, reporting, scheduling, and additional delivery channels.
+- a Telegram gateway with pairing, readiness, graceful shutdown, replay deduplication, and an operator CLI/TUI
+- natural-language account, balance, transaction, and governed reporting queries
+- multi-turn expense and income capture with clarification, confirmation-backed account/category creation, and durable restart-safe continuation
+- checked mutations with policy validation, idempotency, verification, readback, PostgreSQL constraints, and append-only accounting facts
+- ingestion and imports with extraction, duplicate matching, reconciliation, and period close
+- planning, reporting, and scheduled delivery services
+- durable household and member Working Memory for goals, preferences, names, and conventions, with safe views, confirmed changes, corrections, deletion, and deterministic or scheduled review
 
 ## How It Works
 

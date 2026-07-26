@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { InboundChannelMessageSchemaV1, OrchestratorFinalResponseSchemaV1 } from '@plus-one/contracts';
+import {
+  InboundChannelMessageSchemaV1,
+  OrchestratorFinalResponseSchemaV1,
+  PendingWorkingMemoryMutationSchema,
+} from '@plus-one/contracts';
 import { pendingChartResultFixture as pendingTeamResult } from '../helpers/pending-chart-result.js';
 import {
   createOrchestratorLoopWorkflow,
@@ -45,6 +49,25 @@ function response(body: string) {
 const confirmationResponse = response('I’ll add Bank ABC as an IDR asset account. Would you like me to proceed?');
 const persistedResponse = response('Bank ABC was added and verified.');
 const abortSignal = new AbortController().signal;
+const pendingWorkingMemoryMutation = PendingWorkingMemoryMutationSchema.parse({
+  proposalId: 'wmproposal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+  householdId: message.householdId,
+  conversationId: message.conversationId,
+  speakerPrincipalRef: message.speaker.principalRef,
+  mutation: {
+    operation: 'create',
+    entryId: 'wme_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+    entry: {
+      kind: 'goal',
+      summary: 'Buy a BMW X5.',
+      scope: 'household',
+      value: { goal: 'BMW X5' },
+    },
+  },
+  basedOnRevision: 'a'.repeat(64),
+  createdAt: '2026-07-06T00:00:00.000Z',
+  expiresAt: '2026-07-06T00:15:00.000Z',
+});
 
 describe('orchestrator workflow loop', () => {
   it('passes Mastra step abort signals into the orchestrator turn', async () => {
@@ -105,6 +128,49 @@ describe('orchestrator workflow loop', () => {
     expect(orchestrator.resolvePendingMutation).toHaveBeenCalledWith(expect.objectContaining({
       pending: pendingTeamResult,
     }));
+  });
+
+  it('stores a Working Memory proposal in the durable suspend payload and resolves that proposal', async () => {
+    const suspend = vi.fn();
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+      resolvePendingMutation: vi.fn(),
+      resolvePendingWorkingMemoryMutation: vi.fn().mockResolvedValue({
+        kind: 'final',
+        response: persistedResponse,
+      }),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never);
+    const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
+
+    await step.execute({ inputData: message, suspend, abortSignal } as never);
+    expect(suspend).toHaveBeenCalledWith({
+      kind: 'working_memory_confirmation',
+      response: expect.objectContaining({ body: 'I can save that goal. Would you like me to proceed?' }),
+      pendingWorkingMemoryMutation,
+    });
+
+    const confirmationMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      externalMessageId: 'telegram-working-memory-confirmation-2',
+      body: 'yes',
+    });
+    await step.execute({
+      inputData: message,
+      resumeData: confirmationMessage,
+      suspendData: suspend.mock.calls[0]![0],
+      suspend,
+      abortSignal,
+    } as never);
+    expect(orchestrator.resolvePendingWorkingMemoryMutation).toHaveBeenCalledWith({
+      message: confirmationMessage,
+      pending: pendingWorkingMemoryMutation,
+      signal: abortSignal,
+    });
   });
 
   it('persists transaction continuation through clarification suspension and resume', async () => {

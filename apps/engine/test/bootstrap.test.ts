@@ -75,7 +75,13 @@ describe('engine scaffold', () => {
     const validateModels = vi.fn(async () => undefined);
     const mastra = createMastra(environment.DATABASE_MEMORY_URL);
     vi.spyOn(mastra, 'shutdown').mockImplementation(shutdown);
-    const agentSystem = { teams: [], mastraAgents: { orchestrator: {} } };
+    const registeredAgent = {};
+    const orchestrator = {
+      agent: registeredAgent,
+      registerMastra: vi.fn(),
+    } as never;
+    const agentSystem = { teams: [], mastraAgents: {} as Record<string, unknown> };
+    const createOrchestratorAgent = vi.fn(() => orchestrator);
     const createMastraInstance = vi.fn((memoryConnectionString?: string, agents?: unknown, apiRoutes?: unknown[]) => {
       expect(memoryConnectionString).toBe(environment.DATABASE_MEMORY_URL);
       expect(agents).toBe(agentSystem.mastraAgents);
@@ -90,8 +96,11 @@ describe('engine scaffold', () => {
       validateModels,
       createMastraInstance,
       createAgentSystemInstance: vi.fn(() => agentSystem as never),
+      createOrchestratorAgent,
     });
     expect(runtime.agentSystem).toBe(agentSystem);
+    expect(agentSystem.mastraAgents.orchestrator).toBe(registeredAgent);
+    expect(createOrchestratorAgent).toHaveBeenCalledOnce();
     expect(createMastraInstance).toHaveBeenCalledTimes(1);
     close.mockImplementation(async () => {
       lifecycle.push('close');
@@ -342,31 +351,29 @@ describe('engine scaffold', () => {
     }));
   });
 
-  it('passes a configured orchestrator agent into the agent system', async () => {
-    const orchestratorAgent = { generate: vi.fn() };
-    const createAgentSystemInstance = vi.fn(() => ({ teams: [], mastraAgents: { orchestrator: orchestratorAgent } }) as never);
+  it('constructs and registers the orchestrator during production bootstrap', async () => {
+    const production = { ...environment, NODE_ENV: 'production', LLM_API_KEY: 'test-api-key' };
+    const registeredAgent = {};
+    const orchestrator = {
+      agent: registeredAgent,
+      registerMastra: vi.fn(),
+    } as never;
+    const agentSystem = { teams: [], mastraAgents: {} as Record<string, unknown> };
+    const createOrchestratorAgent = vi.fn(() => orchestrator);
 
-    await bootstrap({
-      environment,
+    const runtime = await bootstrap({
+      environment: production,
       validateModels: vi.fn(async () => undefined),
       createPools: () => ({} as never),
       verifyPools: vi.fn(async () => undefined),
       createMastraInstance: vi.fn(() => createMastra(environment.DATABASE_MEMORY_URL)),
-      createAgentSystemInstance,
-      orchestratorAgent: orchestratorAgent as never,
+      createAgentSystemInstance: vi.fn(() => agentSystem as never),
+      createOrchestratorAgent,
     });
 
-    expect(createAgentSystemInstance).toHaveBeenCalledWith(expect.objectContaining({ orchestratorAgent }));
-  });
-
-  it('does not production-bootstrap without an orchestrator agent', async () => {
-    const production = { ...environment, NODE_ENV: 'production', LLM_API_KEY: 'test-api-key' };
-
-    await expect(bootstrap({
-      environment: production,
-      validateModels: vi.fn(async () => undefined),
-      createPools: () => ({} as never),
-    })).rejects.toThrow('Production bootstrap requires a configured orchestrator agent.');
+    expect(createOrchestratorAgent).toHaveBeenCalledOnce();
+    expect(agentSystem.mastraAgents.orchestrator).toBe(registeredAgent);
+    await runtime.close();
   });
 
   it('validates configured models before creating database pools', async () => {
