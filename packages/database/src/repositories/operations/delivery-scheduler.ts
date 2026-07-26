@@ -67,6 +67,8 @@ interface DueJobRow {
   next_eligible_run_at: Date;
   timeout_ms: number;
   max_retries: number;
+  required_context_schema_name: string;
+  required_context_schema_version: number;
   required_context: unknown;
   delivery_behavior: unknown;
   overlap_policy: 'skip' | 'allow';
@@ -96,6 +98,7 @@ export interface ScheduledRunClaim extends ScheduledRunV1 {
   target: { kind: 'orchestrator' } | { kind: 'team_lead'; team: string };
   timeoutMs: number;
   maxRetries: number;
+  requiredContextSchema: { schemaName: string; schemaVersion: number };
   requiredContext: unknown;
   deliveryBehavior: unknown;
   overlapPolicy: 'skip' | 'allow';
@@ -400,7 +403,8 @@ export class PostgresSchedulerRepository {
       const due = await client.query<DueJobRow>(
         `SELECT job.id::text AS database_id, job.job_id, household.household_id,
                 job.version, job.target_kind, job.target_team, job.next_eligible_run_at,
-                job.timeout_ms, job.max_retries, job.required_context,
+                job.timeout_ms, job.max_retries, job.required_context_schema_name,
+                job.required_context_schema_version, job.required_context,
                 job.delivery_behavior, job.overlap_policy, job.missed_run_policy
          FROM operations.scheduled_jobs job
          JOIN operations.households household ON household.id = job.household_id
@@ -450,6 +454,10 @@ export class PostgresSchedulerRepository {
             : { kind: 'team_lead', team: job.target_team ?? '' },
           timeoutMs: job.timeout_ms,
           maxRetries: job.max_retries,
+          requiredContextSchema: {
+            schemaName: job.required_context_schema_name,
+            schemaVersion: job.required_context_schema_version,
+          },
           requiredContext: job.required_context,
           deliveryBehavior: job.delivery_behavior,
           overlapPolicy: job.overlap_policy,

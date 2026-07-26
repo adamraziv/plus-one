@@ -2,10 +2,12 @@ import type {
   OrchestratorFinalResponseV1,
   ScheduledRunV1,
   TeamResultEnvelopeV2,
+  WorkingMemoryReviewScheduleContextV1,
 } from '@plus-one/contracts';
 import {
   OrchestratorFinalResponseSchemaV1,
   TeamResultEnvelopeSchemaV2,
+  WorkingMemoryReviewScheduleContextSchemaV1,
 } from '@plus-one/contracts';
 import { ZodError } from 'zod';
 import type { DeliveryResult } from '../delivery/final-delivery-handler.js';
@@ -15,6 +17,7 @@ export interface SchedulerClaim extends ScheduledRunV1 {
   target: { kind: 'orchestrator' } | { kind: 'team_lead'; team: string };
   timeoutMs: number;
   maxRetries: number;
+  requiredContextSchema: { schemaName: string; schemaVersion: number };
   requiredContext: unknown;
   deliveryBehavior: unknown;
   overlapPolicy: 'skip' | 'allow';
@@ -38,6 +41,11 @@ export class ApplicationScheduler {
     repository: SchedulerRepositoryPort;
     targets: {
       orchestrator(input: { claim: SchedulerClaim; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
+      orchestratorReview?(input: {
+        claim: SchedulerClaim;
+        context: WorkingMemoryReviewScheduleContextV1;
+        signal: AbortSignal;
+      }): Promise<OrchestratorFinalResponseV1>;
       teamLead(input: { claim: SchedulerClaim; signal: AbortSignal }): Promise<unknown>;
       orchestratorReconciler: {
         reconcile(input: { claim: SchedulerClaim; teamResult: TeamResultEnvelopeV2; signal: AbortSignal }): Promise<OrchestratorFinalResponseV1>;
@@ -145,6 +153,15 @@ export class ApplicationScheduler {
       const signal = AbortSignal.timeout(claim.timeoutMs);
       try {
         if (claim.target.kind === 'orchestrator') {
+          const reviewContext = this.scheduledReviewContext(claim);
+          if (reviewContext !== undefined) {
+            if (this.dependencies.targets.orchestratorReview === undefined) {
+              throw new Error('Scheduled Working Memory review target is not configured.');
+            }
+            return OrchestratorFinalResponseSchemaV1.parse(
+              await this.dependencies.targets.orchestratorReview({ claim, context: reviewContext, signal }),
+            );
+          }
           return OrchestratorFinalResponseSchemaV1.parse(
             await this.dependencies.targets.orchestrator({ claim, signal }),
           );
@@ -161,5 +178,13 @@ export class ApplicationScheduler {
       }
     }
     throw lastError instanceof Error ? lastError : new Error('Scheduled target failed');
+  }
+
+  private scheduledReviewContext(claim: SchedulerClaim): WorkingMemoryReviewScheduleContextV1 | undefined {
+    if (claim.requiredContextSchema.schemaName !== 'working-memory-review-context') return undefined;
+    if (claim.requiredContextSchema.schemaVersion !== 1) {
+      throw new Error('Unsupported Working Memory review context version.');
+    }
+    return WorkingMemoryReviewScheduleContextSchemaV1.parse(claim.requiredContext);
   }
 }

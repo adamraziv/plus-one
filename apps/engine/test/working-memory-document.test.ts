@@ -156,12 +156,23 @@ describe('working memory document', () => {
     });
   });
 
-  it('accepts an already flexible document without marking it migrated and reports malformed JSON safely', () => {
-    const stored = JSON.stringify(documentFixture());
+  it('accepts an already flexible document with lifecycle without marking it migrated and reports malformed JSON safely', () => {
+    const lifecycle = {
+      createdAt: '2026-07-25T10:55:00.000Z',
+      updatedAt: '2026-07-25T10:55:00.000Z',
+    };
+    const storedDocument = FlexibleWorkingMemorySchema.parse({
+      ...documentFixture(),
+      entries: Object.fromEntries(Object.entries(documentFixture().entries).map(([entryId, entry]) => [
+        entryId,
+        { ...entry, lifecycle },
+      ])),
+    });
+    const stored = JSON.stringify(storedDocument);
     expect(decodeStoredWorkingMemory({ stored, ids: idGenerator() })).toMatchObject({
       status: 'succeeded',
       migrated: false,
-      document: documentFixture(),
+      document: storedDocument,
     });
     expect(decodeStoredWorkingMemory({ stored: '{bad', ids: idGenerator() })).toEqual({
       status: 'failed',

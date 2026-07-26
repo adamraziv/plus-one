@@ -8,6 +8,7 @@ import {
   type PendingWorkingMemoryMutation,
   type WorkingMemoryInspectionResult,
   type WorkingMemoryMutationToolResult,
+  type UtcInstant,
 } from '@plus-one/contracts';
 import type { InboundChannelMessageV1 } from '@plus-one/contracts';
 import type {
@@ -19,6 +20,9 @@ import { workingMemoryRevision } from '../memory/working-memory-document.js';
 import {
   createInspectWorkingMemoryTool,
   createMutateWorkingMemoryTool,
+  createProposeWorkingMemoryTool,
+  createViewWorkingMemoryTool,
+  createReviewWorkingMemoryTool,
   WorkingMemoryMutationToolInputSchema,
   type WorkingMemoryInspectionContext,
 } from './working-memory.js';
@@ -68,7 +72,7 @@ function inspectionFor(document: ReturnType<typeof workingMemoryDocument>): Work
   return { ...inspection, document };
 }
 
-function successOutcome(operation: 'inspect' | 'validate' | 'mutate', code: string): WorkingMemoryOperationOutcome {
+function successOutcome(operation: 'inspect' | 'validate' | 'mutate' | 'review', code: string): WorkingMemoryOperationOutcome {
   return { operation, status: 'succeeded', code };
 }
 
@@ -157,6 +161,92 @@ describe('createInspectWorkingMemoryTool', () => {
   });
 });
 
+describe('createViewWorkingMemoryTool', () => {
+  it('returns a safe personal view and records the authorized inspection', async () => {
+    const document = FlexibleWorkingMemorySchema.parse({
+      version: 1,
+      entries: {
+        [goalId]: {
+          kind: 'goal',
+          summary: 'Build an emergency fund.',
+          scope: 'household',
+          value: { goal: 'emergency fund' },
+        },
+        [newId]: {
+          kind: 'member_context',
+          summary: 'Alex prefers concise replies.',
+          scope: 'member',
+          ownerPrincipalRef: message.speaker.principalRef,
+          value: { preferredName: 'Alex' },
+        },
+      },
+    });
+    const inspection = inspectionFor(document);
+    const recordInspection = vi.fn();
+    const tool = createViewWorkingMemoryTool({
+      memory: fakeMemory({
+        inspectWorkingMemory: vi.fn(async () => ({
+          status: 'succeeded' as const,
+          document,
+          inspection,
+          outcome: successOutcome('inspect', 'working_memory_inspection_succeeded'),
+        })),
+      }),
+      getActiveInvocation: () => activeInvocation(),
+      recordInspection,
+    });
+
+    const result = await executeTool(tool, { view: 'personal' });
+    expect(result).toEqual({
+      status: 'succeeded',
+      view: 'personal',
+      entries: [{
+        kind: 'member_context',
+        label: 'Member context',
+        scope: 'member',
+        summary: 'Alex prefers concise replies.',
+        value: { preferredName: 'Alex' },
+      }],
+    });
+    expect(JSON.stringify(result)).not.toContain(goalId);
+    expect(JSON.stringify(result)).not.toContain('ownerPrincipalRef');
+    expect(recordInspection).toHaveBeenCalledWith(inspection);
+  });
+});
+
+describe('createReviewWorkingMemoryTool', () => {
+  it('returns deterministic findings without applying a mutation', async () => {
+    const report = {
+      status: 'succeeded' as const,
+      revision: 'a'.repeat(64),
+      reviewedAt: '2026-07-25T10:55:00.000Z' as UtcInstant,
+      findings: [],
+    };
+    const reviewWorkingMemory = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      report,
+      outcome: successOutcome('review', 'working_memory_review_succeeded'),
+    }));
+    const recordOutcome = vi.fn();
+    const tool = createReviewWorkingMemoryTool({
+      memory: fakeMemory({ reviewWorkingMemory }),
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(),
+      recordOutcome,
+    });
+
+    await expect(executeTool(tool)).resolves.toEqual(report);
+    expect(reviewWorkingMemory).toHaveBeenCalledWith({
+      threadId: message.conversationId,
+      resourceId: message.householdId,
+      principalRef: message.speaker.principalRef,
+      requestedBy: 'user',
+      now: new Date('2026-07-25T10:55:00Z'),
+    });
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ operation: 'review' }));
+  });
+});
+
 describe('createMutateWorkingMemoryTool', () => {
   it('exposes a flat provider schema while retaining strict domain validation', () => {
     const providerSchema = z.toJSONSchema(WorkingMemoryMutationToolInputSchema);
@@ -212,6 +302,7 @@ describe('createMutateWorkingMemoryTool', () => {
       outcome: successOutcome('mutate', 'working_memory_mutation_succeeded'),
     };
     const applyWorkingMemoryMutation = vi.fn(async () => applied);
+    const noteSuccessfulMutation = vi.fn(() => ({ reviewDue: true }));
     const memory = fakeMemory({ applyWorkingMemoryMutation });
     const tool = createMutateWorkingMemoryTool({
       memory,
@@ -219,6 +310,7 @@ describe('createMutateWorkingMemoryTool', () => {
       now: () => new Date('2026-07-25T10:55:00Z'),
       getActiveInvocation: () => activeInvocation(inspection),
       recordPendingMutation: vi.fn(),
+      noteSuccessfulMutation,
       recordOutcome: vi.fn(),
     });
 
@@ -231,7 +323,8 @@ describe('createMutateWorkingMemoryTool', () => {
       value: { goal: 'BMW X5' },
     });
 
-    expect(result).toEqual({ status: 'applied', operation: 'create', code: 'working_memory_mutation_succeeded' });
+    expect(result).toEqual({ status: 'applied', operation: 'create', code: 'working_memory_mutation_succeeded', reviewDue: true });
+    expect(noteSuccessfulMutation).toHaveBeenCalledWith({ resourceId: message.householdId });
     expect(applyWorkingMemoryMutation).toHaveBeenCalledWith(expect.objectContaining({
       threadId: message.conversationId,
       resourceId: message.householdId,
@@ -367,5 +460,94 @@ describe('createMutateWorkingMemoryTool', () => {
     expect(applyWorkingMemoryMutation).toHaveBeenCalledWith(expect.objectContaining({
       basedOnRevision: inspection.revision,
     }));
+  });
+});
+
+describe('createProposeWorkingMemoryTool', () => {
+  it('creates an invocation-local proposal through validation without applying it', async () => {
+    const document = workingMemoryDocument();
+    const inspection = inspectionFor(document);
+    const validateWorkingMemoryMutation = vi.fn(async (input) => ({
+      status: 'succeeded' as const,
+      operation: input.mutation.operation,
+      code: 'working_memory_mutation_validated' as const,
+      document,
+      outcome: successOutcome('validate', 'working_memory_mutation_validated'),
+    }));
+    const recordPendingMutation = vi.fn<(proposal: PendingWorkingMemoryMutation) => void>();
+    const recordOutcome = vi.fn();
+    const applyWorkingMemoryMutation = vi.fn();
+    const memory = fakeMemory({ validateWorkingMemoryMutation, applyWorkingMemoryMutation });
+    const tool = createProposeWorkingMemoryTool({
+      memory,
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(inspection),
+      recordPendingMutation,
+      recordOutcome,
+    });
+
+    const result = await executeTool(tool, {
+      kind: 'communication_preference',
+      summary: 'Prefer concise updates.',
+      value: { detail: 'concise' },
+      signal: 'preference_signal',
+      subject: 'self',
+    });
+
+    expect(result).toMatchObject({
+      status: 'confirmation_required',
+      operation: 'create',
+      code: 'working_memory_candidate_proposed',
+      candidate: { scope: 'member', kind: 'communication_preference' },
+    });
+    expect(JSON.stringify(result)).not.toContain(message.speaker.principalRef);
+    expect(validateWorkingMemoryMutation).toHaveBeenCalledOnce();
+    expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
+    expect(recordPendingMutation).toHaveBeenCalledOnce();
+    expect(recordPendingMutation.mock.calls[0]![0]).toMatchObject({
+      mutation: {
+        operation: 'create',
+        entry: { scope: 'member', ownerPrincipalRef: message.speaker.principalRef },
+      },
+      basedOnRevision: inspection.revision,
+      expiresAt: '2026-07-25T11:10:00.000Z',
+    });
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ operation: 'candidate', status: 'succeeded' }));
+  });
+
+  it('requires same-turn inspection and rejects policy-incompatible candidates', async () => {
+    const recordPendingMutation = vi.fn();
+    const tool = createProposeWorkingMemoryTool({
+      memory: fakeMemory(),
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(),
+      recordPendingMutation,
+    });
+    await expect(executeTool(tool, {
+      kind: 'convention',
+      summary: 'Use Groceries.',
+      value: { category: 'Groceries' },
+      signal: 'preference_signal',
+      subject: 'self',
+    })).resolves.toMatchObject({ status: 'rejected', code: 'working_memory_inspection_required' });
+    expect(recordPendingMutation).not.toHaveBeenCalled();
+
+    const inspection = inspectionFor(workingMemoryDocument());
+    const policyTool = createProposeWorkingMemoryTool({
+      memory: fakeMemory(),
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(inspection),
+      recordPendingMutation,
+    });
+    await expect(executeTool(policyTool, {
+      kind: 'convention',
+      summary: 'Use Groceries.',
+      value: { category: 'Groceries' },
+      signal: 'preference_signal',
+      subject: 'self',
+    })).resolves.toMatchObject({ status: 'rejected', code: 'working_memory_candidate_scope_invalid' });
   });
 });

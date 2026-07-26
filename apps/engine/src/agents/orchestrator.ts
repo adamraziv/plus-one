@@ -61,6 +61,9 @@ import { requestForRuntime } from '../tools/delegate-team-schemas.js';
 import {
   createInspectWorkingMemoryTool,
   createMutateWorkingMemoryTool,
+  createProposeWorkingMemoryTool,
+  createViewWorkingMemoryTool,
+  createReviewWorkingMemoryTool,
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
@@ -104,12 +107,19 @@ const orchestratorInstructions = [
   'After delegateTeam returns, explain the checked result to the user in concise natural language.',
   'Working Memory is durable household context, scoped to the authenticated household resource and the current conversation thread.',
   'Use Working Memory only for durable user-provided conversational context such as goals, saving preferences, names, communication preferences, and household conventions.',
+  'Use proposeWorkingMemory for ordinary preference or identity signals; it creates only an invocation-local candidate and waits for the existing confirmation flow.',
+  'For a correction to an existing fact, use proposeWorkingMemory with signal correction_signal and correctionTarget matching the visible summary; create one replace proposal, never delete the old entry as a substitute for replacement.',
+  'An explicit remember/save request may use mutateWorkingMemory, but a candidate is never a saved fact until readback-verified approval.',
+  'Use viewWorkingMemory for “what do you remember about me?” or household memory questions. It is read-only and never replaces inspection before a correction or deletion.',
+  'For “forget” or “correct,” identify the visible summary through a view or inspection, then use the existing revision-gated mutation flow; never ask for an internal ID.',
+  'Use reviewWorkingMemory for a deterministic read-only review. Findings are proposals only; use fresh inspection and the existing mutation flow for any accepted change.',
   'Before every create, replace, delete, or clear, call inspectWorkingMemory in this same turn.',
   'Pass the exact revision returned by inspection to mutateWorkingMemory.',
   'Use create for a new entry and an inspected entryId for replace or delete.',
   'Never invent an entryId or revision, and never provide household, thread, or principal identifiers to either tool.',
   'When confirmation is required, explain the proposed change naturally and ask for approval.',
   'Never claim a mutation succeeded unless the tool reports working_memory_mutation_succeeded.',
+  'Never describe a Working Memory change as proposed, pending, or ready for approval unless a Working Memory tool returned confirmation_required in this turn.',
   'Treat authenticated principal context as internal authorization context. Never expose or ask for principal, household, thread, or other system identifiers.',
   'When an internal memory-operation event says Working Memory failed, explain the failure naturally, do not claim the information was saved or cleared, and continue with only information that remains verified.',
   'Return only the user-facing reply text when you are not calling a tool.',
@@ -199,6 +209,9 @@ export class OrchestratorAgent {
     delegateTeam: ReturnType<typeof createDelegateTeamTool>;
     inspectWorkingMemory?: ReturnType<typeof createInspectWorkingMemoryTool>;
     mutateWorkingMemory?: ReturnType<typeof createMutateWorkingMemoryTool>;
+    proposeWorkingMemory?: ReturnType<typeof createProposeWorkingMemoryTool>;
+    viewWorkingMemory?: ReturnType<typeof createViewWorkingMemoryTool>;
+    reviewWorkingMemory?: ReturnType<typeof createReviewWorkingMemoryTool>;
   };
 
   constructor(private readonly dependencies: {
@@ -299,7 +312,63 @@ export class OrchestratorAgent {
         },
         recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
       });
+      this.agentTools.viewWorkingMemory = createViewWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
+        },
+        recordInspection: (inspection) => {
+          const active = this.activeInvocation.getStore();
+          if (active !== undefined) active.workingMemoryInspection = inspection;
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+      this.agentTools.reviewWorkingMemory = createReviewWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        now: () => new Date(),
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
       this.agentTools.mutateWorkingMemory = createMutateWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        now: () => new Date(),
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
+        },
+        recordPendingMutation: (proposal) => {
+          const active = this.activeInvocation.getStore();
+          if (active !== undefined) active.pendingWorkingMemoryMutation = proposal;
+        },
+        noteSuccessfulMutation: ({ resourceId }) => dependencies.sessionMemory!.noteWorkingMemoryMutationSuccess({ resourceId }),
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+      this.agentTools.proposeWorkingMemory = createProposeWorkingMemoryTool({
         memory: dependencies.sessionMemory,
         now: () => new Date(),
         getActiveInvocation: () => {
@@ -344,6 +413,25 @@ export class OrchestratorAgent {
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
     const result = await this.runTurn(input);
     return result.response;
+  }
+
+  async runScheduledWorkingMemoryReview(input: {
+    message: InboundChannelMessageV1;
+  }): Promise<OrchestratorFinalResponseV1> {
+    const memory = this.dependencies.sessionMemory;
+    if (memory === undefined) return responseFromText(input.message, 'I could not review saved context right now.');
+    const result = await memory.reviewWorkingMemory({
+      threadId: input.message.conversationId,
+      resourceId: input.message.householdId,
+      principalRef: input.message.speaker.principalRef,
+      requestedBy: 'scheduled_review',
+      now: new Date(),
+    });
+    if (result.status === 'failed') return responseFromText(input.message, 'I could not complete the saved-context review right now.');
+    const body = result.report.findings.length === 0
+      ? 'I checked the household’s saved context and found nothing that needs attention. No changes were made.'
+      : `I found ${result.report.findings.length} saved-context item${result.report.findings.length === 1 ? '' : 's'} that may need your review. Nothing was changed.`;
+    return responseFromText(input.message, body);
   }
 
   async resolvePendingMutation(input: {
@@ -495,6 +583,16 @@ export class OrchestratorAgent {
           signal,
         });
         return { kind: 'final', response };
+      }
+      const reviewDue = memory.noteWorkingMemoryMutationSuccess({ resourceId: input.message.householdId }).reviewDue;
+      if (reviewDue) {
+        await memory.reviewWorkingMemory({
+          threadId: input.message.conversationId,
+          resourceId: input.message.householdId,
+          principalRef: input.message.speaker.principalRef,
+          requestedBy: 'user',
+          now: new Date(),
+        });
       }
       const response = await this.synthesizeWorkingMemoryOutcome({
         message: input.message,
@@ -837,6 +935,9 @@ export class OrchestratorAgent {
     if (this.dependencies.sessionMemory !== undefined && !invocation.memoryState.memoryDegraded) {
       if (this.agentTools.inspectWorkingMemory !== undefined) names.push('inspectWorkingMemory');
       if (this.agentTools.mutateWorkingMemory !== undefined) names.push('mutateWorkingMemory');
+      if (this.agentTools.proposeWorkingMemory !== undefined) names.push('proposeWorkingMemory');
+      if (this.agentTools.viewWorkingMemory !== undefined) names.push('viewWorkingMemory');
+      if (this.agentTools.reviewWorkingMemory !== undefined) names.push('reviewWorkingMemory');
     }
     if (canDelegateAnotherSubstep(invocation)) names.unshift('delegateTeam');
     return names;
@@ -875,9 +976,22 @@ export class OrchestratorAgent {
 
   private async orchestratorInput(message: InboundChannelMessageV1, invocation?: OrchestratorInvocation) {
     if (this.dependencies.sessionMemory !== undefined) {
+      let durableWorkingMemory: MastraDBMessage[] = [];
+      if (invocation !== undefined && !invocation.memoryState.memoryDegraded) {
+        const context = await this.dependencies.sessionMemory.readWorkingMemoryPromptContext({
+          threadId: message.conversationId,
+          resourceId: message.householdId,
+          principalRef: message.speaker.principalRef,
+        });
+        this.recordMemoryOutcome(context.outcome);
+        if (context.status === 'succeeded') {
+          durableWorkingMemory = [durableWorkingMemoryMessage(message, context.context.prompt)];
+        }
+      }
       return [
         dateContextMessage(message),
         authenticatedPrincipalMessage(message),
+        ...durableWorkingMemory,
         ...(invocation === undefined ? [] : memoryFailureMessages(invocation.memoryFailures)),
         userMessage(message),
       ];
@@ -891,6 +1005,11 @@ export class OrchestratorAgent {
       memory: {
         thread: message.conversationId,
         resource: message.householdId,
+        ...(!memoryDegraded ? {
+          options: {
+            workingMemory: { enabled: false as const },
+          },
+        } : {}),
         ...(memoryDegraded ? {
           options: {
             readOnly: true as const,
@@ -974,6 +1093,19 @@ function dateContextMessage(message: InboundChannelMessageV1): MastraDBMessage {
       format: 2,
       content: dateContextText(message),
       parts: [{ type: 'text', text: dateContextText(message) }],
+    },
+  };
+}
+
+function durableWorkingMemoryMessage(message: InboundChannelMessageV1, prompt: string): MastraDBMessage {
+  return {
+    id: `orchestrator-durable-working-memory-${message.externalMessageId}`,
+    role: 'system',
+    createdAt: new Date(message.receivedAt),
+    content: {
+      format: 2,
+      content: prompt,
+      parts: [{ type: 'text', text: prompt }],
     },
   };
 }

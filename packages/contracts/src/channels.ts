@@ -107,6 +107,15 @@ export const OrchestratorFinalResponseSchemaV1 = strict({
 });
 export type OrchestratorFinalResponseV1 = z.infer<typeof OrchestratorFinalResponseSchemaV1>;
 
+export const WorkingMemoryReviewScheduleContextSchemaV1 = strict({
+  schemaName: z.literal('working-memory-review-context'),
+  schemaVersion: z.literal(1),
+  conversationId: ConversationIdSchema,
+  principalRef: z.string().min(1).max(512),
+  mode: z.literal('suggest'),
+});
+export type WorkingMemoryReviewScheduleContextV1 = z.infer<typeof WorkingMemoryReviewScheduleContextSchemaV1>;
+
 export const DeliveryRequestSchemaV1 = strict({
   schemaName: z.literal('delivery-request'),
   schemaVersion: z.literal(1),

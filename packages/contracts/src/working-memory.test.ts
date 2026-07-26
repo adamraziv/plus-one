@@ -8,6 +8,12 @@ import {
   MAX_WORKING_MEMORY_TEXT_LENGTH,
   WorkingMemoryEntryIdSchema,
   WorkingMemoryKindSchema,
+  WorkingMemoryLifecycleSchema,
+  WorkingMemoryCandidateInputSchema,
+  WorkingMemoryCandidateSchema,
+  WorkingMemoryViewResultSchema,
+  WorkingMemoryReviewFindingSchema,
+  WorkingMemoryReviewReportSchema,
   WorkingMemoryMutationDraftSchema,
   WorkingMemoryProposalIdSchema,
   PendingWorkingMemoryMutationSchema,
@@ -94,7 +100,7 @@ describe('LegacyHouseholdWorkingMemorySchema', () => {
   });
 });
 
-const entryId = 'wme_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+const entryId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAV');
 const proposalId = 'wmproposal_01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const revision = 'a'.repeat(64);
 const householdId = 'hh_01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -253,7 +259,7 @@ describe('flexible Working Memory contracts', () => {
     })).toThrow(/bytes|size/i);
   });
 
-  it('strips model envelope extras while keeping server-owned fields separate', () => {
+  it('rejects model envelope extras and keeps server-owned fields separate', () => {
     const create = {
       operation: 'create',
       basedOnRevision: revision,
@@ -263,8 +269,12 @@ describe('flexible Working Memory contracts', () => {
       value: { goal: 'BMW X5' },
     } as const;
     expect(WorkingMemoryMutationDraftSchema.parse(create)).toEqual(create);
-    expect(WorkingMemoryMutationDraftSchema.parse({ ...create, entryId })).toEqual(create);
-    expect(WorkingMemoryMutationDraftSchema.parse({ ...create, ownerPrincipalRef: 'telegram:user:1' })).toEqual(create);
+    expect(() => WorkingMemoryMutationDraftSchema.parse({ ...create, entryId })).toThrow();
+    expect(() => WorkingMemoryMutationDraftSchema.parse({ ...create, ownerPrincipalRef: 'telegram:user:1' })).toThrow();
+    expect(() => WorkingMemoryMutationDraftSchema.parse({ ...create, lifecycle: {
+      createdAt: '2026-07-25T10:55:00.000Z',
+      updatedAt: '2026-07-25T10:55:00.000Z',
+    } })).toThrow();
 
     expect(WorkingMemoryMutationDraftSchema.parse({
       operation: 'replace',
@@ -274,22 +284,15 @@ describe('flexible Working Memory contracts', () => {
       summary: 'Buy a BMW X7.',
       value: { goal: 'BMW X7' },
     })).toBeTruthy();
-    expect(WorkingMemoryMutationDraftSchema.parse({
+    expect(() => WorkingMemoryMutationDraftSchema.parse({
       operation: 'replace',
       basedOnRevision: revision,
       entryId,
       kind: 'goal',
       summary: 'Buy a BMW X7.',
+      value: { goal: 'BMW X7' },
       scope: 'household',
-      value: { goal: 'BMW X7' },
-    })).toEqual({
-      operation: 'replace',
-      basedOnRevision: revision,
-      entryId,
-      kind: 'goal',
-      summary: 'Buy a BMW X7.',
-      value: { goal: 'BMW X7' },
-    });
+    })).toThrow();
     expect(WorkingMemoryMutationDraftSchema.parse({
       operation: 'replace',
       basedOnRevision: 'model-revision',
@@ -300,10 +303,92 @@ describe('flexible Working Memory contracts', () => {
     })).toMatchObject({ basedOnRevision: 'model-revision' });
     expect(WorkingMemoryMutationDraftSchema.parse({ operation: 'delete', basedOnRevision: revision, entryId })).toBeTruthy();
     expect(WorkingMemoryMutationDraftSchema.parse({ operation: 'clear', basedOnRevision: revision })).toBeTruthy();
-    expect(WorkingMemoryMutationDraftSchema.parse({ operation: 'clear', basedOnRevision: revision, entryId })).toEqual({
-      operation: 'clear',
+    expect(() => WorkingMemoryMutationDraftSchema.parse({ operation: 'clear', basedOnRevision: revision, entryId })).toThrow();
+  });
+
+  it('accepts lifecycle metadata only on persisted entries', () => {
+    const lifecycle = {
+      createdAt: '2026-07-25T10:55:00.000Z',
+      updatedAt: '2026-07-25T10:55:00.000Z',
+      lastReviewedAt: '2026-07-25T11:00:00.000Z',
+      expiresAt: '2027-07-25T10:55:00.000Z',
+    };
+    expect(WorkingMemoryLifecycleSchema.parse(lifecycle)).toEqual(lifecycle);
+    expect(FlexibleWorkingMemorySchema.parse(flexibleDocument({
+      entries: { [entryId]: flexibleEntry({ lifecycle }) },
+    })).entries[entryId]?.lifecycle).toEqual(lifecycle);
+    expect(() => WorkingMemoryLifecycleSchema.parse({
+      createdAt: '2026-07-25T10:55:00+08:00',
+      updatedAt: '2026-07-25T10:55:00Z',
+    })).toThrow();
+  });
+
+  it('keeps candidate inputs declarative and derives runtime fields separately', () => {
+    const input = {
+      kind: 'communication_preference',
+      summary: 'Prefer concise updates.',
+      value: { detail: 'concise' },
+      signal: 'preference_signal',
+      subject: 'self',
+      correctionTarget: { kind: 'communication_preference', summary: 'Prefer detailed updates.' },
+    } as const;
+    expect(WorkingMemoryCandidateInputSchema.parse(input)).toEqual(input);
+    expect(() => WorkingMemoryCandidateInputSchema.parse({ ...input, ownerPrincipalRef: 'telegram:user:1' })).toThrow();
+    expect(() => WorkingMemoryCandidateInputSchema.parse({ ...input, entryId })).toThrow();
+    expect(WorkingMemoryCandidateSchema.parse({
+      kind: input.kind,
+      summary: input.summary,
+      value: input.value,
+      signal: input.signal,
+      scope: 'member',
+      inspectedRevision: revision,
+    })).toMatchObject({ scope: 'member', inspectedRevision: revision });
+  });
+
+  it('keeps views and review findings free of storage metadata', () => {
+    const view = WorkingMemoryViewResultSchema.parse({
+      status: 'succeeded',
+      view: 'personal',
+      entries: [{
+        kind: 'member_context',
+        label: 'Member context',
+        scope: 'member',
+        summary: 'The user prefers Alex.',
+        value: { preferredName: 'Alex' },
+      }],
+    });
+    expect(view.status).toBe('succeeded');
+    expect(() => WorkingMemoryViewResultSchema.parse({
+      status: 'succeeded',
+      view: 'personal',
+      entries: [{
+        kind: 'member_context',
+        label: 'Member context',
+        scope: 'member',
+        summary: 'The user prefers Alex.',
+        value: { preferredName: 'Alex' },
+        entryId,
+      }],
+    })).toThrow();
+
+    const finding = WorkingMemoryReviewFindingSchema.parse({
+      category: 'duplicate',
+      entryIds: [entryId],
+      explanation: 'The entries contain the same canonical fact.',
+      proposedOperation: 'delete',
       basedOnRevision: revision,
     });
+    expect(finding.category).toBe('duplicate');
+    expect(WorkingMemoryReviewReportSchema.parse({
+      status: 'succeeded',
+      revision,
+      reviewedAt: '2026-07-25T10:55:00.000Z',
+      findings: [finding],
+    }).findings).toHaveLength(1);
+    expect(() => WorkingMemoryReviewFindingSchema.parse({
+      ...finding,
+      lifecycle: {},
+    })).toThrow();
   });
 
   it('validates authenticated pending proposals and their expiry window', () => {
