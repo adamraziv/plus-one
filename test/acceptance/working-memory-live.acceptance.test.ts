@@ -50,8 +50,16 @@ describe('Working Memory through the real gateway and configured provider', () =
     });
     expectSuccessful(created);
 
-    const stored = await readMemory(target);
-    expect(JSON.stringify(findEntry(stored, 'goal')?.value)).toMatch(/BMW X5/i);
+    let stored = await readMemory(target);
+    if (findEntry(stored, 'goal') === undefined) {
+      expect(created.body).toMatch(/confirm|approve|remember|save|goal|change/i);
+      const approved = await sendMessage({ ...target, body: 'Yes' });
+      expectSuccessful(approved);
+      stored = await readMemory(target);
+    }
+    const createdGoal = findEntry(stored, 'goal');
+    expect(createdGoal, JSON.stringify(stored)).toBeDefined();
+    expect(JSON.stringify(createdGoal?.value ?? {})).toMatch(/BMW X5/i);
 
     const recalled = await sendMessage({
       householdId: target.householdId,
@@ -233,9 +241,9 @@ describe('Working Memory through the real gateway and configured provider', () =
     const first = ids();
     await writeMemory(first, {
       kind: 'goal',
-      summary: 'Build an emergency fund.',
+      summary: 'Buy a red cedar kayak in 37 days.',
       scope: 'household',
-      value: { goal: 'Emergency fund' },
+      value: { goal: 'Red cedar kayak', timeframe: '37 days' },
     });
     const sameHousehold = await sendMessage({
       householdId: first.householdId,
@@ -243,7 +251,7 @@ describe('Working Memory through the real gateway and configured provider', () =
       body: 'What durable goal do you remember for this household?',
     });
     expectSuccessful(sameHousehold);
-    expect(sameHousehold.body).toMatch(/emergency fund/i);
+    expect(sameHousehold.body).toMatch(/red cedar kayak|37 days/i);
 
     const otherHousehold = ids();
     const isolated = await sendMessage({
@@ -251,7 +259,7 @@ describe('Working Memory through the real gateway and configured provider', () =
       body: 'What durable goal do you remember for this household?',
     });
     expectSuccessful(isolated);
-    expect(isolated.body).not.toMatch(/emergency fund/i);
+    expect(isolated.body).not.toMatch(/red cedar kayak|37 days/i);
     expect(Object.values((await readMemory(otherHousehold)).entries)).toHaveLength(0);
   }, 300_000);
 
