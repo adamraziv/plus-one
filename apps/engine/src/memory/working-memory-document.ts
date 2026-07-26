@@ -5,6 +5,7 @@ import {
   ResolvedWorkingMemoryMutationSchema,
   WorkingMemoryEntryIdSchema,
   WorkingMemoryEntrySchema,
+  WorkingMemoryLifecycleSchema,
   WorkingMemoryMutationDraftSchema,
   WorkingMemoryProposalIdSchema,
   WorkingMemoryRevisionSchema,
@@ -15,9 +16,16 @@ import {
   type WorkingMemoryEntry,
   type WorkingMemoryEntryId,
   type WorkingMemoryInspectionResult,
+  type WorkingMemoryLifecycle,
   type WorkingMemoryProposalId,
+  type UtcInstant,
 } from '@plus-one/contracts';
 import { canonicalizeJson, hashArtifact } from '@plus-one/runtime';
+import {
+  canonicalizeWorkingMemoryValue,
+} from './working-memory-taxonomy.js';
+
+export { canonicalizeWorkingMemoryValue } from './working-memory-taxonomy.js';
 
 export interface WorkingMemoryIdGenerator {
   nextEntryId(): WorkingMemoryEntryId;
@@ -108,7 +116,11 @@ export function visibleWorkingMemoryEntries(input: {
 export function decodeStoredWorkingMemory(input: {
   stored: string | null;
   ids: WorkingMemoryIdGenerator;
+  now?: Date;
 }): DecodeStoredWorkingMemoryResult {
+  const now = input.now ?? new Date();
+  const nowInstant = now.toISOString() as UtcInstant;
+  const lifecycle = defaultWorkingMemoryLifecycle(nowInstant);
   if (input.stored === null) {
     return { status: 'succeeded', document: emptyWorkingMemoryDocument(), migrated: false };
   }
@@ -121,7 +133,16 @@ export function decodeStoredWorkingMemory(input: {
   }
 
   const flexible = FlexibleWorkingMemorySchema.safeParse(raw);
-  if (flexible.success) return { status: 'succeeded', document: flexible.data, migrated: false };
+  if (flexible.success) {
+    let migrated = false;
+    const entries = Object.fromEntries(Object.entries(flexible.data.entries).map(([entryId, entry]) => {
+      if (entry.lifecycle !== undefined) return [entryId, entry];
+      migrated = true;
+      return [entryId, { ...entry, lifecycle }];
+    }));
+    const document = FlexibleWorkingMemorySchema.parse({ version: 1, entries });
+    return { status: 'succeeded', document, migrated };
+  }
 
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     return { status: 'failed', code: 'working_memory_read_failed' };
@@ -149,6 +170,7 @@ export function decodeStoredWorkingMemory(input: {
       summary: goal.summary,
       scope: 'household',
       value: asJsonValue(goal),
+      lifecycle,
     });
     void key;
   }
@@ -158,6 +180,7 @@ export function decodeStoredWorkingMemory(input: {
       summary: 'Saving preferences',
       scope: 'household',
       value: asJsonValue(legacy.data.savingPreferences),
+      lifecycle,
     });
   }
   if (legacy.data.communication !== undefined) {
@@ -166,6 +189,7 @@ export function decodeStoredWorkingMemory(input: {
       summary: 'Communication preferences',
       scope: 'household',
       value: asJsonValue(legacy.data.communication),
+      lifecycle,
     });
   }
   for (const [key, convention] of Object.entries(legacy.data.conventions ?? {})) {
@@ -174,6 +198,7 @@ export function decodeStoredWorkingMemory(input: {
       summary: convention,
       scope: 'household',
       value: asJsonValue({ key, convention }),
+      lifecycle,
     });
   }
   for (const [ownerPrincipalRef, member] of Object.entries(legacy.data.members ?? {})) {
@@ -183,6 +208,7 @@ export function decodeStoredWorkingMemory(input: {
       scope: 'member',
       ownerPrincipalRef,
       value: asJsonValue(member),
+      lifecycle,
     });
   }
 
@@ -197,6 +223,7 @@ export function decodeStoredWorkingMemory(input: {
       summary: 'Legacy working memory',
       scope: 'household',
       value: unknownValue.data,
+      lifecycle,
     });
   }
 
@@ -273,7 +300,9 @@ export function applyResolvedWorkingMemoryMutation(input: {
   document: FlexibleWorkingMemory;
   mutation: unknown;
   principalRef: string;
+  now?: Date;
 }): ApplyWorkingMemoryMutationResult {
+  const now = input.now ?? new Date();
   const parsed = ResolvedWorkingMemoryMutationSchema.safeParse(input.mutation);
   if (!parsed.success) return { status: 'failed', code: 'working_memory_mutation_invalid' };
   const mutation = parsed.data;
@@ -287,7 +316,10 @@ export function applyResolvedWorkingMemoryMutation(input: {
     if (!canAccessWorkingMemoryEntry(mutation.entry, input.principalRef)) {
       return { status: 'failed', code: 'working_memory_entry_forbidden' };
     }
-    entries[mutation.entryId] = mutation.entry;
+    entries[mutation.entryId] = withMutationLifecycle({
+      entry: mutation.entry,
+      now,
+    });
   } else {
     const existing = entries[mutation.entryId];
     if (existing === undefined) return { status: 'failed', code: 'working_memory_entry_not_found' };
@@ -300,7 +332,11 @@ export function applyResolvedWorkingMemoryMutation(input: {
         || existing.ownerPrincipalRef !== mutation.entry.ownerPrincipalRef) {
         return { status: 'failed', code: 'working_memory_entry_forbidden' };
       }
-      entries[mutation.entryId] = mutation.entry;
+      entries[mutation.entryId] = withMutationLifecycle({
+        entry: mutation.entry,
+        existing: existing.lifecycle,
+        now,
+      });
     }
   }
 
@@ -318,14 +354,14 @@ export function verifyWorkingMemoryReadback(input: {
   const after = input.after.entries;
   if (input.mutation.operation === 'create') {
     return after[input.mutation.entryId] !== undefined
-      && canonicalizeWorkingMemoryValue(after[input.mutation.entryId]!) === canonicalizeWorkingMemoryValue(input.mutation.entry)
+      && comparableWorkingMemoryEntry(after[input.mutation.entryId]!) === comparableWorkingMemoryEntry(input.mutation.entry)
       && before[input.mutation.entryId] === undefined;
   }
   if (input.mutation.operation === 'replace') {
     return before[input.mutation.entryId] !== undefined
-      && canonicalizeWorkingMemoryValue(before[input.mutation.entryId]!) !== canonicalizeWorkingMemoryValue(input.mutation.entry)
+      && comparableWorkingMemoryEntry(before[input.mutation.entryId]!) !== comparableWorkingMemoryEntry(input.mutation.entry)
       && after[input.mutation.entryId] !== undefined
-      && canonicalizeWorkingMemoryValue(after[input.mutation.entryId]!) === canonicalizeWorkingMemoryValue(input.mutation.entry);
+      && comparableWorkingMemoryEntry(after[input.mutation.entryId]!) === comparableWorkingMemoryEntry(input.mutation.entry);
   }
   if (input.mutation.operation === 'delete') {
     return before[input.mutation.entryId] !== undefined && after[input.mutation.entryId] === undefined;
@@ -335,6 +371,22 @@ export function verifyWorkingMemoryReadback(input: {
 
 export function proposalExpired(expiresAt: string, now: Date): boolean {
   return Date.parse(expiresAt) <= now.getTime();
+}
+
+export function defaultWorkingMemoryLifecycle(now: UtcInstant): WorkingMemoryLifecycle {
+  return WorkingMemoryLifecycleSchema.parse({ createdAt: now, updatedAt: now });
+}
+
+export function workingMemoryLifecycleForMutation(input: {
+  existing?: WorkingMemoryLifecycle;
+  now: UtcInstant;
+}): WorkingMemoryLifecycle {
+  return WorkingMemoryLifecycleSchema.parse({
+    createdAt: input.existing?.createdAt ?? input.now,
+    updatedAt: input.now,
+    ...(input.existing?.lastReviewedAt === undefined ? {} : { lastReviewedAt: input.existing.lastReviewedAt }),
+    ...(input.existing?.expiresAt === undefined ? {} : { expiresAt: input.existing.expiresAt }),
+  });
 }
 
 function emptyWorkingMemoryDocument(): FlexibleWorkingMemory {
@@ -349,6 +401,20 @@ function asJsonValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
-function canonicalizeWorkingMemoryValue(value: unknown): string {
-  return canonicalizeJson(asJsonValue(value));
+function withMutationLifecycle(input: {
+  entry: WorkingMemoryEntry;
+  existing?: WorkingMemoryLifecycle;
+  now: Date;
+}): WorkingMemoryEntry {
+  const { lifecycle: _ignoredLifecycle, ...entry } = input.entry;
+  const now = input.now.toISOString() as UtcInstant;
+  return WorkingMemoryEntrySchema.parse({
+    ...entry,
+    lifecycle: workingMemoryLifecycleForMutation({ existing: input.existing, now }),
+  });
+}
+
+function comparableWorkingMemoryEntry(entry: WorkingMemoryEntry): string {
+  const { lifecycle: _ignoredLifecycle, ...withoutLifecycle } = entry;
+  return JSON.stringify(canonicalizeWorkingMemoryValue(asJsonValue(withoutLifecycle)));
 }
