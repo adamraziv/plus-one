@@ -20,7 +20,7 @@ import {
   type WorkingMemoryProposalId,
   type UtcInstant,
 } from '@plus-one/contracts';
-import { canonicalizeJson, hashArtifact } from '@plus-one/runtime';
+import { hashArtifact } from '@plus-one/runtime';
 import {
   canonicalizeWorkingMemoryValue,
 } from './working-memory-taxonomy.js';
@@ -406,7 +406,8 @@ function withMutationLifecycle(input: {
   existing?: WorkingMemoryLifecycle | undefined;
   now: Date;
 }): WorkingMemoryEntry {
-  const { lifecycle: _ignoredLifecycle, ...entry } = input.entry;
+  const entry = { ...input.entry };
+  delete entry.lifecycle;
   const now = input.now.toISOString() as UtcInstant;
   return WorkingMemoryEntrySchema.parse({
     ...entry,
@@ -415,6 +416,7 @@ function withMutationLifecycle(input: {
 }
 
 function comparableWorkingMemoryEntry(entry: WorkingMemoryEntry): string {
-  const { lifecycle: _ignoredLifecycle, ...withoutLifecycle } = entry;
+  const withoutLifecycle = { ...entry };
+  delete withoutLifecycle.lifecycle;
   return JSON.stringify(canonicalizeWorkingMemoryValue(asJsonValue(withoutLifecycle)));
 }
