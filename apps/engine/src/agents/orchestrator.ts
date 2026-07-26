@@ -363,6 +363,7 @@ export class OrchestratorAgent {
           const active = this.activeInvocation.getStore();
           if (active !== undefined) active.pendingWorkingMemoryMutation = proposal;
         },
+        noteSuccessfulMutation: ({ resourceId }) => dependencies.sessionMemory!.noteWorkingMemoryMutationSuccess({ resourceId }),
         recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
       });
       this.agentTools.proposeWorkingMemory = createProposeWorkingMemoryTool({
@@ -561,6 +562,16 @@ export class OrchestratorAgent {
           signal,
         });
         return { kind: 'final', response };
+      }
+      const reviewDue = memory.noteWorkingMemoryMutationSuccess({ resourceId: input.message.householdId }).reviewDue;
+      if (reviewDue) {
+        await memory.reviewWorkingMemory({
+          threadId: input.message.conversationId,
+          resourceId: input.message.householdId,
+          principalRef: input.message.speaker.principalRef,
+          requestedBy: 'user',
+          now: new Date(),
+        });
       }
       const response = await this.synthesizeWorkingMemoryOutcome({
         message: input.message,

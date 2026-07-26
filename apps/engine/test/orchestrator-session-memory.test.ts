@@ -74,6 +74,16 @@ describe('OrchestratorSessionMemory', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it('keeps the bounded review trigger counter resource-isolated and resets it after review acknowledgement', () => {
+    const memory = createMemoryPort(fakeMemory());
+    expect(memory.noteWorkingMemoryMutationSuccess({ resourceId })).toEqual({ reviewDue: false });
+    expect(memory.noteWorkingMemoryMutationSuccess({ resourceId })).toEqual({ reviewDue: false });
+    expect(memory.noteWorkingMemoryMutationSuccess({ resourceId })).toEqual({ reviewDue: true });
+    expect(memory.noteWorkingMemoryMutationSuccess({ resourceId: 'hh_other' })).toEqual({ reviewDue: false });
+    memory.acknowledgeWorkingMemoryReview({ resourceId });
+    expect(memory.noteWorkingMemoryMutationSuccess({ resourceId })).toEqual({ reviewDue: false });
+  });
+
   const memoryEntryId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAV');
   const memoryPrincipalRef = 'telegram:user:1';
 

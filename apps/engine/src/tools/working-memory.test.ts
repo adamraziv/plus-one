@@ -301,6 +301,7 @@ describe('createMutateWorkingMemoryTool', () => {
       outcome: successOutcome('mutate', 'working_memory_mutation_succeeded'),
     };
     const applyWorkingMemoryMutation = vi.fn(async () => applied);
+    const noteSuccessfulMutation = vi.fn(() => ({ reviewDue: true }));
     const memory = fakeMemory({ applyWorkingMemoryMutation });
     const tool = createMutateWorkingMemoryTool({
       memory,
@@ -308,6 +309,7 @@ describe('createMutateWorkingMemoryTool', () => {
       now: () => new Date('2026-07-25T10:55:00Z'),
       getActiveInvocation: () => activeInvocation(inspection),
       recordPendingMutation: vi.fn(),
+      noteSuccessfulMutation,
       recordOutcome: vi.fn(),
     });
 
@@ -320,7 +322,8 @@ describe('createMutateWorkingMemoryTool', () => {
       value: { goal: 'BMW X5' },
     });
 
-    expect(result).toEqual({ status: 'applied', operation: 'create', code: 'working_memory_mutation_succeeded' });
+    expect(result).toEqual({ status: 'applied', operation: 'create', code: 'working_memory_mutation_succeeded', reviewDue: true });
+    expect(noteSuccessfulMutation).toHaveBeenCalledWith({ resourceId: message.householdId });
     expect(applyWorkingMemoryMutation).toHaveBeenCalledWith(expect.objectContaining({
       threadId: message.conversationId,
       resourceId: message.householdId,

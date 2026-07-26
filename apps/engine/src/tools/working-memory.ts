@@ -195,6 +195,7 @@ export function createMutateWorkingMemoryTool(input: {
   now(): Date;
   getActiveInvocation(): ActiveWorkingMemoryInvocation | undefined;
   recordPendingMutation(proposal: PendingWorkingMemoryMutation): void;
+  noteSuccessfulMutation?(input: { resourceId: string }): { reviewDue: boolean };
   recordOutcome?(outcome: WorkingMemoryOperationOutcome): void;
 }) {
   const ids = input.ids ?? createWorkingMemoryIdGenerator();
@@ -277,10 +278,12 @@ export function createMutateWorkingMemoryTool(input: {
       });
       input.recordOutcome?.(applied.outcome);
       if (applied.status === 'failed') return mutationFailureResult(operation, applied.code, applied.category, applied.retry);
+      const review = input.noteSuccessfulMutation?.({ resourceId: active.message.householdId });
       return WorkingMemoryMutationToolResultSchema.parse({
         status: 'applied',
         operation,
         code: 'working_memory_mutation_succeeded',
+        ...(review?.reviewDue === true ? { reviewDue: true } : {}),
       });
     },
   });

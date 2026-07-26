@@ -32,6 +32,7 @@ import {
 import { reviewWorkingMemoryDocument } from './working-memory-review.js';
 
 const ORCHESTRATOR_LAST_MESSAGES = 20;
+export const WORKING_MEMORY_REVIEW_AFTER_MUTATIONS = 3;
 type OrchestratorMemoryOptions = NonNullable<NonNullable<ConstructorParameters<typeof Memory>[0]>['options']>;
 
 export type WorkingMemoryOperation = 'read' | 'update' | 'clear' | 'inspect' | 'validate' | 'mutate' | 'candidate' | 'review' | 'observation';
@@ -125,6 +126,8 @@ export interface OrchestratorSessionMemoryPort {
     requestedBy: 'user' | 'scheduled_review';
     now: Date;
   }): Promise<WorkingMemoryReviewOutcome>;
+  noteWorkingMemoryMutationSuccess(input: { resourceId: string }): { reviewDue: boolean };
+  acknowledgeWorkingMemoryReview(input: { resourceId: string }): void;
   validateWorkingMemoryMutation(input: {
     threadId: string;
     resourceId: string;
@@ -178,6 +181,7 @@ export function createOrchestratorSessionMemory(
 
 class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
   private readonly mutex = new ResourceMutex();
+  private readonly successfulMutations = new Map<string, number>();
   private closed = false;
 
   constructor(
@@ -266,6 +270,7 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         principalRef: input.principalRef,
         now: input.now.toISOString() as UtcInstant,
       });
+      this.acknowledgeWorkingMemoryReview({ resourceId: input.resourceId });
       return {
         status: 'succeeded',
         report,
@@ -276,6 +281,16 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         },
       };
     });
+  }
+
+  noteWorkingMemoryMutationSuccess(input: { resourceId: string }): { reviewDue: boolean } {
+    const count = (this.successfulMutations.get(input.resourceId) ?? 0) + 1;
+    this.successfulMutations.set(input.resourceId, count);
+    return { reviewDue: count >= WORKING_MEMORY_REVIEW_AFTER_MUTATIONS };
+  }
+
+  acknowledgeWorkingMemoryReview(input: { resourceId: string }): void {
+    this.successfulMutations.delete(input.resourceId);
   }
 
   async validateWorkingMemoryMutation(input: {

@@ -729,6 +729,8 @@ function testSessionMemory(overrides: Partial<OrchestratorSessionMemoryPort> = {
         code: 'working_memory_review_succeeded',
       },
     })),
+    noteWorkingMemoryMutationSuccess: vi.fn(() => ({ reviewDue: false })),
+    acknowledgeWorkingMemoryReview: vi.fn(),
     inspectWorkingMemory: vi.fn(async () => { throw new Error('Unexpected Working Memory inspection'); }),
     validateWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory validation'); }),
     applyWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory mutation'); }),
