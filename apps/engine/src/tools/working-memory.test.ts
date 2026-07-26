@@ -8,6 +8,7 @@ import {
   type PendingWorkingMemoryMutation,
   type WorkingMemoryInspectionResult,
   type WorkingMemoryMutationToolResult,
+  type UtcInstant,
 } from '@plus-one/contracts';
 import type { InboundChannelMessageV1 } from '@plus-one/contracts';
 import type {
@@ -71,7 +72,7 @@ function inspectionFor(document: ReturnType<typeof workingMemoryDocument>): Work
   return { ...inspection, document };
 }
 
-function successOutcome(operation: 'inspect' | 'validate' | 'mutate', code: string): WorkingMemoryOperationOutcome {
+function successOutcome(operation: 'inspect' | 'validate' | 'mutate' | 'review', code: string): WorkingMemoryOperationOutcome {
   return { operation, status: 'succeeded', code };
 }
 
@@ -218,7 +219,7 @@ describe('createReviewWorkingMemoryTool', () => {
     const report = {
       status: 'succeeded' as const,
       revision: 'a'.repeat(64),
-      reviewedAt: '2026-07-25T10:55:00.000Z',
+      reviewedAt: '2026-07-25T10:55:00.000Z' as UtcInstant,
       findings: [],
     };
     const reviewWorkingMemory = vi.fn(async () => ({

@@ -74,7 +74,8 @@ export function reviewWorkingMemoryDocument(input: {
       && Date.parse(ordered[0]!.entry.lifecycle.createdAt) < Date.parse(ordered[1]!.entry.lifecycle.createdAt);
     findings.push({
       category: 'duplicate',
-      entryIds: ordered.slice(0, 10).map((item) => item.entryId),
+      entryIds: ordered.slice(0, 10)
+        .map((item) => WorkingMemoryEntryIdSchema.parse(item.entryId)),
       explanation: 'These Working Memory entries contain the same canonical fact.',
       proposedOperation: unambiguousOlder ? 'delete' : 'none',
       basedOnRevision: revision,
@@ -104,7 +105,9 @@ export function reviewWorkingMemoryDocument(input: {
         if (differingFields.length === 0 && policy.conflictPolicy !== 'manual_review') continue;
         findings.push({
           category: 'contradiction',
-          entryIds: [first.entryId, second.entryId].sort(),
+          entryIds: [first.entryId, second.entryId]
+            .sort()
+            .map((entryId) => WorkingMemoryEntryIdSchema.parse(entryId)),
           explanation: differingFields.length === 0
             ? `${policy.label} has multiple active values that require a manual choice.`
             : `${policy.label} entries disagree on ${differingFields.join(', ')}.`,

@@ -100,7 +100,7 @@ describe('LegacyHouseholdWorkingMemorySchema', () => {
   });
 });
 
-const entryId = 'wme_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+const entryId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAV');
 const proposalId = 'wmproposal_01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const revision = 'a'.repeat(64);
 const householdId = 'hh_01ARZ3NDEKTSV4RRFFQ69G5FAV';

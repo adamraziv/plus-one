@@ -378,7 +378,7 @@ export function defaultWorkingMemoryLifecycle(now: UtcInstant): WorkingMemoryLif
 }
 
 export function workingMemoryLifecycleForMutation(input: {
-  existing?: WorkingMemoryLifecycle;
+  existing?: WorkingMemoryLifecycle | undefined;
   now: UtcInstant;
 }): WorkingMemoryLifecycle {
   return WorkingMemoryLifecycleSchema.parse({
@@ -403,7 +403,7 @@ function asJsonValue(value: unknown): JsonValue {
 
 function withMutationLifecycle(input: {
   entry: WorkingMemoryEntry;
-  existing?: WorkingMemoryLifecycle;
+  existing?: WorkingMemoryLifecycle | undefined;
   now: Date;
 }): WorkingMemoryEntry {
   const { lifecycle: _ignoredLifecycle, ...entry } = input.entry;

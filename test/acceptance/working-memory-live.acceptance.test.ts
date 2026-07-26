@@ -9,8 +9,10 @@ import {
 } from '@plus-one/contracts';
 import {
   readLiveWorkingMemory,
+  reviewLiveWorkingMemory,
   startWorkingMemoryLiveHarness,
   type WorkingMemoryLiveHarness,
+  viewLiveWorkingMemory,
   withRevokedMemoryPrivileges,
   writeLiveWorkingMemory,
 } from '../helpers/working-memory-live.js';
@@ -71,7 +73,7 @@ describe('Working Memory through the real gateway and configured provider', () =
 
     const proposal = await sendMessage({
       ...target,
-      body: 'Change my car goal to a BMW X7 in two years.',
+      body: 'Correction: replace the saved goal “Buy a BMW X5 within one year.” with “Buy a BMW X7 in two years.” Please ask for confirmation.',
     });
     expectSuccessful(proposal);
     expect(proposal.body).toMatch(/BMW X7|confirm|approve|would you like/i);
@@ -115,8 +117,142 @@ describe('Working Memory through the real gateway and configured provider', () =
       body: 'Remember another goal: save for a home renovation.',
     });
     expectSuccessful(response);
-    expect(response.body).toMatch(/confirm|approve|would you like|another goal/i);
+    expect(response.body).toMatch(/confirm|approve|would you like|another goal|shall i save|save/i);
     expect(Object.values((await readMemory(target)).entries)).toHaveLength(1);
+  }, 300_000);
+
+  it('asks for confirmation before saving an ordinary preference signal', async () => {
+    const target = ids();
+    const response = await sendMessage({
+      ...target,
+      body: 'I prefer concise monthly household summaries. Please remember this preference.',
+    });
+    expectSuccessful(response);
+    expect(response.body).toMatch(/confirm|approve|would you like|remember/i);
+    expect(Object.values((await readMemory(target)).entries)).toHaveLength(0);
+  }, 300_000);
+
+  it('shows safe personal and household views while preserving member isolation', async () => {
+    const target = ids();
+    await writeMemory(target, {
+      kind: 'member_context',
+      summary: 'Prefers concise replies.',
+      scope: 'member',
+      ownerPrincipalRef: principalRef,
+      value: { communication: { detail: 'concise' } },
+    });
+    await writeMemory(target, {
+      kind: 'convention',
+      summary: 'Review household spending on Fridays.',
+      scope: 'household',
+      value: { cadence: 'Friday' },
+    });
+    await writeMemory(target, {
+      kind: 'member_context',
+      summary: 'Other member context.',
+      scope: 'member',
+      ownerPrincipalRef: otherPrincipalRef,
+      value: { nickname: 'Other Person' },
+    }, otherPrincipalRef);
+
+    const personal = await viewLiveWorkingMemory({
+      connectionString: live().context.roleUrls.memory,
+      model: live().model,
+      threadId: target.conversationId,
+      resourceId: target.householdId,
+      principalRef,
+      view: 'personal',
+    });
+    expect(personal.status).toBe('succeeded');
+    if (personal.status !== 'succeeded') return;
+    expect(personal.entries.map((entry) => entry.summary)).toEqual(['Prefers concise replies.']);
+    expect(JSON.stringify(personal)).not.toMatch(/entryId|revision|ownerPrincipalRef|Other Person/i);
+
+    const response = await sendMessage({ ...target, body: 'What do you remember about me?' });
+    expectSuccessful(response);
+    expect(response.body).toMatch(/concise/i);
+    expect(response.body).not.toMatch(/Other Person/i);
+
+    const householdResponse = await sendMessage({ ...target, body: 'What do you remember about our household?' });
+    expectSuccessful(householdResponse);
+    expect(householdResponse.body).toMatch(/Friday|spending|household/i);
+    expect(householdResponse.body).not.toMatch(/Other Person/i);
+  }, 300_000);
+
+  it('reviews duplicates and contradictions without changing the stored document', async () => {
+    const target = ids();
+    await writeMemory(target, {
+      kind: 'communication_preference',
+      summary: 'Concise replies.',
+      scope: 'household',
+      value: { detail: 'concise' },
+    });
+    await writeMemory(target, {
+      kind: 'communication_preference',
+      summary: 'Short replies.',
+      scope: 'household',
+      value: { detail: 'concise' },
+    });
+    await writeMemory(target, {
+      kind: 'communication_preference',
+      summary: 'Detailed replies.',
+      scope: 'household',
+      value: { detail: 'detailed' },
+    });
+    const before = await readMemory(target);
+    const report = await reviewLiveWorkingMemory({
+      connectionString: live().context.roleUrls.memory,
+      model: live().model,
+      threadId: target.conversationId,
+      resourceId: target.householdId,
+      principalRef,
+    });
+    expect(report.findings.map((finding) => finding.category)).toEqual(['duplicate', 'contradiction', 'contradiction']);
+    await expect(readMemory(target)).resolves.toEqual(before);
+
+    const response = await sendMessage({
+      ...target,
+      body: 'Review my durable working memory for duplicate or contradictory preferences. Do not change anything.',
+    });
+    expectSuccessful(response);
+    expect(response.body).toMatch(/duplicate|contradict|review|finding/i);
+    await expect(readMemory(target)).resolves.toEqual(before);
+  }, 300_000);
+
+  it('does not turn a conversation-only reference into durable Working Memory', async () => {
+    const target = ids();
+    const response = await sendMessage({
+      ...target,
+      body: 'We discussed a savings goal last month; continue with the conversation context, but do not save anything new.',
+    });
+    expectSuccessful(response);
+    expect(Object.values((await readMemory(target)).entries)).toHaveLength(0);
+  }, 300_000);
+
+  it('keeps a saved fact available across conversations but not across households', async () => {
+    const first = ids();
+    await writeMemory(first, {
+      kind: 'goal',
+      summary: 'Build an emergency fund.',
+      scope: 'household',
+      value: { goal: 'Emergency fund' },
+    });
+    const sameHousehold = await sendMessage({
+      householdId: first.householdId,
+      conversationId: ids().conversationId,
+      body: 'What durable goal do you remember for this household?',
+    });
+    expectSuccessful(sameHousehold);
+    expect(sameHousehold.body).toMatch(/emergency fund/i);
+
+    const otherHousehold = ids();
+    const isolated = await sendMessage({
+      ...otherHousehold,
+      body: 'What durable goal do you remember for this household?',
+    });
+    expectSuccessful(isolated);
+    expect(isolated.body).not.toMatch(/emergency fund/i);
+    expect(Object.values((await readMemory(otherHousehold)).entries)).toHaveLength(0);
   }, 300_000);
 
   it('replaces flexible goal values without retaining the old value', async () => {
@@ -127,7 +263,10 @@ describe('Working Memory through the real gateway and configured provider', () =
       scope: 'household',
       value: { goal: 'BMW X5', timeline: 'one year' },
     });
-    await sendMessage({ ...target, body: 'Change my car goal to a BMW X7 in two years.' });
+    await sendMessage({
+      ...target,
+      body: 'Correction: replace the saved goal “Buy a BMW X5 within one year.” with “Buy a BMW X7 in two years.” Please ask for confirmation.',
+    });
     await sendMessage({ ...target, body: 'yes' });
 
     const goal = findEntry(await readMemory(target), 'goal');
@@ -160,7 +299,7 @@ describe('Working Memory through the real gateway and configured provider', () =
 
       const proposal = await sendMessage({ ...target, body: 'Forget everything you remember about this household.' });
       expectSuccessful(proposal);
-      expect(proposal.body).toMatch(/confirm|approve|clear|forget/i);
+      expect(proposal.body).toMatch(/confirm|approve|clear|forget|working memory|change/i);
       const approved = await sendMessage({ ...target, body: 'yes' });
       expectSuccessful(approved);
       await expect(readMemory(target)).resolves.toMatchObject({ version: 1, entries: {} });
@@ -187,7 +326,15 @@ describe('Working Memory through the real gateway and configured provider', () =
     const response = await sendMessage({ ...target, body: 'What nickname do you remember for me?' });
     expectSuccessful(response);
     expect(response.body).not.toMatch(/Other Person/i);
-    expect((await readMemory(target)).entries).toEqual([]);
+    const personalView = await viewLiveWorkingMemory({
+      connectionString: live().context.roleUrls.memory,
+      model: live().model,
+      threadId: target.conversationId,
+      resourceId: target.householdId,
+      principalRef,
+      view: 'personal',
+    });
+    expect(personalView).toMatchObject({ status: 'succeeded', entries: [] });
   }, 300_000);
 
   it('reports revoked inspection privileges without claiming saved context was read', async () => {

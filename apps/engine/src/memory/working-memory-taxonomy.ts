@@ -102,7 +102,7 @@ export function canonicalizeWorkingMemoryValue(value: JsonValue): JsonValue {
 export function workingMemoryEntryFingerprint(input: {
   kind: WorkingMemoryKind;
   scope: 'household' | 'member';
-  ownerPrincipalRef?: string;
+  ownerPrincipalRef?: string | undefined;
   value: JsonValue;
 }): string {
   const canonical = canonicalizeWorkingMemoryValue({

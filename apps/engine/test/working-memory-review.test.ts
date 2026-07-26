@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FlexibleWorkingMemorySchema, WorkingMemoryEntryIdSchema } from '@plus-one/contracts';
+import { FlexibleWorkingMemorySchema, WorkingMemoryEntryIdSchema, type UtcInstant } from '@plus-one/contracts';
 import { parseScheduledWorkingMemoryReviewContext, reviewWorkingMemoryDocument } from '../src/memory/working-memory-review.js';
 
 const principalRef = 'telegram:user:1';
@@ -9,7 +9,7 @@ const duplicateNewer = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ
 const contradictionId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAX');
 const staleId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAZ');
 const otherMemberId = WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FB0');
-const now = '2026-07-25T10:55:00.000Z' as const;
+const now = '2026-07-25T10:55:00.000Z' as UtcInstant;
 
 describe('working memory review', () => {
   it('finds exact duplicates and proposes deleting only an unambiguous older entry', () => {

@@ -19,6 +19,7 @@ import {
   CurrencyCodeSchema,
   type PendingWorkingMemoryMutation,
   type TeamResultEnvelopeV2,
+  type UtcInstant,
 } from '@plus-one/contracts';
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
 import { AccountingJournalMutationProposalSchemaV1 } from '@plus-one/accounting';
@@ -720,7 +721,7 @@ function testSessionMemory(overrides: Partial<OrchestratorSessionMemoryPort> = {
       report: {
         status: 'succeeded' as const,
         revision: 'a'.repeat(64),
-        reviewedAt: '2026-07-25T10:55:00.000Z',
+        reviewedAt: '2026-07-25T10:55:00.000Z' as UtcInstant,
         findings: [],
       },
       outcome: {

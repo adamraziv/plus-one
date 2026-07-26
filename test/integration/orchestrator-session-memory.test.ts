@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMastraMemoryStorage } from '@plus-one/database';
-import { FlexibleWorkingMemorySchema, WorkingMemoryEntryIdSchema } from '@plus-one/contracts';
+import { FlexibleWorkingMemorySchema, WorkingMemoryEntryIdSchema, type UtcInstant } from '@plus-one/contracts';
 import { createOrchestratorSessionMemory } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
 import { workingMemoryRevision } from '../../apps/engine/src/memory/working-memory-document.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
@@ -182,7 +182,10 @@ describe('orchestrator session memory', () => {
           scope: 'member',
           ownerPrincipalRef: principalRef,
           value: { preferredName: 'Alex', secret: 'private preference' },
-          lifecycle: { createdAt: '2026-07-25T10:55:00.000Z', updatedAt: '2026-07-25T10:55:00.000Z' },
+          lifecycle: {
+            createdAt: '2026-07-25T10:55:00.000Z' as UtcInstant,
+            updatedAt: '2026-07-25T10:55:00.000Z' as UtcInstant,
+          },
         },
       },
     })).resolves.toMatchObject({ status: 'succeeded' });

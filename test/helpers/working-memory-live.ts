@@ -1,6 +1,8 @@
 import { Pool } from 'pg';
 import {
   type FlexibleWorkingMemory,
+  type WorkingMemoryReviewReport,
+  type WorkingMemoryViewResult,
   type ResolvedWorkingMemoryMutation,
 } from '@plus-one/contracts';
 import {
@@ -8,6 +10,7 @@ import {
   type OrchestratorSessionMemoryPort,
 } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
 import type { EngineLlmModelConfig } from '../../apps/engine/src/config.js';
+import { projectWorkingMemoryView } from '../../apps/engine/src/memory/working-memory-prompt.js';
 import { createPostgresTestContext, type PostgresTestContext } from './postgres.js';
 import {
   startProductionGatewayServer,
@@ -147,6 +150,61 @@ export async function writeLiveWorkingMemory(input: {
     if (outcome.status !== 'succeeded') {
       throw new Error(`Working Memory seed failed with ${outcome.code}.`);
     }
+  } finally {
+    await memory.close();
+  }
+}
+
+export async function viewLiveWorkingMemory(input: {
+  connectionString: string;
+  model: EngineLlmModelConfig;
+  threadId: string;
+  resourceId: string;
+  principalRef: string;
+  view: 'personal' | 'household' | 'all';
+}): Promise<WorkingMemoryViewResult> {
+  const memory = createOrchestratorSessionMemory({
+    connectionString: input.connectionString,
+    model: input.model,
+  });
+  try {
+    const result = await memory.inspectWorkingMemory({
+      threadId: input.threadId,
+      resourceId: input.resourceId,
+      principalRef: input.principalRef,
+    });
+    if (result.status === 'failed') {
+      throw new Error(`Working Memory view failed with ${result.outcome.code}.`);
+    }
+    return projectWorkingMemoryView({ inspection: result.inspection, view: input.view });
+  } finally {
+    await memory.close();
+  }
+}
+
+export async function reviewLiveWorkingMemory(input: {
+  connectionString: string;
+  model: EngineLlmModelConfig;
+  threadId: string;
+  resourceId: string;
+  principalRef: string;
+}): Promise<WorkingMemoryReviewReport> {
+  const memory = createOrchestratorSessionMemory({
+    connectionString: input.connectionString,
+    model: input.model,
+  });
+  try {
+    const result = await memory.reviewWorkingMemory({
+      threadId: input.threadId,
+      resourceId: input.resourceId,
+      principalRef: input.principalRef,
+      requestedBy: 'user',
+      now: new Date(),
+    });
+    if (result.status === 'failed') {
+      throw new Error(`Working Memory review failed with ${result.outcome.code}.`);
+    }
+    return result.report;
   } finally {
     await memory.close();
   }
