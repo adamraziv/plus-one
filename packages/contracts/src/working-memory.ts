@@ -317,6 +317,23 @@ export const WorkingMemoryCandidateSchema = z.object({
 }).strict();
 export type WorkingMemoryCandidate = z.infer<typeof WorkingMemoryCandidateSchema>;
 
+export const WorkingMemoryCandidateToolResultSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('confirmation_required'),
+    operation: z.enum(['create', 'replace']),
+    code: z.literal('working_memory_candidate_proposed'),
+    candidate: WorkingMemoryCandidateSchema,
+  }).strict(),
+  z.object({
+    status: z.literal('rejected'),
+    operation: z.enum(['create', 'replace']),
+    code: z.string().min(1).max(128),
+    category: ErrorCategorySchemaV1,
+    retry: RetryDirectiveSchemaV1,
+  }).strict(),
+]);
+export type WorkingMemoryCandidateToolResult = z.infer<typeof WorkingMemoryCandidateToolResultSchema>;
+
 export const WorkingMemoryViewItemSchema = z.object({
   kind: WorkingMemoryKindSchema,
   label: z.string().min(1).max(128),

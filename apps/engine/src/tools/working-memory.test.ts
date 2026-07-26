@@ -19,6 +19,7 @@ import { workingMemoryRevision } from '../memory/working-memory-document.js';
 import {
   createInspectWorkingMemoryTool,
   createMutateWorkingMemoryTool,
+  createProposeWorkingMemoryTool,
   WorkingMemoryMutationToolInputSchema,
   type WorkingMemoryInspectionContext,
 } from './working-memory.js';
@@ -367,5 +368,94 @@ describe('createMutateWorkingMemoryTool', () => {
     expect(applyWorkingMemoryMutation).toHaveBeenCalledWith(expect.objectContaining({
       basedOnRevision: inspection.revision,
     }));
+  });
+});
+
+describe('createProposeWorkingMemoryTool', () => {
+  it('creates an invocation-local proposal through validation without applying it', async () => {
+    const document = workingMemoryDocument();
+    const inspection = inspectionFor(document);
+    const validateWorkingMemoryMutation = vi.fn(async (input) => ({
+      status: 'succeeded' as const,
+      operation: input.mutation.operation,
+      code: 'working_memory_mutation_validated' as const,
+      document,
+      outcome: successOutcome('validate', 'working_memory_mutation_validated'),
+    }));
+    const recordPendingMutation = vi.fn<(proposal: PendingWorkingMemoryMutation) => void>();
+    const recordOutcome = vi.fn();
+    const applyWorkingMemoryMutation = vi.fn();
+    const memory = fakeMemory({ validateWorkingMemoryMutation, applyWorkingMemoryMutation });
+    const tool = createProposeWorkingMemoryTool({
+      memory,
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(inspection),
+      recordPendingMutation,
+      recordOutcome,
+    });
+
+    const result = await executeTool(tool, {
+      kind: 'communication_preference',
+      summary: 'Prefer concise updates.',
+      value: { detail: 'concise' },
+      signal: 'preference_signal',
+      subject: 'self',
+    });
+
+    expect(result).toMatchObject({
+      status: 'confirmation_required',
+      operation: 'create',
+      code: 'working_memory_candidate_proposed',
+      candidate: { scope: 'member', kind: 'communication_preference' },
+    });
+    expect(JSON.stringify(result)).not.toContain(message.speaker.principalRef);
+    expect(validateWorkingMemoryMutation).toHaveBeenCalledOnce();
+    expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
+    expect(recordPendingMutation).toHaveBeenCalledOnce();
+    expect(recordPendingMutation.mock.calls[0]![0]).toMatchObject({
+      mutation: {
+        operation: 'create',
+        entry: { scope: 'member', ownerPrincipalRef: message.speaker.principalRef },
+      },
+      basedOnRevision: inspection.revision,
+      expiresAt: '2026-07-25T11:10:00.000Z',
+    });
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ operation: 'candidate', status: 'succeeded' }));
+  });
+
+  it('requires same-turn inspection and rejects policy-incompatible candidates', async () => {
+    const recordPendingMutation = vi.fn();
+    const tool = createProposeWorkingMemoryTool({
+      memory: fakeMemory(),
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(),
+      recordPendingMutation,
+    });
+    await expect(executeTool(tool, {
+      kind: 'convention',
+      summary: 'Use Groceries.',
+      value: { category: 'Groceries' },
+      signal: 'preference_signal',
+      subject: 'self',
+    })).resolves.toMatchObject({ status: 'rejected', code: 'working_memory_inspection_required' });
+    expect(recordPendingMutation).not.toHaveBeenCalled();
+
+    const inspection = inspectionFor(workingMemoryDocument());
+    const policyTool = createProposeWorkingMemoryTool({
+      memory: fakeMemory(),
+      ids: { nextEntryId: () => newId, nextProposalId: () => proposalId },
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(inspection),
+      recordPendingMutation,
+    });
+    await expect(executeTool(policyTool, {
+      kind: 'convention',
+      summary: 'Use Groceries.',
+      value: { category: 'Groceries' },
+      signal: 'preference_signal',
+      subject: 'self',
+    })).resolves.toMatchObject({ status: 'rejected', code: 'working_memory_candidate_scope_invalid' });
   });
 });

@@ -61,6 +61,7 @@ import { requestForRuntime } from '../tools/delegate-team-schemas.js';
 import {
   createInspectWorkingMemoryTool,
   createMutateWorkingMemoryTool,
+  createProposeWorkingMemoryTool,
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
@@ -104,6 +105,8 @@ const orchestratorInstructions = [
   'After delegateTeam returns, explain the checked result to the user in concise natural language.',
   'Working Memory is durable household context, scoped to the authenticated household resource and the current conversation thread.',
   'Use Working Memory only for durable user-provided conversational context such as goals, saving preferences, names, communication preferences, and household conventions.',
+  'Use proposeWorkingMemory for ordinary preference or identity signals; it creates only an invocation-local candidate and waits for the existing confirmation flow.',
+  'An explicit remember/save request may use mutateWorkingMemory, but a candidate is never a saved fact until readback-verified approval.',
   'Before every create, replace, delete, or clear, call inspectWorkingMemory in this same turn.',
   'Pass the exact revision returned by inspection to mutateWorkingMemory.',
   'Use create for a new entry and an inspected entryId for replace or delete.',
@@ -199,6 +202,7 @@ export class OrchestratorAgent {
     delegateTeam: ReturnType<typeof createDelegateTeamTool>;
     inspectWorkingMemory?: ReturnType<typeof createInspectWorkingMemoryTool>;
     mutateWorkingMemory?: ReturnType<typeof createMutateWorkingMemoryTool>;
+    proposeWorkingMemory?: ReturnType<typeof createProposeWorkingMemoryTool>;
   };
 
   constructor(private readonly dependencies: {
@@ -300,6 +304,26 @@ export class OrchestratorAgent {
         recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
       });
       this.agentTools.mutateWorkingMemory = createMutateWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        now: () => new Date(),
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
+        },
+        recordPendingMutation: (proposal) => {
+          const active = this.activeInvocation.getStore();
+          if (active !== undefined) active.pendingWorkingMemoryMutation = proposal;
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+      this.agentTools.proposeWorkingMemory = createProposeWorkingMemoryTool({
         memory: dependencies.sessionMemory,
         now: () => new Date(),
         getActiveInvocation: () => {
@@ -837,6 +861,7 @@ export class OrchestratorAgent {
     if (this.dependencies.sessionMemory !== undefined && !invocation.memoryState.memoryDegraded) {
       if (this.agentTools.inspectWorkingMemory !== undefined) names.push('inspectWorkingMemory');
       if (this.agentTools.mutateWorkingMemory !== undefined) names.push('mutateWorkingMemory');
+      if (this.agentTools.proposeWorkingMemory !== undefined) names.push('proposeWorkingMemory');
     }
     if (canDelegateAnotherSubstep(invocation)) names.unshift('delegateTeam');
     return names;

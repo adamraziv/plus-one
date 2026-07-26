@@ -4,6 +4,8 @@ import {
   PendingWorkingMemoryMutationSchema,
   WorkingMemoryEntryIdSchema,
   WorkingMemoryKindSchema,
+  WorkingMemoryCandidateInputSchema,
+  WorkingMemoryCandidateToolResultSchema,
   WorkingMemoryInspectionToolResultSchema,
   WorkingMemoryMutationDraftSchema,
   WorkingMemoryMutationToolResultSchema,
@@ -21,6 +23,7 @@ import {
   resolveWorkingMemoryMutation,
   type WorkingMemoryIdGenerator,
 } from '../memory/working-memory-document.js';
+import { createWorkingMemoryCandidate } from '../memory/working-memory-candidates.js';
 import type {
   OrchestratorSessionMemoryPort,
   WorkingMemoryMutationOperation,
@@ -192,6 +195,109 @@ export function createMutateWorkingMemoryTool(input: {
   });
 }
 
+export function createProposeWorkingMemoryTool(input: {
+  memory: OrchestratorSessionMemoryPort;
+  ids?: WorkingMemoryIdGenerator;
+  now(): Date;
+  getActiveInvocation(): ActiveWorkingMemoryInvocation | undefined;
+  recordPendingMutation(proposal: PendingWorkingMemoryMutation): void;
+  recordOutcome?(outcome: WorkingMemoryOperationOutcome): void;
+}) {
+  const ids = input.ids ?? createWorkingMemoryIdGenerator();
+  return createTool({
+    id: 'proposeWorkingMemory',
+    description: [
+      'Propose a bounded durable Working Memory fact from an explicit preference or identity signal.',
+      'Call inspectWorkingMemory first in this same turn. A proposal is not saved until the existing confirmation flow approves it.',
+      'Never provide entry IDs, owners, principal references, scope identifiers, lifecycle fields, or revisions.',
+    ].join(' '),
+    inputSchema: WorkingMemoryCandidateInputSchema,
+    outputSchema: WorkingMemoryCandidateToolResultSchema,
+    execute: async (rawDraft) => {
+      const parsed = WorkingMemoryCandidateInputSchema.safeParse(rawDraft);
+      const operation = 'create' as const;
+      if (!parsed.success) return candidateFailureResult(operation, 'working_memory_candidate_invalid');
+
+      const active = input.getActiveInvocation();
+      if (active === undefined) return candidateFailureResult(operation, 'working_memory_candidate_failed', 'runtime_failure');
+      if (active.signal.aborted) {
+        throw active.signal.reason ?? new DOMException('Working Memory candidate aborted.', 'AbortError');
+      }
+      const inspection = active.workingMemoryInspection;
+      if (inspection === undefined) return candidateFailureResult(operation, 'working_memory_inspection_required');
+
+      const candidate = createWorkingMemoryCandidate({
+        draft: parsed.data,
+        principalRef: active.message.speaker.principalRef,
+        inspectedRevision: inspection.revision,
+        visibleEntries: inspection.entries,
+      });
+      if (candidate.status === 'failed') return candidateFailureResult(operation, candidate.code);
+
+      const mutationDraft = candidate.operation === 'replace'
+        ? {
+            operation: 'replace' as const,
+            basedOnRevision: inspection.revision,
+            entryId: candidate.targetEntryId,
+            kind: candidate.candidate.kind,
+            summary: candidate.candidate.summary,
+            value: candidate.candidate.value,
+          }
+        : {
+            operation: 'create' as const,
+            basedOnRevision: inspection.revision,
+            kind: candidate.candidate.kind,
+            summary: candidate.candidate.summary,
+            scope: candidate.candidate.scope,
+            value: candidate.candidate.value,
+          };
+      const resolved = resolveWorkingMemoryMutation({
+        draft: mutationDraft,
+        document: inspection.document,
+        principalRef: active.message.speaker.principalRef,
+        ids,
+      });
+      if (resolved.status === 'failed') return candidateFailureResult(candidate.operation, resolved.code);
+
+      const validated = await input.memory.validateWorkingMemoryMutation({
+        threadId: active.message.conversationId,
+        resourceId: active.message.householdId,
+        principalRef: active.message.speaker.principalRef,
+        basedOnRevision: inspection.revision,
+        mutation: resolved.mutation,
+      });
+      input.recordOutcome?.(validated.outcome);
+      if (validated.status === 'failed') {
+        return candidateFailureResult(candidate.operation, validated.code, validated.category, validated.retry);
+      }
+
+      const createdAt = input.now();
+      const proposal = PendingWorkingMemoryMutationSchema.parse({
+        proposalId: ids.nextProposalId(),
+        householdId: active.message.householdId,
+        conversationId: active.message.conversationId,
+        speakerPrincipalRef: active.message.speaker.principalRef,
+        mutation: resolved.mutation,
+        basedOnRevision: inspection.revision,
+        createdAt: createdAt.toISOString(),
+        expiresAt: new Date(createdAt.getTime() + 15 * 60_000).toISOString(),
+      });
+      input.recordPendingMutation(proposal);
+      input.recordOutcome?.({
+        operation: 'candidate',
+        status: 'succeeded',
+        code: 'working_memory_candidate_proposed',
+      });
+      return WorkingMemoryCandidateToolResultSchema.parse({
+        status: 'confirmation_required',
+        operation: candidate.operation,
+        code: 'working_memory_candidate_proposed',
+        candidate: candidate.candidate,
+      });
+    },
+  });
+}
+
 function inspectionFailure(
   code: string,
   category: ErrorCategoryV1,
@@ -217,6 +323,21 @@ function mutationFailureResult(
   retry: RetryDirectiveV1,
 ) {
   return WorkingMemoryMutationToolResultSchema.parse({
+    status: 'rejected',
+    operation,
+    code,
+    category,
+    retry,
+  });
+}
+
+function candidateFailureResult(
+  operation: 'create' | 'replace',
+  code: string,
+  category: ErrorCategoryV1 = 'validation_rejected',
+  retry: RetryDirectiveV1 = 'never',
+) {
+  return WorkingMemoryCandidateToolResultSchema.parse({
     status: 'rejected',
     operation,
     code,

@@ -32,7 +32,7 @@ import {
 const ORCHESTRATOR_LAST_MESSAGES = 20;
 type OrchestratorMemoryOptions = NonNullable<NonNullable<ConstructorParameters<typeof Memory>[0]>['options']>;
 
-export type WorkingMemoryOperation = 'read' | 'update' | 'clear' | 'inspect' | 'validate' | 'mutate' | 'observation';
+export type WorkingMemoryOperation = 'read' | 'update' | 'clear' | 'inspect' | 'validate' | 'mutate' | 'candidate' | 'review' | 'observation';
 export type WorkingMemoryMutationOperation = 'create' | 'replace' | 'delete' | 'clear';
 
 export interface WorkingMemoryOperationOutcome {
