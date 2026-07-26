@@ -20,6 +20,7 @@ import {
   createInspectWorkingMemoryTool,
   createMutateWorkingMemoryTool,
   createProposeWorkingMemoryTool,
+  createViewWorkingMemoryTool,
   WorkingMemoryMutationToolInputSchema,
   type WorkingMemoryInspectionContext,
 } from './working-memory.js';
@@ -155,6 +156,59 @@ describe('createInspectWorkingMemoryTool', () => {
       code: 'working_memory_inspection_failed',
     });
     expect(recordInspection).not.toHaveBeenCalled();
+  });
+});
+
+describe('createViewWorkingMemoryTool', () => {
+  it('returns a safe personal view and records the authorized inspection', async () => {
+    const document = FlexibleWorkingMemorySchema.parse({
+      version: 1,
+      entries: {
+        [goalId]: {
+          kind: 'goal',
+          summary: 'Build an emergency fund.',
+          scope: 'household',
+          value: { goal: 'emergency fund' },
+        },
+        [newId]: {
+          kind: 'member_context',
+          summary: 'Alex prefers concise replies.',
+          scope: 'member',
+          ownerPrincipalRef: message.speaker.principalRef,
+          value: { preferredName: 'Alex' },
+        },
+      },
+    });
+    const inspection = inspectionFor(document);
+    const recordInspection = vi.fn();
+    const tool = createViewWorkingMemoryTool({
+      memory: fakeMemory({
+        inspectWorkingMemory: vi.fn(async () => ({
+          status: 'succeeded' as const,
+          document,
+          inspection,
+          outcome: successOutcome('inspect', 'working_memory_inspection_succeeded'),
+        })),
+      }),
+      getActiveInvocation: () => activeInvocation(),
+      recordInspection,
+    });
+
+    const result = await executeTool(tool, { view: 'personal' });
+    expect(result).toEqual({
+      status: 'succeeded',
+      view: 'personal',
+      entries: [{
+        kind: 'member_context',
+        label: 'Member context',
+        scope: 'member',
+        summary: 'Alex prefers concise replies.',
+        value: { preferredName: 'Alex' },
+      }],
+    });
+    expect(JSON.stringify(result)).not.toContain(goalId);
+    expect(JSON.stringify(result)).not.toContain('ownerPrincipalRef');
+    expect(recordInspection).toHaveBeenCalledWith(inspection);
   });
 });
 

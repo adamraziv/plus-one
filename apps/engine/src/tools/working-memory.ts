@@ -6,6 +6,7 @@ import {
   WorkingMemoryKindSchema,
   WorkingMemoryCandidateInputSchema,
   WorkingMemoryCandidateToolResultSchema,
+  WorkingMemoryViewResultSchema,
   WorkingMemoryInspectionToolResultSchema,
   WorkingMemoryMutationDraftSchema,
   WorkingMemoryMutationToolResultSchema,
@@ -24,6 +25,7 @@ import {
   type WorkingMemoryIdGenerator,
 } from '../memory/working-memory-document.js';
 import { createWorkingMemoryCandidate } from '../memory/working-memory-candidates.js';
+import { projectWorkingMemoryView } from '../memory/working-memory-prompt.js';
 import type {
   OrchestratorSessionMemoryPort,
   WorkingMemoryMutationOperation,
@@ -60,7 +62,7 @@ export function createInspectWorkingMemoryTool(input: {
 }) {
   return createTool({
     id: 'inspectWorkingMemory',
-    description: 'Read current authorized Working Memory before every mutation.',
+    description: 'Read current authorized Working Memory before every mutation or safe memory view.',
     inputSchema: EmptyInputSchema,
     outputSchema: WorkingMemoryInspectionToolResultSchema,
     execute: async () => {
@@ -91,6 +93,50 @@ export function createInspectWorkingMemoryTool(input: {
         });
       } catch {
         const failure = inspectionFailure('working_memory_inspection_failed', 'runtime_failure', 'never');
+        input.recordOutcome?.(failure.outcome);
+        return failure.result;
+      }
+    },
+  });
+}
+
+export function createViewWorkingMemoryTool(input: {
+  memory: OrchestratorSessionMemoryPort;
+  getActiveInvocation(): ActiveWorkingMemoryInvocation | undefined;
+  recordInspection(context: WorkingMemoryInspectionContext): void;
+  recordOutcome?(outcome: WorkingMemoryOperationOutcome): void;
+}) {
+  const inputSchema = z.object({ view: z.enum(['personal', 'household', 'all']) }).strict();
+  return createTool({
+    id: 'viewWorkingMemory',
+    description: 'Show safe user-visible Working Memory summaries without internal IDs or revisions.',
+    inputSchema,
+    outputSchema: WorkingMemoryViewResultSchema,
+    execute: async ({ view }) => {
+      const active = input.getActiveInvocation();
+      if (active === undefined) {
+        const failure = viewFailure('working_memory_view_failed', 'runtime_failure', 'never');
+        input.recordOutcome?.(failure.outcome);
+        return failure.result;
+      }
+      if (active.signal.aborted) {
+        throw active.signal.reason ?? new DOMException('Working Memory view aborted.', 'AbortError');
+      }
+      try {
+        const result = await input.memory.inspectWorkingMemory({
+          threadId: active.message.conversationId,
+          resourceId: active.message.householdId,
+          principalRef: active.message.speaker.principalRef,
+        });
+        input.recordOutcome?.(result.outcome);
+        if (result.status === 'failed') {
+          return viewFailure(result.outcome.code, result.outcome.category ?? 'runtime_failure', result.outcome.retry ?? 'never').result;
+        }
+        const context: WorkingMemoryInspectionContext = { ...result.inspection, document: result.document };
+        input.recordInspection(context);
+        return projectWorkingMemoryView({ inspection: result.inspection, view });
+      } catch {
+        const failure = viewFailure('working_memory_view_failed', 'runtime_failure', 'never');
         input.recordOutcome?.(failure.outcome);
         return failure.result;
       }
@@ -313,6 +359,24 @@ function inspectionFailure(
   return {
     outcome,
     result: WorkingMemoryInspectionToolResultSchema.parse({ status: 'failed', code, category, retry }),
+  };
+}
+
+function viewFailure(
+  code: string,
+  category: ErrorCategoryV1,
+  retry: RetryDirectiveV1,
+) {
+  const outcome: WorkingMemoryOperationOutcome = {
+    operation: 'read',
+    status: 'failed',
+    code,
+    category,
+    retry,
+  };
+  return {
+    outcome,
+    result: WorkingMemoryViewResultSchema.parse({ status: 'failed', code, category, retry }),
   };
 }
 

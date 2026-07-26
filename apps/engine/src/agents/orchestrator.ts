@@ -62,6 +62,7 @@ import {
   createInspectWorkingMemoryTool,
   createMutateWorkingMemoryTool,
   createProposeWorkingMemoryTool,
+  createViewWorkingMemoryTool,
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
@@ -107,6 +108,8 @@ const orchestratorInstructions = [
   'Use Working Memory only for durable user-provided conversational context such as goals, saving preferences, names, communication preferences, and household conventions.',
   'Use proposeWorkingMemory for ordinary preference or identity signals; it creates only an invocation-local candidate and waits for the existing confirmation flow.',
   'An explicit remember/save request may use mutateWorkingMemory, but a candidate is never a saved fact until readback-verified approval.',
+  'Use viewWorkingMemory for “what do you remember about me?” or household memory questions. It is read-only and never replaces inspection before a correction or deletion.',
+  'For “forget” or “correct,” identify the visible summary through a view or inspection, then use the existing revision-gated mutation flow; never ask for an internal ID.',
   'Before every create, replace, delete, or clear, call inspectWorkingMemory in this same turn.',
   'Pass the exact revision returned by inspection to mutateWorkingMemory.',
   'Use create for a new entry and an inspected entryId for replace or delete.',
@@ -203,6 +206,7 @@ export class OrchestratorAgent {
     inspectWorkingMemory?: ReturnType<typeof createInspectWorkingMemoryTool>;
     mutateWorkingMemory?: ReturnType<typeof createMutateWorkingMemoryTool>;
     proposeWorkingMemory?: ReturnType<typeof createProposeWorkingMemoryTool>;
+    viewWorkingMemory?: ReturnType<typeof createViewWorkingMemoryTool>;
   };
 
   constructor(private readonly dependencies: {
@@ -285,6 +289,25 @@ export class OrchestratorAgent {
     };
     if (dependencies.sessionMemory !== undefined) {
       this.agentTools.inspectWorkingMemory = createInspectWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
+        },
+        recordInspection: (inspection) => {
+          const active = this.activeInvocation.getStore();
+          if (active !== undefined) active.workingMemoryInspection = inspection;
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+      this.agentTools.viewWorkingMemory = createViewWorkingMemoryTool({
         memory: dependencies.sessionMemory,
         getActiveInvocation: () => {
           const active = this.activeInvocation.getStore();
@@ -862,6 +885,7 @@ export class OrchestratorAgent {
       if (this.agentTools.inspectWorkingMemory !== undefined) names.push('inspectWorkingMemory');
       if (this.agentTools.mutateWorkingMemory !== undefined) names.push('mutateWorkingMemory');
       if (this.agentTools.proposeWorkingMemory !== undefined) names.push('proposeWorkingMemory');
+      if (this.agentTools.viewWorkingMemory !== undefined) names.push('viewWorkingMemory');
     }
     if (canDelegateAnotherSubstep(invocation)) names.unshift('delegateTeam');
     return names;

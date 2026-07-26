@@ -1496,6 +1496,7 @@ describe('OrchestratorAgent', () => {
       'inspectWorkingMemory',
       'mutateWorkingMemory',
       'proposeWorkingMemory',
+      'viewWorkingMemory',
     ]);
     expect(sessionMemory.inspectWorkingMemory).not.toHaveBeenCalled();
   });

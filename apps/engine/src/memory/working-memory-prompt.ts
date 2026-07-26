@@ -2,7 +2,9 @@ import type {
   FlexibleWorkingMemory,
   JsonValue,
   WorkingMemoryKind,
+  WorkingMemoryInspectionResult,
 } from '@plus-one/contracts';
+import { WorkingMemoryViewResultSchema } from '@plus-one/contracts';
 import { visibleWorkingMemoryEntries } from './working-memory-document.js';
 import { workingMemoryKindPolicy } from './working-memory-taxonomy.js';
 
@@ -46,4 +48,24 @@ export function workingMemoryPromptBlock(projection: WorkingMemoryPromptProjecti
     'It is not identity or authentication authority, accounting evidence, balances, transactions, permissions, or workflow state.',
     'Do not expose internal storage metadata or claim a fact was saved, changed, or reviewed based only on this context.',
   ].join('\n');
+}
+
+export function projectWorkingMemoryView(input: {
+  inspection: WorkingMemoryInspectionResult;
+  view: 'personal' | 'household' | 'all';
+}) {
+  const entries = input.inspection.entries
+    .filter((entry) => input.view !== 'personal' || entry.scope === 'member')
+    .map((entry) => ({
+      kind: entry.kind,
+      label: workingMemoryKindPolicy(entry.kind).label,
+      scope: entry.scope,
+      summary: entry.summary,
+      value: entry.value,
+    }));
+  return WorkingMemoryViewResultSchema.parse({
+    status: 'succeeded',
+    view: input.view,
+    entries,
+  });
 }
