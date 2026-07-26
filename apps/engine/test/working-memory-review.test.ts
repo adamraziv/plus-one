@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FlexibleWorkingMemorySchema, WorkingMemoryEntryIdSchema } from '@plus-one/contracts';
-import { reviewWorkingMemoryDocument } from '../src/memory/working-memory-review.js';
+import { parseScheduledWorkingMemoryReviewContext, reviewWorkingMemoryDocument } from '../src/memory/working-memory-review.js';
 
 const principalRef = 'telegram:user:1';
 const otherPrincipalRef = 'telegram:user:2';
@@ -103,5 +103,27 @@ describe('working memory review', () => {
       entryIds: [staleId],
       proposedOperation: 'none',
     })]);
+  });
+
+  it('parses only the exact scheduled review context identity', () => {
+    const context = parseScheduledWorkingMemoryReviewContext({
+      requiredContextSchema: { schemaName: 'working-memory-review-context', schemaVersion: 1 },
+      requiredContext: {
+        schemaName: 'working-memory-review-context',
+        schemaVersion: 1,
+        conversationId: 'conversation_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        principalRef,
+        mode: 'suggest',
+      },
+    });
+    expect(context.mode).toBe('suggest');
+    expect(() => parseScheduledWorkingMemoryReviewContext({
+      requiredContextSchema: { schemaName: 'working-memory-review-context', schemaVersion: 1 },
+      requiredContext: { ...context, mode: 'apply' },
+    })).toThrow();
+    expect(() => parseScheduledWorkingMemoryReviewContext({
+      requiredContextSchema: { schemaName: 'working-memory-review-context', schemaVersion: 2 },
+      requiredContext: context,
+    })).toThrow();
   });
 });

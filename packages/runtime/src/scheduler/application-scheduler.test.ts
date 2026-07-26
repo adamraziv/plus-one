@@ -88,6 +88,8 @@ function claim(overrides: {
   maxRetries?: number;
   missedRunPolicy?: SchedulerClaim['missedRunPolicy'];
   taskId?: string;
+  requiredContextSchema?: { schemaName: string; schemaVersion: number };
+  requiredContext?: unknown;
 } = {}): SchedulerClaim {
   const run = ScheduledRunSchemaV1.parse({
     schemaName: 'scheduled-run',
@@ -109,7 +111,8 @@ function claim(overrides: {
     target: overrides.target ?? { kind: 'team_lead', team: 'query' },
     timeoutMs: 60_000,
     maxRetries: overrides.maxRetries ?? 0,
-    requiredContext: { lookbackDays: 7 },
+    requiredContextSchema: overrides.requiredContextSchema ?? { schemaName: 'weekly-briefing-context', schemaVersion: 1 },
+    requiredContext: overrides.requiredContext ?? { lookbackDays: 7 },
     deliveryBehavior: { mode: 'deliver_final_response' },
     overlapPolicy: 'skip',
     missedRunPolicy: overrides.missedRunPolicy ?? 'run_once',
@@ -186,6 +189,76 @@ describe('ApplicationScheduler', () => {
       status: 'succeeded',
       deliveryId: 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
     });
+  });
+
+  it('routes strict scheduled Working Memory review context to the read-only review target', async () => {
+    const repository = {
+      claimDueRuns: vi.fn(async () => [claim({
+        target: { kind: 'orchestrator' },
+        requiredContextSchema: { schemaName: 'working-memory-review-context', schemaVersion: 1 },
+        requiredContext: {
+          schemaName: 'working-memory-review-context',
+          schemaVersion: 1,
+          conversationId: finalResponse.conversationId,
+          principalRef: 'telegram:user:1',
+          mode: 'suggest',
+        },
+      })]),
+      completeRun: vi.fn(async (_input) => ({ ...claim(), status: _input.status })),
+    };
+    const orchestrator = vi.fn();
+    const orchestratorReview = vi.fn(async () => finalResponse);
+    const deliver = vi.fn(async () => ({
+      status: 'delivered' as const,
+      sent: true as const,
+      delivery: deliveryRecord(),
+    }));
+    const scheduler = new ApplicationScheduler({
+      repository,
+      targets: { orchestrator, orchestratorReview, teamLead: vi.fn(), orchestratorReconciler: { reconcile: vi.fn() } },
+      delivery: { deliver },
+    });
+
+    await scheduler.dispatchDue(now, 5);
+    expect(orchestrator).not.toHaveBeenCalled();
+    expect(orchestratorReview).toHaveBeenCalledWith(expect.objectContaining({
+      context: {
+        schemaName: 'working-memory-review-context',
+        schemaVersion: 1,
+        conversationId: finalResponse.conversationId,
+        principalRef: 'telegram:user:1',
+        mode: 'suggest',
+      },
+    }));
+    expect(deliver).toHaveBeenCalledOnce();
+  });
+
+  it('fails invalid scheduled Working Memory review context without delivery', async () => {
+    const repository = {
+      claimDueRuns: vi.fn(async () => [claim({
+        target: { kind: 'orchestrator' },
+        requiredContextSchema: { schemaName: 'working-memory-review-context', schemaVersion: 1 },
+        requiredContext: {
+          schemaName: 'working-memory-review-context',
+          schemaVersion: 1,
+          conversationId: finalResponse.conversationId,
+          principalRef: 'telegram:user:1',
+          mode: 'apply',
+        },
+      })]),
+      completeRun: vi.fn(async (_input) => ({ ...claim(), status: _input.status })),
+    };
+    const scheduler = new ApplicationScheduler({
+      repository,
+      targets: { orchestrator: vi.fn(), teamLead: vi.fn(), orchestratorReconciler: { reconcile: vi.fn() } },
+      delivery: { deliver: vi.fn() },
+    });
+
+    await scheduler.dispatchDue(now, 5);
+    expect(repository.completeRun).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      failureCategory: 'target_schema_validation',
+    }));
   });
 
   it('skips stale missed runs when the job policy says skip', async () => {

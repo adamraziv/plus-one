@@ -413,6 +413,25 @@ export class OrchestratorAgent {
     return result.response;
   }
 
+  async runScheduledWorkingMemoryReview(input: {
+    message: InboundChannelMessageV1;
+  }): Promise<OrchestratorFinalResponseV1> {
+    const memory = this.dependencies.sessionMemory;
+    if (memory === undefined) return responseFromText(input.message, 'I could not review saved context right now.');
+    const result = await memory.reviewWorkingMemory({
+      threadId: input.message.conversationId,
+      resourceId: input.message.householdId,
+      principalRef: input.message.speaker.principalRef,
+      requestedBy: 'scheduled_review',
+      now: new Date(),
+    });
+    if (result.status === 'failed') return responseFromText(input.message, 'I could not complete the saved-context review right now.');
+    const body = result.report.findings.length === 0
+      ? 'I checked the household’s saved context and found nothing that needs attention. No changes were made.'
+      : `I found ${result.report.findings.length} saved-context item${result.report.findings.length === 1 ? '' : 's'} that may need your review. Nothing was changed.`;
+    return responseFromText(input.message, body);
+  }
+
   async resolvePendingMutation(input: {
     message: InboundChannelMessageV1;
     pending: TeamResultEnvelopeV2;

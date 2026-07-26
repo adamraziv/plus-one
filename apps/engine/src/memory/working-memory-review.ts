@@ -1,6 +1,8 @@
 import {
   WorkingMemoryEntryIdSchema,
   WorkingMemoryReviewReportSchema,
+  WorkingMemoryReviewScheduleContextSchemaV1,
+  SchemaIdentitySchemaV1,
   type FlexibleWorkingMemory,
   type JsonValue,
   type WorkingMemoryEntry,
@@ -121,6 +123,17 @@ export function reviewWorkingMemoryDocument(input: {
       .sort(compareFindings)
       .slice(0, 50),
   });
+}
+
+export function parseScheduledWorkingMemoryReviewContext(input: {
+  requiredContextSchema: { schemaName: string; schemaVersion: number };
+  requiredContext: JsonValue;
+}) {
+  const schema = SchemaIdentitySchemaV1.parse(input.requiredContextSchema);
+  if (schema.schemaName !== 'working-memory-review-context' || schema.schemaVersion !== 1) {
+    throw new Error('Unsupported Working Memory review context schema.');
+  }
+  return WorkingMemoryReviewScheduleContextSchemaV1.parse(input.requiredContext);
 }
 
 function isStale(entry: WorkingMemoryEntry, now: UtcInstant): boolean {
