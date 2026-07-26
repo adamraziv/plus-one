@@ -63,6 +63,7 @@ import {
   createMutateWorkingMemoryTool,
   createProposeWorkingMemoryTool,
   createViewWorkingMemoryTool,
+  createReviewWorkingMemoryTool,
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
@@ -110,6 +111,7 @@ const orchestratorInstructions = [
   'An explicit remember/save request may use mutateWorkingMemory, but a candidate is never a saved fact until readback-verified approval.',
   'Use viewWorkingMemory for “what do you remember about me?” or household memory questions. It is read-only and never replaces inspection before a correction or deletion.',
   'For “forget” or “correct,” identify the visible summary through a view or inspection, then use the existing revision-gated mutation flow; never ask for an internal ID.',
+  'Use reviewWorkingMemory for a deterministic read-only review. Findings are proposals only; use fresh inspection and the existing mutation flow for any accepted change.',
   'Before every create, replace, delete, or clear, call inspectWorkingMemory in this same turn.',
   'Pass the exact revision returned by inspection to mutateWorkingMemory.',
   'Use create for a new entry and an inspected entryId for replace or delete.',
@@ -207,6 +209,7 @@ export class OrchestratorAgent {
     mutateWorkingMemory?: ReturnType<typeof createMutateWorkingMemoryTool>;
     proposeWorkingMemory?: ReturnType<typeof createProposeWorkingMemoryTool>;
     viewWorkingMemory?: ReturnType<typeof createViewWorkingMemoryTool>;
+    reviewWorkingMemory?: ReturnType<typeof createReviewWorkingMemoryTool>;
   };
 
   constructor(private readonly dependencies: {
@@ -323,6 +326,22 @@ export class OrchestratorAgent {
         recordInspection: (inspection) => {
           const active = this.activeInvocation.getStore();
           if (active !== undefined) active.workingMemoryInspection = inspection;
+        },
+        recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
+      });
+      this.agentTools.reviewWorkingMemory = createReviewWorkingMemoryTool({
+        memory: dependencies.sessionMemory,
+        now: () => new Date(),
+        getActiveInvocation: () => {
+          const active = this.activeInvocation.getStore();
+          if (active === undefined) return undefined;
+          return {
+            message: active.message,
+            signal: active.signal,
+            ...(active.workingMemoryInspection === undefined
+              ? {}
+              : { workingMemoryInspection: active.workingMemoryInspection }),
+          };
         },
         recordOutcome: (outcome) => this.recordMemoryOutcome(outcome),
       });
@@ -886,6 +905,7 @@ export class OrchestratorAgent {
       if (this.agentTools.mutateWorkingMemory !== undefined) names.push('mutateWorkingMemory');
       if (this.agentTools.proposeWorkingMemory !== undefined) names.push('proposeWorkingMemory');
       if (this.agentTools.viewWorkingMemory !== undefined) names.push('viewWorkingMemory');
+      if (this.agentTools.reviewWorkingMemory !== undefined) names.push('reviewWorkingMemory');
     }
     if (canDelegateAnotherSubstep(invocation)) names.unshift('delegateTeam');
     return names;

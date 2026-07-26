@@ -127,6 +127,26 @@ describe('OrchestratorSessionMemory', () => {
       expect(input.updateWorkingMemory).not.toHaveBeenCalled();
     });
 
+    it('returns a read-only review report without writing canonical memory', async () => {
+      const input = fakeMemory(JSON.stringify(flexibleMemoryDocument()));
+      const memory = createMemoryPort(input);
+
+      const result = await memory.reviewWorkingMemory({
+        threadId,
+        resourceId,
+        principalRef: memoryPrincipalRef,
+        requestedBy: 'user',
+        now: new Date('2026-07-25T10:55:00.000Z'),
+      });
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        report: { status: 'succeeded', findings: [] },
+        outcome: { operation: 'review', status: 'succeeded' },
+      });
+      expect(input.updateWorkingMemory).not.toHaveBeenCalled();
+    });
+
     it('inspects and lazily migrates a legacy document through Mastra with authorized visibility', async () => {
       const input = fakeMemory(JSON.stringify({
         goals: { car: { summary: 'Buy a BMW X5.', horizon: 'one year' } },

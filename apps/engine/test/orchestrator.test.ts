@@ -715,6 +715,20 @@ function testSessionMemory(overrides: Partial<OrchestratorSessionMemoryPort> = {
         code: 'working_memory_prompt_context_succeeded',
       },
     })),
+    reviewWorkingMemory: vi.fn(async () => ({
+      status: 'succeeded' as const,
+      report: {
+        status: 'succeeded' as const,
+        revision: 'a'.repeat(64),
+        reviewedAt: '2026-07-25T10:55:00.000Z',
+        findings: [],
+      },
+      outcome: {
+        operation: 'review' as const,
+        status: 'succeeded' as const,
+        code: 'working_memory_review_succeeded',
+      },
+    })),
     inspectWorkingMemory: vi.fn(async () => { throw new Error('Unexpected Working Memory inspection'); }),
     validateWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory validation'); }),
     applyWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory mutation'); }),
@@ -1496,6 +1510,7 @@ describe('OrchestratorAgent', () => {
       'inspectWorkingMemory',
       'mutateWorkingMemory',
       'proposeWorkingMemory',
+      'reviewWorkingMemory',
       'viewWorkingMemory',
     ]);
     expect(sessionMemory.inspectWorkingMemory).not.toHaveBeenCalled();

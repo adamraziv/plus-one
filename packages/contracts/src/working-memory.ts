@@ -377,6 +377,17 @@ export const WorkingMemoryReviewReportSchema = z.object({
 }).strict();
 export type WorkingMemoryReviewReport = z.infer<typeof WorkingMemoryReviewReportSchema>;
 
+export const WorkingMemoryReviewToolResultSchema = z.discriminatedUnion('status', [
+  WorkingMemoryReviewReportSchema,
+  z.object({
+    status: z.literal('failed'),
+    code: z.string().min(1).max(128),
+    category: ErrorCategorySchemaV1,
+    retry: RetryDirectiveSchemaV1,
+  }).strict(),
+]);
+export type WorkingMemoryReviewToolResult = z.infer<typeof WorkingMemoryReviewToolResultSchema>;
+
 const resolvedCreateWorkingMemoryMutationSchema = z.object({
   operation: z.literal('create'),
   entryId: WorkingMemoryEntryIdSchema,

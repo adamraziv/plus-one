@@ -7,6 +7,7 @@ import {
   WorkingMemoryCandidateInputSchema,
   WorkingMemoryCandidateToolResultSchema,
   WorkingMemoryViewResultSchema,
+  WorkingMemoryReviewToolResultSchema,
   WorkingMemoryInspectionToolResultSchema,
   WorkingMemoryMutationDraftSchema,
   WorkingMemoryMutationToolResultSchema,
@@ -40,6 +41,7 @@ export type ActiveWorkingMemoryInvocation = {
   message: Pick<InboundChannelMessageV1, 'conversationId' | 'householdId' | 'speaker'>;
   signal: AbortSignal;
   workingMemoryInspection?: WorkingMemoryInspectionContext;
+  requestedBy?: 'user' | 'scheduled_review';
 };
 
 const EmptyInputSchema = z.object({}).strict();
@@ -137,6 +139,49 @@ export function createViewWorkingMemoryTool(input: {
         return projectWorkingMemoryView({ inspection: result.inspection, view });
       } catch {
         const failure = viewFailure('working_memory_view_failed', 'runtime_failure', 'never');
+        input.recordOutcome?.(failure.outcome);
+        return failure.result;
+      }
+    },
+  });
+}
+
+export function createReviewWorkingMemoryTool(input: {
+  memory: OrchestratorSessionMemoryPort;
+  now(): Date;
+  getActiveInvocation(): ActiveWorkingMemoryInvocation | undefined;
+  recordOutcome?(outcome: WorkingMemoryOperationOutcome): void;
+}) {
+  return createTool({
+    id: 'reviewWorkingMemory',
+    description: 'Review authorized Working Memory for deterministic duplicates, contradictions, scope mismatches, and stale facts without applying changes.',
+    inputSchema: EmptyInputSchema,
+    outputSchema: WorkingMemoryReviewToolResultSchema,
+    execute: async () => {
+      const active = input.getActiveInvocation();
+      if (active === undefined) {
+        const failure = reviewToolFailure('working_memory_review_failed', 'runtime_failure', 'never');
+        input.recordOutcome?.(failure.outcome);
+        return failure.result;
+      }
+      if (active.signal.aborted) {
+        throw active.signal.reason ?? new DOMException('Working Memory review aborted.', 'AbortError');
+      }
+      try {
+        const result = await input.memory.reviewWorkingMemory({
+          threadId: active.message.conversationId,
+          resourceId: active.message.householdId,
+          principalRef: active.message.speaker.principalRef,
+          requestedBy: active.requestedBy ?? 'user',
+          now: input.now(),
+        });
+        input.recordOutcome?.(result.outcome);
+        if (result.status === 'failed') {
+          return reviewToolFailure(result.outcome.code, result.outcome.category ?? 'runtime_failure', result.outcome.retry ?? 'never').result;
+        }
+        return WorkingMemoryReviewToolResultSchema.parse(result.report);
+      } catch {
+        const failure = reviewToolFailure('working_memory_review_failed', 'runtime_failure', 'never');
         input.recordOutcome?.(failure.outcome);
         return failure.result;
       }
@@ -377,6 +422,24 @@ function viewFailure(
   return {
     outcome,
     result: WorkingMemoryViewResultSchema.parse({ status: 'failed', code, category, retry }),
+  };
+}
+
+function reviewToolFailure(
+  code: string,
+  category: ErrorCategoryV1,
+  retry: RetryDirectiveV1,
+) {
+  const outcome: WorkingMemoryOperationOutcome = {
+    operation: 'review',
+    status: 'failed',
+    code,
+    category,
+    retry,
+  };
+  return {
+    outcome,
+    result: WorkingMemoryReviewToolResultSchema.parse({ status: 'failed', code, category, retry }),
   };
 }
 

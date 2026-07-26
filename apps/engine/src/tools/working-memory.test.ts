@@ -21,6 +21,7 @@ import {
   createMutateWorkingMemoryTool,
   createProposeWorkingMemoryTool,
   createViewWorkingMemoryTool,
+  createReviewWorkingMemoryTool,
   WorkingMemoryMutationToolInputSchema,
   type WorkingMemoryInspectionContext,
 } from './working-memory.js';
@@ -209,6 +210,39 @@ describe('createViewWorkingMemoryTool', () => {
     expect(JSON.stringify(result)).not.toContain(goalId);
     expect(JSON.stringify(result)).not.toContain('ownerPrincipalRef');
     expect(recordInspection).toHaveBeenCalledWith(inspection);
+  });
+});
+
+describe('createReviewWorkingMemoryTool', () => {
+  it('returns deterministic findings without applying a mutation', async () => {
+    const report = {
+      status: 'succeeded' as const,
+      revision: 'a'.repeat(64),
+      reviewedAt: '2026-07-25T10:55:00.000Z',
+      findings: [],
+    };
+    const reviewWorkingMemory = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      report,
+      outcome: successOutcome('review', 'working_memory_review_succeeded'),
+    }));
+    const recordOutcome = vi.fn();
+    const tool = createReviewWorkingMemoryTool({
+      memory: fakeMemory({ reviewWorkingMemory }),
+      now: () => new Date('2026-07-25T10:55:00Z'),
+      getActiveInvocation: () => activeInvocation(),
+      recordOutcome,
+    });
+
+    await expect(executeTool(tool)).resolves.toEqual(report);
+    expect(reviewWorkingMemory).toHaveBeenCalledWith({
+      threadId: message.conversationId,
+      resourceId: message.householdId,
+      principalRef: message.speaker.principalRef,
+      requestedBy: 'user',
+      now: new Date('2026-07-25T10:55:00Z'),
+    });
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ operation: 'review' }));
   });
 });
 

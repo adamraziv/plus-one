@@ -6,6 +6,7 @@ import type {
   RetryDirectiveV1,
   WorkingMemoryInspectionResult,
   WorkingMemoryRevision,
+  UtcInstant,
 } from '@plus-one/contracts';
 import {
   FlexibleWorkingMemorySchema,
@@ -28,6 +29,7 @@ import {
   workingMemoryPromptBlock,
   type WorkingMemoryPromptProjection,
 } from './working-memory-prompt.js';
+import { reviewWorkingMemoryDocument } from './working-memory-review.js';
 
 const ORCHESTRATOR_LAST_MESSAGES = 20;
 type OrchestratorMemoryOptions = NonNullable<NonNullable<ConstructorParameters<typeof Memory>[0]>['options']>;
@@ -71,6 +73,18 @@ export type WorkingMemoryPromptContextOutcome =
       error: PlusOneError;
     };
 
+export type WorkingMemoryReviewOutcome =
+  | {
+      status: 'succeeded';
+      report: import('@plus-one/contracts').WorkingMemoryReviewReport;
+      outcome: WorkingMemoryOperationOutcome;
+    }
+  | {
+      status: 'failed';
+      outcome: WorkingMemoryOperationOutcome;
+      error: PlusOneError;
+    };
+
 export type WorkingMemoryMutationOutcome =
   | {
       status: 'succeeded';
@@ -104,6 +118,13 @@ export interface OrchestratorSessionMemoryPort {
     resourceId: string;
     principalRef: string;
   }): Promise<WorkingMemoryPromptContextOutcome>;
+  reviewWorkingMemory(input: {
+    threadId: string;
+    resourceId: string;
+    principalRef: string;
+    requestedBy: 'user' | 'scheduled_review';
+    now: Date;
+  }): Promise<WorkingMemoryReviewOutcome>;
   validateWorkingMemoryMutation(input: {
     threadId: string;
     resourceId: string;
@@ -220,6 +241,38 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
           operation: 'read',
           status: 'succeeded',
           code: 'working_memory_prompt_context_succeeded',
+        },
+      };
+    });
+  }
+
+  async reviewWorkingMemory(input: {
+    threadId: string;
+    resourceId: string;
+    principalRef: string;
+    requestedBy: 'user' | 'scheduled_review';
+    now: Date;
+  }): Promise<WorkingMemoryReviewOutcome> {
+    void input.requestedBy;
+    return this.mutex.run(input.resourceId, async () => {
+      const loaded = await this.loadFlexibleWorkingMemory(input);
+      if ('error' in loaded) return reviewFailure(loaded.error);
+      const current = loaded.migrated
+        ? await this.persistAndVerifyMigration(input, loaded.document)
+        : loaded.document;
+      if (current instanceof PlusOneError) return reviewFailure(current);
+      const report = reviewWorkingMemoryDocument({
+        document: current,
+        principalRef: input.principalRef,
+        now: input.now.toISOString() as UtcInstant,
+      });
+      return {
+        status: 'succeeded',
+        report,
+        outcome: {
+          operation: 'review',
+          status: 'succeeded',
+          code: 'working_memory_review_succeeded',
         },
       };
     });
@@ -427,6 +480,20 @@ function promptContextFailure(error: PlusOneError): WorkingMemoryPromptContextOu
     status: 'failed',
     outcome: {
       operation: 'read',
+      status: 'failed',
+      code: error.code,
+      category: error.category,
+      retry: error.retry,
+    },
+    error,
+  };
+}
+
+function reviewFailure(error: PlusOneError): WorkingMemoryReviewOutcome {
+  return {
+    status: 'failed',
+    outcome: {
+      operation: 'review',
       status: 'failed',
       code: error.code,
       category: error.category,
