@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   FlexibleWorkingMemorySchema,
   WorkingMemoryEntryIdSchema,
+  WorkingMemoryMutationDraftSchema,
   WorkingMemoryProposalIdSchema,
   type PendingWorkingMemoryMutation,
   type WorkingMemoryInspectionResult,
@@ -14,7 +16,12 @@ import type {
   WorkingMemoryOperationOutcome,
 } from '../memory/orchestrator-session-memory.js';
 import { workingMemoryRevision } from '../memory/working-memory-document.js';
-import { createInspectWorkingMemoryTool, createMutateWorkingMemoryTool, type WorkingMemoryInspectionContext } from './working-memory.js';
+import {
+  createInspectWorkingMemoryTool,
+  createMutateWorkingMemoryTool,
+  WorkingMemoryMutationToolInputSchema,
+  type WorkingMemoryInspectionContext,
+} from './working-memory.js';
 
 const message = {
   conversationId: 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -151,6 +158,23 @@ describe('createInspectWorkingMemoryTool', () => {
 });
 
 describe('createMutateWorkingMemoryTool', () => {
+  it('exposes a flat provider schema while retaining strict domain validation', () => {
+    const providerSchema = z.toJSONSchema(WorkingMemoryMutationToolInputSchema);
+
+    expect(providerSchema).toMatchObject({ type: 'object' });
+    expect(providerSchema).not.toHaveProperty('anyOf');
+    expect(providerSchema).not.toHaveProperty('oneOf');
+    expect(providerSchema).toMatchObject({
+      properties: {
+        operation: { enum: ['create', 'replace', 'delete', 'clear'] },
+      },
+    });
+    expect(WorkingMemoryMutationDraftSchema.safeParse({
+      operation: 'create',
+      basedOnRevision: 'a'.repeat(64),
+    }).success).toBe(false);
+  });
+
   it('requires a same-turn inspection and the exact inspected revision', async () => {
     const memory = fakeMemory();
     const tool = createMutateWorkingMemoryTool({

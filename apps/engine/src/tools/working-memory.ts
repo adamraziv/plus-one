@@ -1,9 +1,13 @@
 import { createTool } from '@mastra/core/tools';
 import {
+  MAX_WORKING_MEMORY_TEXT_LENGTH,
   PendingWorkingMemoryMutationSchema,
+  WorkingMemoryEntryIdSchema,
+  WorkingMemoryKindSchema,
   WorkingMemoryInspectionToolResultSchema,
   WorkingMemoryMutationDraftSchema,
   WorkingMemoryMutationToolResultSchema,
+  WorkingMemoryValueSchema,
   type FlexibleWorkingMemory,
   type ErrorCategoryV1,
   type InboundChannelMessageV1,
@@ -34,6 +38,16 @@ export type ActiveWorkingMemoryInvocation = {
 };
 
 const EmptyInputSchema = z.object({}).strict();
+
+export const WorkingMemoryMutationToolInputSchema = z.object({
+  operation: z.enum(['create', 'replace', 'delete', 'clear']),
+  basedOnRevision: z.string().trim().min(1).max(128),
+  entryId: WorkingMemoryEntryIdSchema.optional(),
+  kind: WorkingMemoryKindSchema.optional(),
+  summary: z.string().trim().min(1).max(MAX_WORKING_MEMORY_TEXT_LENGTH).optional(),
+  scope: z.enum(['household', 'member']).optional(),
+  value: WorkingMemoryValueSchema.optional(),
+}).strip();
 
 export function createInspectWorkingMemoryTool(input: {
   memory: OrchestratorSessionMemoryPort;
@@ -97,7 +111,7 @@ export function createMutateWorkingMemoryTool(input: {
       'Call inspectWorkingMemory first in this same turn and pass its revision.',
       'Use an entryId returned by inspection for replace or delete.',
     ].join(' '),
-    inputSchema: WorkingMemoryMutationDraftSchema,
+    inputSchema: WorkingMemoryMutationToolInputSchema,
     outputSchema: WorkingMemoryMutationToolResultSchema,
     execute: async (rawDraft) => {
       const parsedDraft = WorkingMemoryMutationDraftSchema.safeParse(rawDraft);
