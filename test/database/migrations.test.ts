@@ -44,6 +44,7 @@ describe('platform migrations', () => {
       '0018_channel_pairing.sql',
       '0019_mutation_command_concrete_payload_schema.sql',
       '0020_idr_currency_metadata.sql',
+      '0021_mastra_workflow_timezone_columns.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();

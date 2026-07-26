@@ -3,10 +3,24 @@ import { z } from 'zod';
 
 const ModelsResponseSchema = z.object({
   data: z.array(z.object({
-    id: z.string(),
+    id: z.string().min(1),
     owned_by: z.string().optional(),
   }).passthrough()),
 }).passthrough();
+
+export function freeModelIds(catalog: unknown): string[] {
+  return ModelsResponseSchema.parse(catalog).data
+    .filter(({ id }) => id.endsWith('-free'))
+    .map(({ id, owned_by }) => id.includes('/') || owned_by === undefined ? id : `${owned_by}/${id}`)
+    .sort();
+}
+
+export function modelCatalogUrl(endpoint: string): string {
+  const base = endpoint.endsWith('/chat/completions')
+    ? endpoint.slice(0, -'/chat/completions'.length)
+    : endpoint;
+  return new URL('models', base.endsWith('/') ? base : `${base}/`).toString();
+}
 
 export async function validateConfiguredModels(input: {
   endpoint: string;
@@ -15,11 +29,7 @@ export async function validateConfiguredModels(input: {
   fetch?: typeof globalThis.fetch;
 }): Promise<void> {
   const fetcher = input.fetch ?? globalThis.fetch;
-  const base = input.endpoint.endsWith('/chat/completions')
-    ? input.endpoint.slice(0, -'/chat/completions'.length)
-    : input.endpoint;
-  const url = new URL('models', base.endsWith('/') ? base : `${base}/`);
-  const response = await fetcher(url.toString(), {
+  const response = await fetcher(modelCatalogUrl(input.endpoint), {
     headers: { Authorization: `Bearer ${input.apiKey}` },
   });
 

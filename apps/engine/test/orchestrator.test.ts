@@ -4,19 +4,27 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { Agent } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
+import type { Memory } from '@mastra/memory';
 import {
   InboundChannelMessageSchemaV1,
+  FlexibleWorkingMemorySchema,
   MakerArtifactSchemaV1,
   OpaqueIdentifierDefinitions,
+  PlusOneError,
+  PendingWorkingMemoryMutationSchema,
   QueryResultSchemaV1,
   TeamResultEnvelopeSchemaV2,
+  WorkingMemoryEntryIdSchema,
+  WorkingMemoryProposalIdSchema,
   CurrencyCodeSchema,
+  type PendingWorkingMemoryMutation,
   type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
 import { AccountingJournalMutationProposalSchemaV1 } from '@plus-one/accounting';
 import { confirmationDecision, OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
+import { workingMemoryRevision } from '../src/memory/working-memory-document.js';
 import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
 import { finalSynthesisTeamResultView, type OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 
@@ -27,6 +35,8 @@ const artifactId = 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const draftId = 'draft_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const artifactHash = 'a'.repeat(64);
 const now = '2026-06-23T10:00:00.000Z';
+const workingMemoryGoalId = WorkingMemoryEntryIdSchema.parse('wme_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+const workingMemoryProposalId = WorkingMemoryProposalIdSchema.parse('wmproposal_01JNZQ4A9B8C7D6E5F4G3H2J1K');
 
 const queryTeam = {
   team: 'query',
@@ -69,6 +79,67 @@ function message(body: string) {
     body,
     attachments: [],
     metadata: { destination: { chatId: 'telegram-chat-42' } },
+  });
+}
+
+function workingMemoryDocument(withGoal = false) {
+  return FlexibleWorkingMemorySchema.parse({
+    version: 1,
+    entries: withGoal ? {
+      [workingMemoryGoalId]: {
+        kind: 'goal',
+        summary: 'Buy a BMW X5.',
+        scope: 'household',
+        value: { goal: 'BMW X5' },
+      },
+    } : {},
+  });
+}
+
+function workingMemoryInspection(document: ReturnType<typeof workingMemoryDocument>) {
+  return {
+    revision: workingMemoryRevision(document),
+    entries: Object.entries(document.entries).map(([entryId, entry]) => ({
+      entryId: WorkingMemoryEntryIdSchema.parse(entryId),
+      kind: entry.kind,
+      summary: entry.summary,
+      scope: entry.scope,
+      value: entry.value,
+    })),
+  };
+}
+
+async function executeMemoryTool(tool: unknown, input: unknown = {}): Promise<unknown> {
+  const executable = tool as { execute?: (input: unknown, context: unknown) => unknown };
+  return executable.execute?.(input, {});
+}
+
+function pendingWorkingMemory(
+  overrides: Omit<Partial<PendingWorkingMemoryMutation>, 'createdAt' | 'expiresAt'> & {
+    createdAt?: string;
+    expiresAt?: string;
+  } = {},
+): PendingWorkingMemoryMutation {
+  const createdAt = new Date(Date.now() - 1_000).toISOString();
+  return PendingWorkingMemoryMutationSchema.parse({
+    proposalId: workingMemoryProposalId,
+    householdId,
+    conversationId,
+    speakerPrincipalRef: 'telegram:user:1',
+    mutation: {
+      operation: 'replace',
+      entryId: workingMemoryGoalId,
+      entry: {
+        kind: 'goal',
+        summary: 'Buy a BMW X7.',
+        scope: 'household',
+        value: { goals: ['BMW X7'] },
+      },
+    },
+    basedOnRevision: 'a'.repeat(64),
+    createdAt,
+    expiresAt: new Date(Date.parse(createdAt) + 10 * 60_000).toISOString(),
+    ...overrides,
   });
 }
 
@@ -629,14 +700,14 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
   };
 }
 
-function memoryMessage(role: 'user' | 'assistant', body: string) {
+function testSessionMemory(overrides: Partial<OrchestratorSessionMemoryPort> = {}): OrchestratorSessionMemoryPort {
   return {
-    id: `${role}-${body}`,
-    role,
-    createdAt: new Date('2026-06-30T00:00:00.000Z'),
-    threadId: conversationId,
-    resourceId: householdId,
-    content: { format: 2 as const, parts: [{ type: 'text' as const, text: body }] },
+    agentMemory: {} as Memory,
+    inspectWorkingMemory: vi.fn(async () => { throw new Error('Unexpected Working Memory inspection'); }),
+    validateWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory validation'); }),
+    applyWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory mutation'); }),
+    close: vi.fn(async () => undefined),
+    ...overrides,
   };
 }
 
@@ -1358,16 +1429,11 @@ describe('OrchestratorAgent', () => {
     );
   });
 
-  it('uses prepared thread context and persists the final user-facing reply', async () => {
-    const sessionMemory: OrchestratorSessionMemoryPort = {
-      prepareInput: vi.fn(async () => [
-        memoryMessage('assistant', 'Earlier clean reply'),
-        memoryMessage('user', 'Use checking for that transfer.'),
-      ]),
-      persistTurn: vi.fn(),
-      close: vi.fn(),
-    };
-    const generate = vi.fn(async (messages: unknown) => {
+  it('passes flexible memory options and registers only the custom memory tools', async () => {
+    const sessionMemory = testSessionMemory();
+    let configuredMemory: unknown;
+    let configuredTools: unknown;
+    const generate = vi.fn(async (messages: unknown, options: unknown) => {
       expect(messages).toEqual([
         expect.objectContaining({
           role: 'system',
@@ -1377,10 +1443,104 @@ describe('OrchestratorAgent', () => {
             ]),
           }),
         }),
-        expect.objectContaining({ role: 'assistant' }),
+        expect.objectContaining({ role: 'system' }),
         expect.objectContaining({ role: 'user' }),
       ]);
+      expect(options).toMatchObject({
+        memory: { thread: conversationId, resource: householdId },
+        requestContext: expect.any(Object),
+      });
       return { text: 'Final clean answer.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        configuredMemory = config.memory;
+        configuredTools = config.tools;
+        return { ...config, generate } as never;
+      },
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('Use checking for that transfer.') }))
+      .resolves.toMatchObject({ body: 'Final clean answer.' });
+    expect(typeof configuredMemory).toBe('function');
+    expect(Object.keys(configuredTools as Record<string, unknown>).sort()).toEqual([
+      'delegateTeam',
+      'inspectWorkingMemory',
+      'mutateWorkingMemory',
+    ]);
+    expect(sessionMemory.inspectWorkingMemory).not.toHaveBeenCalled();
+  });
+
+  it('keeps the same Agent and degrades through a typed Working Memory failure retry', async () => {
+    const sessionMemory = testSessionMemory();
+    const requestContexts: unknown[] = [];
+    let configuredAgent: unknown;
+    const generate = vi.fn(async (_prompt: unknown, options: { requestContext?: unknown }) => {
+      requestContexts.push(options.requestContext);
+      if (generate.mock.calls.length === 1) {
+        throw new PlusOneError({
+          category: 'storage_unavailable',
+          code: 'working_memory_read_failed',
+          message: 'Working Memory operation failed.',
+          retry: 'after_backoff',
+          receiptLookupRequired: false,
+        });
+      }
+      return { text: 'I could not use saved context, so I continued without it.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => {
+        configuredAgent = { ...config, generate };
+        return configuredAgent as never;
+      },
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('What do you remember about me?') }))
+      .resolves.toMatchObject({ body: 'I could not use saved context, so I continued without it.' });
+
+    expect(configuredAgent).toBe(orchestrator.agent);
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(requestContexts[0]).toBe(requestContexts[1]);
+    expect((requestContexts[1] as { get(key: string): unknown }).get('plus-one.orchestrator'))
+      .toMatchObject({ memoryDegraded: true });
+  });
+
+  it('retries Mastra memory input-processor failures through degraded memory', async () => {
+    const requestContexts: unknown[] = [];
+    const generate = vi.fn(async (_prompt: unknown, options: { requestContext?: unknown }) => {
+      requestContexts.push(options.requestContext);
+      if (generate.mock.calls.length === 1) throw new Error('Input processor error');
+      return { text: 'I continued without unavailable saved context.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      sessionMemory: testSessionMemory(),
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('What do you remember about me?') }))
+      .resolves.toMatchObject({ body: 'I continued without unavailable saved context.' });
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect((requestContexts[1] as { get(key: string): unknown }).get('plus-one.orchestrator'))
+      .toMatchObject({ memoryDegraded: true });
+  });
+
+  it('does not preflight Working Memory for an ordinary turn', async () => {
+    const sessionMemory = testSessionMemory();
+    let requestState: unknown;
+    const generate = vi.fn(async (_prompt: unknown, options: { requestContext: { get(key: string): unknown } }) => {
+      requestState = options.requestContext.get('plus-one.orchestrator');
+      return { text: 'I could not access saved context right now, but I can still help with this request.' };
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -1390,15 +1550,288 @@ describe('OrchestratorAgent', () => {
       teamRuntime: testTeamRuntime(vi.fn()),
     });
 
-    await expect(orchestrator.run({ message: message('Use checking for that transfer.') }))
-      .resolves.toMatchObject({ body: 'Final clean answer.' });
-    expect(sessionMemory.prepareInput).toHaveBeenCalledWith({
-      message: message('Use checking for that transfer.'),
+    await expect(orchestrator.run({ message: message('What do you remember about me?') }))
+      .resolves.toMatchObject({ body: 'I could not access saved context right now, but I can still help with this request.' });
+    expect(generate).toHaveBeenCalledOnce();
+    expect(requestState).toMatchObject({ memoryDegraded: false, memoryFailures: [] });
+    expect(sessionMemory.inspectWorkingMemory).not.toHaveBeenCalled();
+  });
+
+  it('does not register native Working Memory hooks or forgetEverything', async () => {
+    const sessionMemory = testSessionMemory();
+    let config: Record<string, unknown> | undefined;
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (agentConfig) => {
+        config = agentConfig as unknown as Record<string, unknown>;
+        return { ...agentConfig, generate: vi.fn(async () => ({ text: 'Ready.' })) } as never;
+      },
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
     });
-    expect(sessionMemory.persistTurn).toHaveBeenCalledWith({
-      message: message('Use checking for that transfer.'),
-      assistantText: 'Final clean answer.',
+
+    expect(config?.hooks).toBeUndefined();
+    expect(config?.tools).toEqual(expect.not.objectContaining({
+      forgetEverything: expect.anything(),
+      updateWorkingMemory: expect.anything(),
+    }));
+    expect(orchestrator.agentTools.inspectWorkingMemory).toBeDefined();
+    expect(orchestrator.agentTools.mutateWorkingMemory).toBeDefined();
+  });
+
+  it('records a custom Working Memory inspection failure and prevents a success claim', async () => {
+    const sessionMemory = testSessionMemory({
+      inspectWorkingMemory: vi.fn(async () => ({
+        status: 'failed' as const,
+        outcome: {
+          operation: 'inspect' as const,
+          status: 'failed' as const,
+          code: 'working_memory_read_failed',
+          category: 'storage_unavailable' as const,
+          retry: 'after_backoff' as const,
+        },
+        error: new PlusOneError({
+          category: 'storage_unavailable',
+          code: 'working_memory_read_failed',
+          message: 'Working Memory operation failed.',
+          retry: 'after_backoff',
+          receiptLookupRequired: false,
+        }),
+      })),
     });
+    let requestState: unknown;
+    const generate = vi.fn(async (_prompt: unknown, options: { requestContext: { get(key: string): unknown } }) => {
+      const tool = orchestrator.agentTools.inspectWorkingMemory;
+      if (tool === undefined) throw new Error('Expected inspectWorkingMemory tool.');
+      await (tool.execute as unknown as (input: unknown, context: unknown) => Promise<unknown>)({}, {});
+      requestState = options.requestContext.get('plus-one.orchestrator');
+      return { text: 'I could not access saved context, so I continued without it.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('What do you remember about me?') }))
+      .resolves.toMatchObject({ body: 'I could not access saved context, so I continued without it.' });
+    expect(requestState).toMatchObject({
+      memoryDegraded: true,
+      memoryFailures: [expect.objectContaining({
+        operation: 'inspect',
+        code: 'working_memory_read_failed',
+        category: 'storage_unavailable',
+      })],
+    });
+  });
+
+  it('accepts a direct create only after the custom adapter reports verified success', async () => {
+    const document = workingMemoryDocument();
+    const inspection = workingMemoryInspection(document);
+    const applyWorkingMemoryMutation = vi.fn(async () => ({
+      status: 'succeeded' as const,
+      operation: 'create' as const,
+      code: 'working_memory_mutation_succeeded' as const,
+      document,
+      outcome: {
+        operation: 'mutate' as const,
+        status: 'succeeded' as const,
+        code: 'working_memory_mutation_succeeded',
+      },
+    }));
+    const sessionMemory = testSessionMemory({
+      inspectWorkingMemory: vi.fn(async () => ({
+        status: 'succeeded' as const,
+        document,
+        inspection,
+        outcome: {
+          operation: 'inspect' as const,
+          status: 'succeeded' as const,
+          code: 'working_memory_inspection_succeeded',
+        },
+      })),
+      applyWorkingMemoryMutation,
+    });
+    const generate = vi.fn(async () => {
+      await executeMemoryTool(orchestrator.agentTools.inspectWorkingMemory);
+      await executeMemoryTool(orchestrator.agentTools.mutateWorkingMemory, {
+        operation: 'create',
+        basedOnRevision: inspection.revision,
+        kind: 'goal',
+        summary: 'Buy a BMW X5.',
+        scope: 'household',
+        value: { goal: 'BMW X5', timeframe: 'next year' },
+      });
+      return { text: 'I saved that goal.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('Remember that I want to buy a BMW X5 next year.') }))
+      .resolves.toMatchObject({ body: 'I saved that goal.' });
+    expect(applyWorkingMemoryMutation).toHaveBeenCalledOnce();
+  });
+
+  it('returns a same-agent confirmation preview without exposing proposal internals', async () => {
+    const document = workingMemoryDocument(true);
+    const inspection = workingMemoryInspection(document);
+    const recordValidatedMutation = vi.fn();
+    const sessionMemory = testSessionMemory({
+      inspectWorkingMemory: vi.fn(async () => ({
+        status: 'succeeded' as const,
+        document,
+        inspection,
+        outcome: {
+          operation: 'inspect' as const,
+          status: 'succeeded' as const,
+          code: 'working_memory_inspection_succeeded',
+        },
+      })),
+      validateWorkingMemoryMutation: vi.fn(async () => {
+        recordValidatedMutation();
+        return {
+          status: 'succeeded' as const,
+          operation: 'create' as const,
+          code: 'working_memory_mutation_validated' as const,
+          document,
+          outcome: {
+            operation: 'validate' as const,
+            status: 'succeeded' as const,
+            code: 'working_memory_mutation_validated',
+          },
+        };
+      }),
+    });
+    const generate = vi.fn(async () => {
+      if (generate.mock.calls.length === 1) {
+        await executeMemoryTool(orchestrator.agentTools.inspectWorkingMemory);
+        await executeMemoryTool(orchestrator.agentTools.mutateWorkingMemory, {
+          operation: 'create',
+          basedOnRevision: inspection.revision,
+          kind: 'goal',
+          summary: 'A second goal.',
+          scope: 'household',
+          value: { goal: 'A second goal' },
+        });
+        return { text: '' };
+      }
+      return { text: 'I can remember that goal, but would you like me to save it?' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    const result = await orchestrator.runTurn({ message: message('Remember another goal.') });
+
+    expect(result.kind).toBe('ask-user');
+    expect(result).toMatchObject({
+      pendingWorkingMemoryMutation: expect.objectContaining({
+        householdId,
+        conversationId,
+        mutation: expect.objectContaining({ operation: 'create' }),
+      }),
+    });
+    expect(recordValidatedMutation).toHaveBeenCalledOnce();
+    expect(result.response.body).toContain('?');
+    expect(result.response.body).not.toContain(workingMemoryProposalId);
+    expect(result.response.body).not.toContain('wme_');
+    expect(result.response.body).not.toContain('revision');
+  });
+
+  it('synthesizes approval, rejection, expiry, stale approval, and unclear feedback through the same agent', async () => {
+    const scenarios = [
+      { name: 'approval', body: 'yes', text: 'The goal is now in place.', expectedKind: 'final', applyCode: undefined, expired: false },
+      { name: 'rejection', body: 'no', text: 'No changes were made.', expectedKind: 'final', applyCode: undefined, expired: false },
+      { name: 'expiry', body: 'yes', text: 'That approval expired, so the change was not completed.', expectedKind: 'final', applyCode: undefined, expired: true },
+      { name: 'stale approval', body: 'yes', text: 'The change was not completed because the context changed. Please ask me to review it again.', expectedKind: 'final', applyCode: 'working_memory_revision_stale', expired: false },
+      { name: 'unclear', body: 'maybe', text: 'I am ready to make that change. Would you like me to approve it?', expectedKind: 'ask-user', applyCode: undefined, expired: false },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const applyWorkingMemoryMutation = vi.fn(async () => scenario.applyCode === undefined
+        ? {
+            status: 'succeeded' as const,
+            operation: 'replace' as const,
+            code: 'working_memory_mutation_succeeded' as const,
+            document: workingMemoryDocument(true),
+            outcome: { operation: 'mutate' as const, status: 'succeeded' as const, code: 'working_memory_mutation_succeeded' },
+          }
+        : {
+            status: 'failed' as const,
+            operation: 'replace' as const,
+            code: scenario.applyCode,
+            category: 'serialization_conflict' as const,
+            retry: 'after_state_resolution' as const,
+            outcome: { operation: 'mutate' as const, status: 'failed' as const, code: scenario.applyCode },
+          });
+      const orchestrator = new OrchestratorAgent({
+        model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+        agentFactory: (config) => ({ ...config, generate: vi.fn(async () => ({ text: scenario.text })) }) as never,
+        sessionMemory: testSessionMemory({ applyWorkingMemoryMutation }),
+        teams: [queryTeam],
+        teamRuntime: testTeamRuntime(vi.fn()),
+      });
+      const pending = scenario.expired
+        ? pendingWorkingMemory({
+            createdAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+            expiresAt: new Date(Date.now() - 1_000).toISOString(),
+          })
+        : pendingWorkingMemory();
+
+      const result = await orchestrator.resolvePendingWorkingMemoryMutation({
+        message: message(scenario.body),
+        pending,
+      });
+
+      expect(result.kind, scenario.name).toBe(scenario.expectedKind);
+      expect(result.response.body, scenario.name).toBe(scenario.text);
+      if (scenario.name === 'unclear') {
+        expect(result).toMatchObject({ pendingWorkingMemoryMutation: pending });
+      }
+      if (scenario.name === 'approval' || scenario.name === 'stale approval') {
+        expect(applyWorkingMemoryMutation).toHaveBeenCalledOnce();
+      } else {
+        expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('keeps a verified Working Memory outcome user-visible when synthesis produces no usable text', async () => {
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate: vi.fn(async () => ({ text: '' })) }) as never,
+      sessionMemory: testSessionMemory({
+        applyWorkingMemoryMutation: vi.fn(async () => ({
+          status: 'succeeded' as const,
+          operation: 'replace' as const,
+          code: 'working_memory_mutation_succeeded' as const,
+          document: workingMemoryDocument(true),
+          outcome: { operation: 'mutate' as const, status: 'succeeded' as const, code: 'working_memory_mutation_succeeded' },
+        })),
+      }),
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    const result = await orchestrator.resolvePendingWorkingMemoryMutation({
+      message: message('yes'),
+      pending: pendingWorkingMemory(),
+    });
+
+    expect(result).toMatchObject({ kind: 'final' });
+    expect(result.response.body).toMatch(/verified|in place/i);
   });
 
   it('keeps the full checked team result for citations while exposing only a safe final-synthesis view to the model', async () => {
@@ -1691,15 +2124,7 @@ describe('OrchestratorAgent', () => {
 
   it('keeps checked account-list evidence separate from an empty current-balance projection during deterministic synthesis', async () => {
     let orchestratorInstructions: string | undefined;
-    const preparedMessages = [
-      memoryMessage('assistant', 'Checked account-list evidence established that Checking and Groceries are configured.'),
-      memoryMessage('user', 'What are the balances in my accounts?'),
-    ];
-    const sessionMemory: OrchestratorSessionMemoryPort = {
-      prepareInput: vi.fn(async () => preparedMessages),
-      persistTurn: vi.fn(),
-      close: vi.fn(),
-    };
+    const sessionMemory = testSessionMemory();
     const currentBalancesResult = emptyCurrentBalancesResult();
     const runTeamLead = vi.fn(async () => currentBalancesResult);
     const generate = vi.fn(async (messages: unknown) => {
@@ -1712,7 +2137,8 @@ describe('OrchestratorAgent', () => {
             ]),
           }),
         }),
-        ...preparedMessages,
+        expect.objectContaining({ role: 'system' }),
+        expect.objectContaining({ role: 'user' }),
       ]);
       const delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',

@@ -1,4 +1,3 @@
-import type { Agent } from '@mastra/core/agent';
 import {
   closeDatabasePools,
   createDatabasePools,
@@ -17,7 +16,7 @@ import {
   TelegramPairingService,
   TelegramTransportAdapter,
 } from '@plus-one/runtime';
-import { createAgentSystem } from './agent-catalog.js';
+import { createAgentSystem, registerOrchestratorAgent } from './agent-catalog.js';
 import { loadConfig } from './config.js';
 import { createMastra } from './mastra.js';
 import type { RoleAgentTools } from './mastra/role-agent.js';
@@ -50,7 +49,7 @@ interface BootstrapDependencies {
   createMastraInstance?: typeof createMastra;
   createAgentSystemInstance?: typeof createAgentSystem;
   queryTools?: RoleAgentTools;
-  orchestratorAgent?: Agent;
+  createOrchestratorAgent?: (input: ConstructorParameters<typeof OrchestratorAgent>[0]) => OrchestratorAgent;
   createTelegramBotApiClient?: typeof createTelegramBotApiClient;
   createTelegramPollingReceiver?: typeof createTelegramPollingReceiver;
 }
@@ -83,13 +82,9 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   if (Object.keys(queryTools).length === 0) {
     throw new Error('Bootstrap requires configured Query tools.');
   }
-  if (config.nodeEnv === 'production' && dependencies.orchestratorAgent === undefined) {
-    throw new Error('Production bootstrap requires a configured orchestrator agent.');
-  }
   const agentSystem = (dependencies.createAgentSystemInstance ?? createAgentSystem)({
     models: config.models,
     queryTools,
-    ...(dependencies.orchestratorAgent === undefined ? {} : { orchestratorAgent: dependencies.orchestratorAgent }),
   });
   const teamRuntime = createTeamRuntime({ pools, agentSystem });
   const sessionMemory = createOrchestratorSessionMemory({
@@ -97,13 +92,14 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     model: config.models.orchestrator,
   });
   const channelEvents = new DelegatingChannelEventSink();
-  const orchestrator = new OrchestratorAgent({
+  const orchestrator = (dependencies.createOrchestratorAgent ?? ((input) => new OrchestratorAgent(input)))({
     model: config.models.orchestrator,
     teams: agentSystem.teams,
     teamRuntime,
     sessionMemory,
     channelEvents,
   });
+  registerOrchestratorAgent(agentSystem, orchestrator.agent as never);
   const deliveryRepository = new PostgresDeliveryRepository(pools.operations);
   const channelCommands = new ChannelCommandHandler({
     repository: deliveryRepository,

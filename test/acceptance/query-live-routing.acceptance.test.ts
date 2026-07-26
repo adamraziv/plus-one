@@ -1,4 +1,3 @@
-import type { MastraDBMessage } from '@mastra/core/agent';
 import { describe, expect, it, vi } from 'vitest';
 import {
   InboundChannelMessageSchemaV1,
@@ -15,7 +14,10 @@ import { createAnalystSandboxTool } from '@plus-one/runtime';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import { bootstrap } from '../../apps/engine/src/bootstrap.js';
 import { loadConfig } from '../../apps/engine/src/config.js';
-import type { OrchestratorSessionMemoryPort } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
+import {
+  createOrchestratorSessionMemory,
+  type OrchestratorSessionMemoryPort,
+} from '../../apps/engine/src/memory/orchestrator-session-memory.js';
 import { createRuntimeRoutes } from '../../apps/engine/src/runtime-routes.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
@@ -144,23 +146,28 @@ describe('query live routing acceptance', () => {
 
   liveIt('keeps account-list coverage after a prior turn establishes that accounts exist', async () => {
     const delegated: DelegatedTurn[] = [];
+    const sessionMemory = createConversationMemory();
     const orchestrator = createLiveOrchestrator({
-      sessionMemory: createConversationMemory(),
+      sessionMemory,
       runTeamLead: async (input) => {
         delegated.push(input);
         return checkedAccountListResult();
       },
     });
 
-    const first = await orchestrator.run({ message: inboundMessage('show me which accounts I have', 1) });
-    await orchestrator.run({ message: inboundMessage('can u make sure that i dont have accounts setup?', 2) });
+    try {
+      const first = await orchestrator.run({ message: inboundMessage('show me which accounts I have', 1) });
+      await orchestrator.run({ message: inboundMessage('can u make sure that i dont have accounts setup?', 2) });
 
-    expect(first.body).toMatch(/\b(?:checking|groceries|accounts?)\b/i);
-    expectNoImplementationDetails(first.body);
-    expect(delegated).toHaveLength(2);
-    expect(delegated[0]?.request).toMatchObject({ coverage: ['account list'] });
-    expect(delegated[1]?.request).toMatchObject({ coverage: ['account list'] });
-    expect(delegated[1]?.request).not.toMatchObject({ coverage: ['balance snapshot'] });
+      expect(first.body).toMatch(/\b(?:checking|groceries|accounts?)\b/i);
+      expectNoImplementationDetails(first.body);
+      expect(delegated).toHaveLength(2);
+      expect(delegated[0]?.request).toMatchObject({ coverage: ['account list'] });
+      expect(delegated[1]?.request).toMatchObject({ coverage: ['account list'] });
+      expect(delegated[1]?.request).not.toMatchObject({ coverage: ['balance snapshot'] });
+    } finally {
+      await sessionMemory.close();
+    }
   }, 120_000);
 
   liveIt('does not infer missing accounts from an empty current-balance projection', async () => {
@@ -254,35 +261,11 @@ async function runLiveRoutingTurn(body: string): Promise<DelegatedTurn> {
 }
 
 function createConversationMemory(): OrchestratorSessionMemoryPort {
-  const messages: MastraDBMessage[] = [];
-  return {
-    prepareInput: async ({ message }) => [
-      ...messages,
-      conversationMessage('user', message.body, messages.length),
-    ],
-    persistTurn: async ({ message, assistantText }) => {
-      messages.push(
-        conversationMessage('user', message.body, messages.length),
-        conversationMessage('assistant', assistantText, messages.length + 1),
-      );
-    },
-    close: async () => undefined,
-  };
-}
-
-function conversationMessage(
-  role: 'user' | 'assistant',
-  body: string,
-  ordinal: number,
-): MastraDBMessage {
-  return {
-    id: `live-routing-${role}-${ordinal}`,
-    role,
-    createdAt: new Date(now),
-    threadId: conversationId,
-    resourceId: householdId,
-    content: { format: 2, parts: [{ type: 'text', text: body }] },
-  };
+  const config = loadConfig();
+  return createOrchestratorSessionMemory({
+    connectionString: config.database.poolUrls.memory,
+    model: config.models.orchestrator,
+  });
 }
 
 function checkedAccountListResult(): TeamResultEnvelopeV2 {

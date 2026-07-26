@@ -22,6 +22,7 @@
     "test:db": "vitest --workspace vitest.workspace.ts run --project database --no-file-parallelism",
     "test:integration": "vitest --workspace vitest.workspace.ts run --project integration --passWithNoTests",
     "test:acceptance": "vitest --workspace vitest.workspace.ts run --project acceptance --passWithNoTests",
+    "test:working-memory:free-models": "tsx scripts/verify-working-memory-free-models.ts",
     "dev:mastra": "tsc -p tsconfig.mastra.json --pretty false && tsx scripts/prepare-mastra-dev.ts --prepare && mastra dev --dir apps/engine/src/mastra",
     "plus-one": "tsx apps/engine/src/cli.ts",
     "install:cli": "bash scripts/install-cli.sh",
@@ -48,9 +49,9 @@
     "zod": "4.1.12"
   },
   "dependencies": {
-    "@mastra/core": "1.47.0",
-    "@mastra/memory": "1.21.2",
-    "@mastra/pg": "1.14.0",
+    "@mastra/core": "1.52.1",
+    "@mastra/memory": "1.23.1",
+    "@mastra/pg": "1.17.0",
     "tsx": "4.20.6"
   }
 }
