@@ -703,6 +703,18 @@ function queryDraft(businessQuestion: string, extra: Record<string, unknown> = {
 function testSessionMemory(overrides: Partial<OrchestratorSessionMemoryPort> = {}): OrchestratorSessionMemoryPort {
   return {
     agentMemory: {} as Memory,
+    readWorkingMemoryPromptContext: vi.fn(async () => ({
+      status: 'succeeded' as const,
+      context: {
+        projection: { household: [], member: [] },
+        prompt: '<durable-working-memory>\n{"household": [], "member": []}\n</durable-working-memory>',
+      },
+      outcome: {
+        operation: 'read' as const,
+        status: 'succeeded' as const,
+        code: 'working_memory_prompt_context_succeeded',
+      },
+    })),
     inspectWorkingMemory: vi.fn(async () => { throw new Error('Unexpected Working Memory inspection'); }),
     validateWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory validation'); }),
     applyWorkingMemoryMutation: vi.fn(async () => { throw new Error('Unexpected Working Memory mutation'); }),
@@ -1444,10 +1456,22 @@ describe('OrchestratorAgent', () => {
           }),
         }),
         expect.objectContaining({ role: 'system' }),
+        expect.objectContaining({
+          role: 'system',
+          content: expect.objectContaining({
+            parts: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining('<durable-working-memory>') }),
+            ]),
+          }),
+        }),
         expect.objectContaining({ role: 'user' }),
       ]);
       expect(options).toMatchObject({
-        memory: { thread: conversationId, resource: householdId },
+        memory: {
+          thread: conversationId,
+          resource: householdId,
+          options: { workingMemory: { enabled: false } },
+        },
         requestContext: expect.any(Object),
       });
       return { text: 'Final clean answer.' };
@@ -1555,6 +1579,50 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledOnce();
     expect(requestState).toMatchObject({ memoryDegraded: false, memoryFailures: [] });
     expect(sessionMemory.inspectWorkingMemory).not.toHaveBeenCalled();
+  });
+
+  it('degrades safely when the authorized prompt projection read fails', async () => {
+    const sessionMemory = testSessionMemory({
+      readWorkingMemoryPromptContext: vi.fn(async () => ({
+        status: 'failed' as const,
+        outcome: {
+          operation: 'read' as const,
+          status: 'failed' as const,
+          code: 'working_memory_read_failed',
+          category: 'storage_unavailable' as const,
+          retry: 'after_backoff' as const,
+        },
+        error: new PlusOneError({
+          category: 'storage_unavailable',
+          code: 'working_memory_read_failed',
+          message: 'Working Memory operation failed.',
+          retry: 'after_backoff',
+          receiptLookupRequired: false,
+        }),
+      })),
+    });
+    let prompt: unknown;
+    let requestState: unknown;
+    const generate = vi.fn(async (value: unknown, options: { requestContext: { get(key: string): unknown } }) => {
+      prompt = value;
+      requestState = options.requestContext.get('plus-one.orchestrator');
+      return { text: 'I continued without unavailable saved context.' };
+    });
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      sessionMemory,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+
+    await expect(orchestrator.run({ message: message('What do you remember about me?') }))
+      .resolves.toMatchObject({ body: 'I continued without unavailable saved context.' });
+    expect(JSON.stringify(prompt)).not.toContain('<durable-working-memory>');
+    expect(requestState).toMatchObject({
+      memoryDegraded: true,
+      memoryFailures: [expect.objectContaining({ operation: 'read', code: 'working_memory_read_failed' })],
+    });
   });
 
   it('does not register native Working Memory hooks or forgetEverything', async () => {
@@ -2138,6 +2206,14 @@ describe('OrchestratorAgent', () => {
           }),
         }),
         expect.objectContaining({ role: 'system' }),
+        expect.objectContaining({
+          role: 'system',
+          content: expect.objectContaining({
+            parts: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining('<durable-working-memory>') }),
+            ]),
+          }),
+        }),
         expect.objectContaining({ role: 'user' }),
       ]);
       const delegated = await executeDelegate(orchestrator.agentTools.delegateTeam, {

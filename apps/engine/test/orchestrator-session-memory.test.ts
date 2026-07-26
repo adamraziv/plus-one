@@ -86,12 +86,47 @@ describe('OrchestratorSessionMemory', () => {
           summary: 'Buy a BMW X5.',
           scope: 'household',
           value: { goal: 'BMW X5', timeframe: 'one year' },
+          lifecycle: {
+            createdAt: '2026-07-25T10:55:00.000Z',
+            updatedAt: '2026-07-25T10:55:00.000Z',
+          },
         },
       },
     });
   }
 
   describe('revision-gated Mastra Working Memory', () => {
+    it('reads an authorized prompt projection without creating a same-turn inspection', async () => {
+      const input = fakeMemory(JSON.stringify({
+        version: 1,
+        entries: {
+          [memoryEntryId]: {
+            kind: 'goal',
+            summary: 'Buy a BMW X5.',
+            scope: 'household',
+            value: { goal: 'BMW X5' },
+            lifecycle: {
+              createdAt: '2026-07-25T10:55:00.000Z',
+              updatedAt: '2026-07-25T10:55:00.000Z',
+            },
+          },
+        },
+      }));
+      const memory = createMemoryPort(input);
+
+      const result = await memory.readWorkingMemoryPromptContext({ threadId, resourceId, principalRef: memoryPrincipalRef });
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        context: { prompt: expect.stringContaining('<durable-working-memory>') },
+        outcome: { operation: 'read', status: 'succeeded' },
+      });
+      if (result.status !== 'succeeded') throw new Error('Expected prompt context success');
+      expect(result.context.prompt).toContain('Buy a BMW X5.');
+      expect(result.context.prompt).not.toContain(memoryEntryId);
+      expect(input.updateWorkingMemory).not.toHaveBeenCalled();
+    });
+
     it('inspects and lazily migrates a legacy document through Mastra with authorized visibility', async () => {
       const input = fakeMemory(JSON.stringify({
         goals: { car: { summary: 'Buy a BMW X5.', horizon: 'one year' } },

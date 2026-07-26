@@ -875,9 +875,22 @@ export class OrchestratorAgent {
 
   private async orchestratorInput(message: InboundChannelMessageV1, invocation?: OrchestratorInvocation) {
     if (this.dependencies.sessionMemory !== undefined) {
+      let durableWorkingMemory: MastraDBMessage[] = [];
+      if (invocation !== undefined && !invocation.memoryState.memoryDegraded) {
+        const context = await this.dependencies.sessionMemory.readWorkingMemoryPromptContext({
+          threadId: message.conversationId,
+          resourceId: message.householdId,
+          principalRef: message.speaker.principalRef,
+        });
+        this.recordMemoryOutcome(context.outcome);
+        if (context.status === 'succeeded') {
+          durableWorkingMemory = [durableWorkingMemoryMessage(message, context.context.prompt)];
+        }
+      }
       return [
         dateContextMessage(message),
         authenticatedPrincipalMessage(message),
+        ...durableWorkingMemory,
         ...(invocation === undefined ? [] : memoryFailureMessages(invocation.memoryFailures)),
         userMessage(message),
       ];
@@ -891,6 +904,11 @@ export class OrchestratorAgent {
       memory: {
         thread: message.conversationId,
         resource: message.householdId,
+        ...(!memoryDegraded ? {
+          options: {
+            workingMemory: { enabled: false as const },
+          },
+        } : {}),
         ...(memoryDegraded ? {
           options: {
             readOnly: true as const,
@@ -974,6 +992,19 @@ function dateContextMessage(message: InboundChannelMessageV1): MastraDBMessage {
       format: 2,
       content: dateContextText(message),
       parts: [{ type: 'text', text: dateContextText(message) }],
+    },
+  };
+}
+
+function durableWorkingMemoryMessage(message: InboundChannelMessageV1, prompt: string): MastraDBMessage {
+  return {
+    id: `orchestrator-durable-working-memory-${message.externalMessageId}`,
+    role: 'system',
+    createdAt: new Date(message.receivedAt),
+    content: {
+      format: 2,
+      content: prompt,
+      parts: [{ type: 'text', text: prompt }],
     },
   };
 }

@@ -23,6 +23,11 @@ import {
   visibleWorkingMemoryEntries,
   workingMemoryRevision,
 } from './working-memory-document.js';
+import {
+  projectWorkingMemoryForPrompt,
+  workingMemoryPromptBlock,
+  type WorkingMemoryPromptProjection,
+} from './working-memory-prompt.js';
 
 const ORCHESTRATOR_LAST_MESSAGES = 20;
 type OrchestratorMemoryOptions = NonNullable<NonNullable<ConstructorParameters<typeof Memory>[0]>['options']>;
@@ -43,6 +48,21 @@ export type WorkingMemoryInspectionOutcome =
       status: 'succeeded';
       document: FlexibleWorkingMemory;
       inspection: WorkingMemoryInspectionResult;
+      outcome: WorkingMemoryOperationOutcome;
+    }
+  | {
+      status: 'failed';
+      outcome: WorkingMemoryOperationOutcome;
+      error: PlusOneError;
+    };
+
+export type WorkingMemoryPromptContextOutcome =
+  | {
+      status: 'succeeded';
+      context: {
+        projection: WorkingMemoryPromptProjection;
+        prompt: string;
+      };
       outcome: WorkingMemoryOperationOutcome;
     }
   | {
@@ -79,6 +99,11 @@ export interface OrchestratorSessionMemoryPort {
     resourceId: string;
     principalRef: string;
   }): Promise<WorkingMemoryInspectionOutcome>;
+  readWorkingMemoryPromptContext(input: {
+    threadId: string;
+    resourceId: string;
+    principalRef: string;
+  }): Promise<WorkingMemoryPromptContextOutcome>;
   validateWorkingMemoryMutation(input: {
     threadId: string;
     resourceId: string;
@@ -169,6 +194,37 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     });
   }
 
+  async readWorkingMemoryPromptContext(input: {
+    threadId: string;
+    resourceId: string;
+    principalRef: string;
+  }): Promise<WorkingMemoryPromptContextOutcome> {
+    return this.mutex.run(input.resourceId, async () => {
+      const loaded = await this.loadFlexibleWorkingMemory(input);
+      if ('error' in loaded) return promptContextFailure(loaded.error);
+      const current = loaded.migrated
+        ? await this.persistAndVerifyMigration(input, loaded.document)
+        : loaded.document;
+      if (current instanceof PlusOneError) return promptContextFailure(current);
+      const projection = projectWorkingMemoryForPrompt({
+        document: current,
+        principalRef: input.principalRef,
+      });
+      return {
+        status: 'succeeded',
+        context: {
+          projection,
+          prompt: workingMemoryPromptBlock(projection),
+        },
+        outcome: {
+          operation: 'read',
+          status: 'succeeded',
+          code: 'working_memory_prompt_context_succeeded',
+        },
+      };
+    });
+  }
+
   async validateWorkingMemoryMutation(input: {
     threadId: string;
     resourceId: string;
@@ -186,6 +242,7 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         document: loaded.document,
         mutation: input.mutation,
         principalRef: input.principalRef,
+        now: new Date(),
       });
       if (applied.status === 'failed') {
         return mutationFailure(input.mutation.operation, applied.code, mutationFailureCategory(applied.code), 'never');
@@ -211,6 +268,7 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         document: loaded.document,
         mutation: input.mutation,
         principalRef: input.principalRef,
+        now: new Date(),
       });
       if (applied.status === 'failed') {
         return mutationFailure(input.mutation.operation, applied.code, mutationFailureCategory(applied.code), 'never');
@@ -254,7 +312,7 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     } catch (error) {
       return { error: newMemoryError('working_memory_read_failed', 'storage_unavailable', 'after_backoff', error) };
     }
-    const decoded = decodeStoredWorkingMemory({ stored, ids: this.ids });
+    const decoded = decodeStoredWorkingMemory({ stored, ids: this.ids, now: new Date() });
     if (decoded.status === 'failed') {
       return { error: newMemoryError(decoded.code, 'validation_rejected', 'never', undefined) };
     }
@@ -355,6 +413,20 @@ function inspectionFailure(operation: 'inspect', error: PlusOneError): WorkingMe
     status: 'failed',
     outcome: {
       operation,
+      status: 'failed',
+      code: error.code,
+      category: error.category,
+      retry: error.retry,
+    },
+    error,
+  };
+}
+
+function promptContextFailure(error: PlusOneError): WorkingMemoryPromptContextOutcome {
+  return {
+    status: 'failed',
+    outcome: {
+      operation: 'read',
       status: 'failed',
       code: error.code,
       category: error.category,
