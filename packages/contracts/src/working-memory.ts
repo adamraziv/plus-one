@@ -197,12 +197,21 @@ export type WorkingMemoryKind = z.infer<typeof WorkingMemoryKindSchema>;
 
 const workingMemorySummary = z.string().trim().min(1).max(MAX_WORKING_MEMORY_TEXT_LENGTH);
 
+export const WorkingMemoryLifecycleSchema = z.object({
+  createdAt: UtcInstantSchema,
+  updatedAt: UtcInstantSchema,
+  lastReviewedAt: UtcInstantSchema.optional(),
+  expiresAt: UtcInstantSchema.optional(),
+}).strict();
+export type WorkingMemoryLifecycle = z.infer<typeof WorkingMemoryLifecycleSchema>;
+
 export const WorkingMemoryEntrySchema = z.object({
   kind: WorkingMemoryKindSchema,
   summary: workingMemorySummary,
   scope: z.enum(['household', 'member']),
   ownerPrincipalRef: z.string().min(1).max(512).optional(),
   value: WorkingMemoryValueSchema,
+  lifecycle: WorkingMemoryLifecycleSchema.optional(),
 }).strict().superRefine((entry, context) => {
   if (entry.scope === 'member' && entry.ownerPrincipalRef === undefined) {
     context.addIssue({ code: 'custom', message: 'Member entries require an owner.' });
@@ -257,7 +266,7 @@ export const WorkingMemoryMutationDraftSchema = z.discriminatedUnion('operation'
     summary: workingMemorySummary,
     scope: z.enum(['household', 'member']),
     value: WorkingMemoryValueSchema,
-  }).strip(),
+  }).strict(),
   z.object({
     operation: z.literal('replace'),
     basedOnRevision: WorkingMemoryRevisionInputSchema,
@@ -265,18 +274,91 @@ export const WorkingMemoryMutationDraftSchema = z.discriminatedUnion('operation'
     kind: WorkingMemoryKindSchema,
     summary: workingMemorySummary,
     value: WorkingMemoryValueSchema,
-  }).strip(),
+  }).strict(),
   z.object({
     operation: z.literal('delete'),
     basedOnRevision: WorkingMemoryRevisionInputSchema,
     entryId: WorkingMemoryEntryIdSchema,
-  }).strip(),
+  }).strict(),
   z.object({
     operation: z.literal('clear'),
     basedOnRevision: WorkingMemoryRevisionInputSchema,
-  }).strip(),
+  }).strict(),
 ]);
 export type WorkingMemoryMutationDraft = z.infer<typeof WorkingMemoryMutationDraftSchema>;
+
+const WorkingMemoryCandidateSignalSchema = z.enum([
+  'explicit_request',
+  'preference_signal',
+  'correction_signal',
+  'review_finding',
+]);
+
+export const WorkingMemoryCandidateInputSchema = z.object({
+  kind: WorkingMemoryKindSchema,
+  summary: workingMemorySummary,
+  value: WorkingMemoryValueSchema,
+  signal: WorkingMemoryCandidateSignalSchema,
+  subject: z.enum(['self', 'household']),
+  correctionTarget: z.object({
+    kind: WorkingMemoryKindSchema,
+    summary: workingMemorySummary,
+  }).strict().optional(),
+}).strict();
+export type WorkingMemoryCandidateInput = z.infer<typeof WorkingMemoryCandidateInputSchema>;
+
+export const WorkingMemoryCandidateSchema = z.object({
+  kind: WorkingMemoryKindSchema,
+  summary: workingMemorySummary,
+  scope: z.enum(['household', 'member']),
+  value: WorkingMemoryValueSchema,
+  signal: WorkingMemoryCandidateSignalSchema,
+  inspectedRevision: WorkingMemoryRevisionSchema.optional(),
+}).strict();
+export type WorkingMemoryCandidate = z.infer<typeof WorkingMemoryCandidateSchema>;
+
+export const WorkingMemoryViewItemSchema = z.object({
+  kind: WorkingMemoryKindSchema,
+  label: z.string().min(1).max(128),
+  scope: z.enum(['household', 'member']),
+  summary: workingMemorySummary,
+  value: WorkingMemoryValueSchema,
+}).strict();
+export type WorkingMemoryViewItem = z.infer<typeof WorkingMemoryViewItemSchema>;
+
+export const WorkingMemoryViewResultSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('succeeded'),
+    view: z.enum(['personal', 'household', 'all']),
+    entries: z.array(WorkingMemoryViewItemSchema).max(MAX_WORKING_MEMORY_RECORD_ENTRIES),
+  }).strict(),
+  z.object({
+    status: z.literal('failed'),
+    code: z.string().min(1).max(128),
+    category: ErrorCategorySchemaV1,
+    retry: RetryDirectiveSchemaV1,
+  }).strict(),
+]);
+export type WorkingMemoryViewResult = z.infer<typeof WorkingMemoryViewResultSchema>;
+
+export const WorkingMemoryReviewFindingSchema = z.object({
+  category: z.enum(['duplicate', 'contradiction', 'stale', 'scope_mismatch']),
+  entryIds: z.array(WorkingMemoryEntryIdSchema).min(1).max(10),
+  explanation: z.string().trim().min(1).max(1_000),
+  proposedOperation: z.enum(['none', 'replace', 'delete']),
+  proposedSummary: workingMemorySummary.optional(),
+  proposedValue: WorkingMemoryValueSchema.optional(),
+  basedOnRevision: WorkingMemoryRevisionSchema,
+}).strict();
+export type WorkingMemoryReviewFinding = z.infer<typeof WorkingMemoryReviewFindingSchema>;
+
+export const WorkingMemoryReviewReportSchema = z.object({
+  status: z.literal('succeeded'),
+  revision: WorkingMemoryRevisionSchema,
+  reviewedAt: UtcInstantSchema,
+  findings: z.array(WorkingMemoryReviewFindingSchema).max(50),
+}).strict();
+export type WorkingMemoryReviewReport = z.infer<typeof WorkingMemoryReviewReportSchema>;
 
 const resolvedCreateWorkingMemoryMutationSchema = z.object({
   operation: z.literal('create'),
@@ -353,6 +435,7 @@ export const WorkingMemoryMutationToolResultSchema = z.discriminatedUnion('statu
     status: z.literal('applied'),
     operation: z.enum(['create', 'replace', 'delete', 'clear']),
     code: z.literal('working_memory_mutation_succeeded'),
+    reviewDue: z.literal(true).optional(),
   }).strict(),
   z.object({
     status: z.literal('confirmation_required'),

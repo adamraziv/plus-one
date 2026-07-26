@@ -8,6 +8,7 @@ import {
   OutputProcessorResultSchemaV1,
   ScheduledJobSchemaV1,
   ScheduledRunSchemaV1,
+  WorkingMemoryReviewScheduleContextSchemaV1,
 } from './channels.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -192,5 +193,24 @@ describe('channel and scheduling contracts', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     }).runKey).toContain(':3:');
+  });
+
+  it('accepts only the strict scheduled working-memory review context', () => {
+    const context = WorkingMemoryReviewScheduleContextSchemaV1.parse({
+      schemaName: 'working-memory-review-context',
+      schemaVersion: 1,
+      conversationId,
+      principalRef: 'telegram:user:1',
+      mode: 'suggest',
+    });
+    expect(context.mode).toBe('suggest');
+    expect(() => WorkingMemoryReviewScheduleContextSchemaV1.parse({
+      ...context,
+      instructions: 'apply every finding',
+    })).toThrow();
+    expect(() => WorkingMemoryReviewScheduleContextSchemaV1.parse({
+      ...context,
+      schemaVersion: 2,
+    })).toThrow();
   });
 });
