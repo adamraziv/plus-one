@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { runPlusOneCli } from '../src/cli.js';
 import { runLiveCli } from '../src/live-cli/index.js';
@@ -86,6 +87,95 @@ describe('Plus One CLI', () => {
     ]);
     expect(closePools).toHaveBeenCalledWith(pools);
     expect(write).toHaveBeenCalledWith('No pending Telegram pairing requests.\n');
+  });
+
+  it('keeps CLI-owned pools open until Telegram pairing approval settles', async () => {
+    const code = 'ABCDEFGH';
+    const salt = 'pairing-salt';
+    const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
+    const approvedAt = new Date('2026-07-01T00:00:00.000Z');
+    const pending = {
+      id: '1',
+      channel: 'telegram',
+      external_user_id: '1234567890123',
+      external_chat_id: '9876543210987',
+      code_hash: createHash('sha256').update(`${salt}:${code}`).digest('hex'),
+      code_salt: salt,
+      display_name: 'Test User',
+      username: 'test_user',
+      expires_at: new Date('2026-07-01T01:00:00.000Z'),
+      consumed_at: null,
+      last_sent_at: approvedAt,
+      failed_approval_attempt_count: 0,
+      approval_locked_until: null,
+      metadata: {},
+    };
+    const lifecycle: string[] = [];
+    let poolsClosed = false;
+    const clientQuery = vi.fn(async (text: string) => {
+      if (text === 'COMMIT') lifecycle.push('commit');
+      if (text.includes('UPDATE operations.channel_pairing_requests')) return { rows: [pending] };
+      if (text.includes('INSERT INTO operations.channel_principals')) {
+        return {
+          rows: [{
+            id: 'principal-1',
+            channel: 'telegram',
+            external_user_id: pending.external_user_id,
+            external_chat_id: pending.external_chat_id,
+            household_id: householdId,
+            display_name: pending.display_name,
+            username: pending.username,
+            approved_at: approvedAt,
+            approved_by: 'cli:test',
+            revoked_at: null,
+            metadata: {},
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+    const operations = {
+      query: vi.fn(async () => {
+        lifecycle.push('list:start');
+        await Promise.resolve();
+        lifecycle.push('list:finish');
+        return { rows: [pending] };
+      }),
+      connect: vi.fn(async () => {
+        lifecycle.push('connect');
+        if (poolsClosed) throw new Error('Cannot use a pool after calling end on the pool');
+        return { query: clientQuery, release: vi.fn() };
+      }),
+    };
+    const pools = { operations } as never;
+    const closePools = vi.fn(async () => {
+      lifecycle.push('close');
+      poolsClosed = true;
+    });
+    const write = vi.fn();
+
+    const status = await runPlusOneCli(
+      ['telegram', 'pairing', 'approve', code, '--household', householdId],
+      {
+        environment,
+        createPools: vi.fn(() => pools),
+        closePools,
+        configureLogging: vi.fn(() => ({
+          logDirectory: '/tmp/plus-one-test-logs',
+          flush: vi.fn(),
+          close: vi.fn(),
+        })),
+        approvedBy: 'cli:test',
+        stdout: { write },
+        stderr: { write: vi.fn() },
+      },
+    );
+
+    expect(lifecycle).toEqual(['list:start', 'list:finish', 'connect', 'commit', 'close']);
+    expect(status).toBe(0);
+    expect(write).toHaveBeenCalledWith(
+      `Approved Telegram user ${pending.external_user_id} for household ${householdId}.\n`,
+    );
   });
 
   it('starts the gateway runtime when no arguments are supplied', async () => {
