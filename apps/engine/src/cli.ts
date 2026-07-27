@@ -143,7 +143,7 @@ async function runTelegramPairingCommand(
   try {
     const config = loadConfig(environment);
     pools = (dependencies.createPools ?? createDatabasePools)(config.database.poolUrls);
-    return handleTelegramPairingCommand({
+    return await handleTelegramPairingCommand({
       argv,
       service: new TelegramPairingService({
         repository: new PostgresChannelPairingRepository(pools.operations),
