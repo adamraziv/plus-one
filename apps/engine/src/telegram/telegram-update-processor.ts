@@ -94,7 +94,7 @@ export class TelegramUpdateProcessor {
       }
       await this.input.telegram.sendMessage({
         chatId: externalChatId,
-        text: `Pair this Telegram account with Plus One using code ${pairing.code}. Give this code to your household admin. It expires at ${pairing.expiresAt}.`,
+        text: `Pair this Telegram account with Plus One using code ${pairing.code}. Give this code to your household admin. It expires in an hour.`,
       });
       return { status: 'pairing-required' };
     }

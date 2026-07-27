@@ -105,6 +105,7 @@ describe('TelegramUpdateProcessor', () => {
       chatId: '9876543210987',
       text: expect.stringContaining('ABCDEFGH'),
     });
+    expect(sendMessage.mock.calls[0]?.[0].text).toContain('It expires in an hour.');
     expect(inboundHandler).not.toHaveBeenCalled();
   });
 
