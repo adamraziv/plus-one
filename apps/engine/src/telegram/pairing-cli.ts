@@ -1,4 +1,5 @@
 import type { TelegramPairingService } from '@plus-one/runtime';
+import { formatReadableUtcInstant } from './date-format.js';
 
 export async function handleTelegramPairingCommand(input: {
   argv: string[];
@@ -19,7 +20,7 @@ export async function handleTelegramPairingCommand(input: {
       return `Approved Telegram user ${result.principal.externalUserId} for household ${result.principal.householdId}.`;
     }
     if (result.status === 'locked') {
-      return `Pairing approval is locked until ${result.lockedUntil}.`;
+      return `Pairing approval is locked until ${formatReadableUtcInstant(result.lockedUntil)}.`;
     }
     return 'Pairing code was invalid or expired.';
   }
@@ -35,7 +36,7 @@ export async function handleTelegramPairingCommand(input: {
       request.channel,
       request.externalUserId,
       request.displayName ?? request.username ?? '',
-      `expires ${request.expiresAt}`,
+      `expires ${formatReadableUtcInstant(request.expiresAt)}`,
       `code-hash ${request.codeHash.slice(0, 8)}`,
     ].filter((part) => part.length > 0).join(' ')).join('\n');
   }
