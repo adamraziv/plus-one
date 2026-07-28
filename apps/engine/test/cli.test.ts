@@ -66,10 +66,11 @@ describe('Plus One CLI', () => {
       operations: { query },
     } as never;
     const closePools = vi.fn(async () => {});
+    const closeLogging = vi.fn(async () => {});
     const configureLogging = vi.fn(() => ({
       logDirectory: '/tmp/plus-one-test-logs',
-      flush: vi.fn(),
-      close: vi.fn(),
+      flush: vi.fn(async () => {}),
+      close: closeLogging,
     }));
 
     await expect(runPlusOneCli(['telegram', 'pairing', 'list-pending'], {
@@ -86,6 +87,7 @@ describe('Plus One CLI', () => {
       expect.any(String),
     ]);
     expect(closePools).toHaveBeenCalledWith(pools);
+    expect(closeLogging).toHaveBeenCalledOnce();
     expect(write).toHaveBeenCalledWith('No pending Telegram pairing requests.\n');
   });
 
@@ -162,8 +164,8 @@ describe('Plus One CLI', () => {
         closePools,
         configureLogging: vi.fn(() => ({
           logDirectory: '/tmp/plus-one-test-logs',
-          flush: vi.fn(),
-          close: vi.fn(),
+          flush: vi.fn(async () => {}),
+          close: vi.fn(async () => {}),
         })),
         approvedBy: 'cli:test',
         stdout: { write },

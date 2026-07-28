@@ -33,14 +33,16 @@ export async function runGatewayRuntime(dependencies: RunGatewayRuntimeDependenc
   const logging: LoggingHandle = (dependencies.configureLogging ?? configureLogging)({
     environment,
     mode: 'gateway',
+    stdout,
     stderr,
   });
   const logger = dependencies.logger ?? getLogger('engine.gateway');
   let ready = false;
   let runtime: Awaited<ReturnType<typeof bootstrap>> | undefined;
   let server: MastraHttpServerHandle | undefined;
-  let status: 'stopped' | 'failed' = 'stopped';
   let failure: unknown;
+  let failureCategory: 'startup_failed' | 'runtime_failed' | 'shutdown_failed' | undefined;
+  let phase: 'startup' | 'runtime' = 'startup';
 
   try {
     runtime = await (dependencies.bootstrap ?? bootstrap)({ environment });
@@ -53,13 +55,20 @@ export async function runGatewayRuntime(dependencies: RunGatewayRuntimeDependenc
     });
     await runtime.startIntake();
     ready = true;
+    logger.info('runtime.readiness.changed', {
+      fields: { mode: 'gateway', readiness: 'ready' },
+    });
     stdout.write(`Plus One gateway listening on ${runtime.config.host}:${runtime.config.port}.\n`);
+    phase = 'runtime';
     await (dependencies.waitForShutdown ?? waitForProcessSignal)();
   } catch (error) {
-    status = 'failed';
     failure = error;
+    failureCategory = phase === 'startup' ? 'startup_failed' : 'runtime_failed';
   } finally {
     ready = false;
+    logger.info('runtime.readiness.changed', {
+      fields: { mode: 'gateway', readiness: 'not_ready' },
+    });
     try {
       await runtime?.stopIntake().catch(() => undefined);
       try {
@@ -68,14 +77,25 @@ export async function runGatewayRuntime(dependencies: RunGatewayRuntimeDependenc
         await runtime?.close();
       }
     } catch (error) {
-      status = 'failed';
-      failure ??= error;
+      if (failure === undefined) {
+        failure = error;
+        failureCategory = 'shutdown_failed';
+      }
     } finally {
-      logger.info('runtime.stopped', {
-        fields: { mode: 'gateway', status },
-        ...(failure === undefined ? {} : { error: failure }),
-      });
-      logging.close();
+      if (failure === undefined) {
+        logger.info('runtime.stopped', {
+          fields: { mode: 'gateway', status: 'stopped' },
+        });
+      } else {
+        logger.error('runtime.failed', {
+          fields: {
+            mode: 'gateway',
+            failureCategory: failureCategory ?? 'runtime_failed',
+          },
+          error: failure,
+        });
+      }
+      await logging.close().catch(() => undefined);
     }
   }
 
