@@ -68,9 +68,16 @@ export interface LogRecord {
   }>;
 }
 
-export interface LogSink {
+export interface LegacyLogSink {
   write(record: LogRecord): void;
   close(): void;
+}
+
+export interface LogSink {
+  readonly name: string;
+  matches(record: LogEnvelopeV1): boolean;
+  write(record: LogEnvelopeV1): Promise<void>;
+  close(): Promise<void>;
 }
 
 export interface LoggingOptions {

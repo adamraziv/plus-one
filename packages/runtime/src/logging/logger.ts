@@ -10,7 +10,7 @@ import type {
   Logger,
   LoggingHandle,
   LoggingOptions,
-  LogSink,
+  LegacyLogSink,
 } from './types.js';
 
 const DEFAULT_LEVEL: LogLevel = 'INFO';
@@ -21,7 +21,7 @@ const ERROR_BACKUP_COUNT = 2;
 
 interface LoggingState {
   directory: string;
-  sinks: LogSink[];
+  sinks: LegacyLogSink[];
   stderr: { write(text: string): void };
   fallbackReported: boolean;
   handle: LoggingHandle;
@@ -46,7 +46,7 @@ export function configureLogging(options: LoggingOptions = {}): LoggingHandle {
   const maxSizeMb = resolvePositive(options.maxSizeMb, environment.PLUS_ONE_LOG_MAX_SIZE_MB, DEFAULT_MAX_SIZE_MB);
   const backupCount = resolvePositive(options.backupCount, environment.PLUS_ONE_LOG_BACKUP_COUNT, DEFAULT_BACKUP_COUNT);
   const stderr = options.stderr ?? process.stderr;
-  const sinks: LogSink[] = [];
+  const sinks: LegacyLogSink[] = [];
   const logDirectory = directory;
   try {
     sinks.push(new RotatingFileSink({
@@ -146,7 +146,7 @@ function resolvePositive(explicit: number | undefined, configured: string | unde
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function closeSinks(sinks: readonly LogSink[]): void {
+function closeSinks(sinks: readonly LegacyLogSink[]): void {
   for (const sink of sinks) sink.close();
 }
 
