@@ -8,8 +8,6 @@ Plus One is an open-source, self-hosted household finance agent for couples. The
 
 Agents can analyze and propose, but deterministic services and PostgreSQL constraints decide what is committed.
 
-Latest release: [Plus One v0.1.0](https://github.com/adamraziv/plus-one/releases/tag/v0.1.0).
-
 ## Current Scope
 
 The implemented agent surface includes:
