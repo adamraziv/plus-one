@@ -21,17 +21,22 @@ export function redactSecrets(value: string): string {
   );
 }
 
+export function sanitizeLogString(value: string, maxLength = 1_000): string {
+  return redactSecrets(value.replace(/[\r\n]/g, ' ')).slice(0, maxLength);
+}
+
 export function sanitizeFields(fields: LogFields | undefined): LogFields {
   if (fields === undefined) return {};
   const sanitized: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(fields)) {
     if (SENSITIVE_FIELD_NAMES.has(key.toLowerCase()) || value === undefined) continue;
-    sanitized[key] = typeof value === 'string' ? redactSecrets(value).slice(0, 1_000) : value;
+    if (typeof value === 'number' && !Number.isFinite(value)) continue;
+    sanitized[key] = typeof value === 'string' ? sanitizeLogString(value) : value;
   }
   return sanitized;
 }
 
-export function serializeLogError(error: unknown): {
+export function serializeLogError(error: unknown, options: { includeStack?: boolean } = {}): {
   name: string;
   message: string;
   stack?: string;
@@ -49,15 +54,17 @@ export function serializeLogError(error: unknown): {
     code?: string;
     category?: string;
   } = {
-    name: redactSecrets(name).slice(0, 200),
-    message: redactSecrets(rawMessage).slice(0, 1_000),
+    name: sanitizeLogString(name, 200),
+    message: sanitizeLogString(rawMessage),
   };
-  const stack = rawStack === undefined ? undefined : redactSecrets(rawStack).slice(0, 1_000);
+  const stack = rawStack === undefined || options.includeStack === false
+    ? undefined
+    : sanitizeLogString(rawStack, 8_000);
   const code = stringProperty(candidate, 'code');
   const category = stringProperty(candidate, 'category');
   if (stack !== undefined) output.stack = stack;
-  if (code !== undefined) output.code = redactSecrets(code).slice(0, 200);
-  if (category !== undefined) output.category = redactSecrets(category).slice(0, 200);
+  if (code !== undefined) output.code = sanitizeLogString(code, 200);
+  if (category !== undefined) output.category = sanitizeLogString(category, 200);
   return output;
 }
 

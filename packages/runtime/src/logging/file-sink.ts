@@ -13,6 +13,7 @@ import type { LogLevel, LogRecord, LogSink } from './types.js';
 const LEVEL_ORDER: Record<LogLevel, number> = {
   DEBUG: 0,
   INFO: 1,
+  WARN: 2,
   WARNING: 2,
   ERROR: 3,
 };
