@@ -1,6 +1,7 @@
 import {
   ATTRIBUTE_DEFINITIONS,
   eventDefinition,
+  type AttributeDefinition,
   type CatalogAttributeName,
 } from './event-catalog.js';
 import { sanitizeLogString, serializeLogError } from './redaction.js';
@@ -46,6 +47,11 @@ export function buildLogEnvelope(input: BuildLogEnvelopeInput): LogEnvelopeV1 {
       ...definition.requiredAttributes,
       ...definition.optionalAttributes,
     ]);
+    for (const attributeName of Object.keys(input.fields ?? {})) {
+      if (!allowed.has(attributeName as CatalogAttributeName)) {
+        return invalidEnvelope(input, 'unknown_attribute');
+      }
+    }
     for (const attributeName of allowed) {
       const value = input.fields?.[attributeName];
       if (value === undefined) {
@@ -55,10 +61,10 @@ export function buildLogEnvelope(input: BuildLogEnvelopeInput): LogEnvelopeV1 {
         continue;
       }
       const attributeDefinition = ATTRIBUTE_DEFINITIONS[attributeName];
-      if (!matchesType(value, attributeDefinition.type)) {
+      if (!matchesDefinition(value, attributeDefinition)) {
         return invalidEnvelope(input, 'attribute_type_invalid');
       }
-      attributes[attributeDefinition.output] = sanitizeScalar(value);
+      attributes[attributeDefinition.output] = sanitizeScalar(value, attributeDefinition);
     }
 
     if (input.error !== undefined && definition.allowException === true) {
@@ -113,15 +119,24 @@ function invalidEnvelope(
   });
 }
 
-function matchesType(
+function matchesDefinition(
   value: LogScalar,
-  type: 'string' | 'number' | 'boolean',
+  definition: AttributeDefinition,
 ): boolean {
-  return typeof value === type && (type !== 'number' || Number.isFinite(value));
+  if (typeof value !== definition.type) return false;
+  if (definition.type !== 'number' || typeof value !== 'number') return true;
+  return Number.isFinite(value)
+    && value >= definition.minimum
+    && value <= definition.maximum;
 }
 
-function sanitizeScalar(value: LogScalar): LogScalar {
-  return typeof value === 'string' ? sanitizeLogString(value) : value;
+function sanitizeScalar(
+  value: LogScalar,
+  definition: AttributeDefinition,
+): LogScalar {
+  return typeof value === 'string' && definition.type === 'string'
+    ? sanitizeLogString(value, definition.maxLength)
+    : value;
 }
 
 function sanitizeResource(

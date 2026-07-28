@@ -19,6 +19,37 @@ async function records(path: string): Promise<LogEnvelopeV1[]> {
     .filter((record): record is LogEnvelopeV1 => record !== undefined);
 }
 
+function assertCatalogLoggerTyping(): void {
+  const agentLogger = getLogger('runtime.agent');
+  agentLogger.info('agent.completed', {
+    fields: {
+      role: 'journal_maker',
+      model: 'provider/model',
+      attemptOrdinal: 1,
+      durationMs: 10,
+    },
+  });
+  agentLogger.info('agent.completed', {
+    fields: {
+      role: 'journal_maker',
+      model: 'provider/model',
+      attemptOrdinal: 1,
+      durationMs: 10,
+      // @ts-expect-error agent.completed does not declare an unknownField attribute.
+      unknownField: 'private',
+    },
+  });
+  // @ts-expect-error agent.completed requires durationMs.
+  agentLogger.info('agent.completed', {
+    fields: {
+      role: 'journal_maker',
+      model: 'provider/model',
+      attemptOrdinal: 1,
+    },
+  });
+}
+void assertCatalogLoggerTyping;
+
 describe('centralized logger', () => {
   it('writes canonical records to agent.log and WARN/ERROR to errors.log', async () => {
     const homeDirectory = await tempHome();

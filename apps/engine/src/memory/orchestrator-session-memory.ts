@@ -534,7 +534,13 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     if (eventName === 'working_memory.read.completed') {
       logger.debug(eventName, { fields });
     } else if (eventName === 'working_memory.mutation.rejected') {
-      logger.warn(eventName, { fields });
+      logger.warn(eventName, {
+        fields: {
+          ...fields,
+          failureCategory: outcome.category ?? 'runtime_failure',
+          retryDirective: outcome.retry ?? 'never',
+        },
+      });
     } else if (
       eventName === 'working_memory.mutation.completed'
       || eventName === 'working_memory.migration.completed'
@@ -542,7 +548,19 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     ) {
       logger.info(eventName, { fields });
     } else {
-      logger.error(eventName, { fields });
+      const failureFields = {
+        ...fields,
+        failureCategory: outcome.category ?? 'runtime_failure',
+        retryDirective: outcome.retry ?? 'never',
+      };
+      switch (eventName) {
+        case 'working_memory.read.failed':
+        case 'working_memory.write.failed':
+        case 'working_memory.readback.failed':
+        case 'working_memory.migration.failed':
+        case 'working_memory.review.failed':
+          logger.error(eventName, { fields: failureFields });
+      }
     }
   }
 }

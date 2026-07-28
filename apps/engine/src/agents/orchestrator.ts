@@ -33,6 +33,7 @@ import {
   stopAfterSemanticModelSteps,
   targetFromInboundMessage,
   type ChannelEventSink,
+  type CatalogLogger,
   type InternalImplementationDetailMatchCategory,
   type TeamDefinition,
   withLogContext,
@@ -889,7 +890,7 @@ export class OrchestratorAgent {
       nextStep(): number;
       getStepStartedAt(): number;
       setStepStartedAt(value: number): void;
-      logger: ReturnType<typeof getLogger>;
+      logger: CatalogLogger<'runtime.orchestrator'>;
     },
   ) {
     const generationOptions = {

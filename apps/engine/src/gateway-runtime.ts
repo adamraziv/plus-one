@@ -1,5 +1,11 @@
 import type { Mastra } from '@mastra/core';
-import { configureLogging, getLogger, type Logger, type LoggingHandle } from '@plus-one/runtime';
+import {
+  configureLogging,
+  createOperationalLogError,
+  getLogger,
+  type Logger,
+  type LoggingHandle,
+} from '@plus-one/runtime';
 import { bootstrap } from './bootstrap.js';
 import {
   startMastraHttpServer,
@@ -92,7 +98,11 @@ export async function runGatewayRuntime(dependencies: RunGatewayRuntimeDependenc
             mode: 'gateway',
             failureCategory: failureCategory ?? 'runtime_failed',
           },
-          error: failure,
+          error: createOperationalLogError({
+            message: 'Plus One gateway runtime failed.',
+            code: 'gateway_runtime_failed',
+            category: failureCategory ?? 'runtime_failed',
+          }),
         });
       }
       await logging.close().catch(() => undefined);

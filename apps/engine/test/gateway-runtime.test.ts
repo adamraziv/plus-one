@@ -108,7 +108,13 @@ describe('gateway runtime', () => {
         mode: 'gateway',
         failureCategory: 'startup_failed',
       },
-      error: failure,
+      error: {
+        name: 'OperationalError',
+        message: 'Plus One gateway runtime failed.',
+        stack: 'OperationalError: Plus One gateway runtime failed.',
+        code: 'gateway_runtime_failed',
+        category: 'startup_failed',
+      },
     });
     expect(gatewayLogger.info).not.toHaveBeenCalledWith(
       'runtime.stopped',
@@ -156,7 +162,13 @@ describe('gateway runtime', () => {
         mode: 'gateway',
         failureCategory: 'startup_failed',
       },
-      error: failure,
+      error: {
+        name: 'OperationalError',
+        message: 'Plus One gateway runtime failed.',
+        stack: 'OperationalError: Plus One gateway runtime failed.',
+        code: 'gateway_runtime_failed',
+        category: 'startup_failed',
+      },
     });
     expect(handle.close).toHaveBeenCalledOnce();
   });
@@ -192,7 +204,13 @@ describe('gateway runtime', () => {
         mode: 'gateway',
         failureCategory: 'shutdown_failed',
       },
-      error: failure,
+      error: {
+        name: 'OperationalError',
+        message: 'Plus One gateway runtime failed.',
+        stack: 'OperationalError: Plus One gateway runtime failed.',
+        code: 'gateway_runtime_failed',
+        category: 'shutdown_failed',
+      },
     });
     expect(gatewayLogger.info).not.toHaveBeenCalledWith(
       'runtime.stopped',

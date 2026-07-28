@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { getLogContext } from './context.js';
 import { LogDispatcher } from './dispatcher.js';
 import {
-  type ComponentEventName,
+  type CatalogLogger,
   type LogComponent,
 } from './event-catalog.js';
 import { NdjsonRotatingFileSink } from './file-sink.js';
@@ -114,15 +114,18 @@ export function configureLogging(options: LoggingOptions = {}): LoggingHandle {
 
 export function getLogger<C extends LogComponent>(
   component: C,
-): Logger<ComponentEventName<C>>;
+): CatalogLogger<C>;
 export function getLogger(component: string): Logger;
-export function getLogger(component: string): Logger {
-  return {
+export function getLogger(
+  component: string,
+): Logger | CatalogLogger<LogComponent> {
+  const logger: Logger = {
     debug: (event, options) => emit('DEBUG', component, event, options),
     info: (event, options) => emit('INFO', component, event, options),
     warn: (event, options) => emit('WARN', component, event, options),
     error: (event, options) => emit('ERROR', component, event, options),
   };
+  return logger;
 }
 
 function emit(

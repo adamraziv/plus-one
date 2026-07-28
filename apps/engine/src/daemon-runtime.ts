@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   configureLogging,
+  createOperationalLogError,
   getLogger,
   type Logger,
 } from '@plus-one/runtime';
@@ -138,7 +139,11 @@ export async function startGatewayDaemon(input: DaemonRuntimeDependencies = {}):
         failureCategory,
         durationMs: Date.now() - startedAt,
       },
-      error,
+      error: createOperationalLogError({
+        message: 'Plus One gateway launcher start failed.',
+        code: 'gateway_launcher_start_failed',
+        category: failureCategory,
+      }),
     });
     throw error;
   } finally {
@@ -197,7 +202,11 @@ export async function stopGatewayDaemon(input: DaemonRuntimeDependencies = {}): 
         failureCategory,
         durationMs: Date.now() - startedAt,
       },
-      error,
+      error: createOperationalLogError({
+        message: 'Plus One gateway launcher stop failed.',
+        code: 'gateway_launcher_stop_failed',
+        category: failureCategory,
+      }),
     });
     throw error;
   } finally {

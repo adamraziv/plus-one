@@ -158,4 +158,22 @@ describe('LogDispatcher', () => {
 
     expect(stderr.write).toHaveBeenLastCalledWith(expect.stringContaining('logging.records.dropped'));
   });
+
+  it('reports sink close failures directly without rejecting or leaking the failure', async () => {
+    const sink = memorySink('closing-sink', []);
+    sink.close = vi.fn(async () => {
+      throw new Error('Authorization: Bearer secret-value');
+    });
+    const stderr = { write: vi.fn() };
+    const dispatcher = new LogDispatcher({ sinks: [sink], stderr });
+
+    await expect(dispatcher.close()).resolves.toBeUndefined();
+    await expect(dispatcher.close()).resolves.toBeUndefined();
+
+    expect(sink.close).toHaveBeenCalledOnce();
+    expect(stderr.write).toHaveBeenCalledExactlyOnceWith(
+      'ERROR logging.sink.failed sink=closing-sink category=close_failed\n',
+    );
+    expect(JSON.stringify(stderr.write.mock.calls)).not.toContain('secret-value');
+  });
 });

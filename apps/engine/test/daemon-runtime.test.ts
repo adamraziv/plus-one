@@ -176,7 +176,13 @@ describe('gateway daemon runtime', () => {
       'launcher.start.failed',
       expect.objectContaining({
         fields: expect.objectContaining({ failureCategory: 'state_save_failed' }),
-        error: expect.any(Error),
+        error: {
+          name: 'OperationalError',
+          message: 'Plus One gateway launcher start failed.',
+          stack: 'OperationalError: Plus One gateway launcher start failed.',
+          code: 'gateway_launcher_start_failed',
+          category: 'state_save_failed',
+        },
       }),
     );
     expect(operational.handle.close).toHaveBeenCalledOnce();
@@ -207,7 +213,13 @@ describe('gateway daemon runtime', () => {
       'launcher.stop.failed',
       expect.objectContaining({
         fields: expect.objectContaining({ failureCategory: 'stop_failed' }),
-        error: failure,
+        error: {
+          name: 'OperationalError',
+          message: 'Plus One gateway launcher stop failed.',
+          stack: 'OperationalError: Plus One gateway launcher stop failed.',
+          code: 'gateway_launcher_stop_failed',
+          category: 'stop_failed',
+        },
       }),
     );
     expect(operational.handle.close).toHaveBeenCalledOnce();

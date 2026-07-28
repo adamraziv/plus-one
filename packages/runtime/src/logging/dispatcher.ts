@@ -84,7 +84,16 @@ export class LogDispatcher {
       await this.flush();
       await this.drain();
       this.reportDropsToStderr(true);
-      await Promise.allSettled(this.sinks.map(async (sink) => sink.close()));
+      const closeResults = await Promise.allSettled(
+        this.sinks.map(async (sink) => sink.close()),
+      );
+      for (const [index, result] of closeResults.entries()) {
+        if (result.status !== 'rejected') continue;
+        const sink = this.sinks[index];
+        this.writeFallback(
+          `ERROR logging.sink.failed sink=${sanitizeLogString(sink?.name ?? 'unknown', 200)} category=close_failed\n`,
+        );
+      }
     })();
     return this.closePromise;
   }

@@ -197,7 +197,7 @@ export class FinalDeliveryHandler {
             fields: {
               channel,
               status: delivery.status,
-              failureCategory: delivery.failureCategory,
+              failureCategory: delivery.failureCategory ?? 'delivery_failed',
               sent: false,
               durationMs: Date.now() - startedAt,
             },

@@ -55,7 +55,7 @@ describe('buildLogEnvelope', () => {
     });
   });
 
-  it('omits unknown optional attributes without leaking their names or values', () => {
+  it('replaces undeclared attributes with a bounded diagnostic without leaking names or values', () => {
     const envelope = buildLogEnvelope({
       ...baseInput(),
       fields: {
@@ -63,9 +63,26 @@ describe('buildLogEnvelope', () => {
         unexpectedSecretField: 'private-value',
       },
     });
-    expect(envelope.eventName).toBe('agent.completed');
+    expect(envelope).toMatchObject({
+      eventName: 'logging.event.invalid',
+      attributes: {
+        'logging.component': 'runtime.agent',
+        'logging.validation.category': 'unknown_attribute',
+      },
+    });
     expect(JSON.stringify(envelope)).not.toContain('unexpectedSecretField');
     expect(JSON.stringify(envelope)).not.toContain('private-value');
+  });
+
+  it('applies catalog string bounds', () => {
+    const envelope = buildLogEnvelope({
+      ...baseInput(),
+      fields: {
+        ...baseInput().fields,
+        model: 'm'.repeat(500),
+      },
+    });
+    expect(String(envelope.attributes['agent.model'])).toHaveLength(200);
   });
 
   it('replaces unknown, wrong-component, illegal-severity, and incomplete events safely', () => {

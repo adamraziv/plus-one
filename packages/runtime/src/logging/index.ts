@@ -6,6 +6,7 @@ export * from './formatter.js';
 export * from './log-reader.js';
 export * from './logger.js';
 export * from './ndjson.js';
+export * from './operational-error.js';
 export * from './record-builder.js';
 export * from './stdout-sink.js';
 export * from './types.js';

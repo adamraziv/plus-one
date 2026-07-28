@@ -1,41 +1,88 @@
-import type { LogSeverityText } from './types.js';
+import type { LogOptions, LogSeverityText } from './types.js';
+
+export type AttributeSensitivity = 'operational' | 'correlation';
+
+export type AttributeDefinition =
+  | Readonly<{
+    output: string;
+    type: 'string';
+    sensitivity: AttributeSensitivity;
+    maxLength: number;
+  }>
+  | Readonly<{
+    output: string;
+    type: 'number';
+    sensitivity: AttributeSensitivity;
+    minimum: number;
+    maximum: number;
+  }>
+  | Readonly<{
+    output: string;
+    type: 'boolean';
+    sensitivity: AttributeSensitivity;
+  }>;
+
+function stringAttribute<Output extends string>(
+  output: Output,
+  sensitivity: AttributeSensitivity = 'operational',
+) {
+  return { output, type: 'string' as const, sensitivity, maxLength: 200 };
+}
+
+function numberAttribute<Output extends string>(output: Output) {
+  return {
+    output,
+    type: 'number' as const,
+    sensitivity: 'operational' as const,
+    minimum: 0,
+    maximum: Number.MAX_SAFE_INTEGER,
+  };
+}
+
+function booleanAttribute<Output extends string>(output: Output) {
+  return {
+    output,
+    type: 'boolean' as const,
+    sensitivity: 'operational' as const,
+  };
+}
 
 export const ATTRIBUTE_DEFINITIONS = {
-  mode: { output: 'runtime.mode', type: 'string' },
-  readiness: { output: 'runtime.readiness', type: 'string' },
-  status: { output: 'status', type: 'string' },
-  channel: { output: 'channel', type: 'string' },
-  durationMs: { output: 'duration.ms', type: 'number' },
-  failureCategory: { output: 'failure.category', type: 'string' },
-  role: { output: 'agent.role', type: 'string' },
-  model: { output: 'agent.model', type: 'string' },
-  attemptOrdinal: { output: 'agent.attempt.ordinal', type: 'number' },
-  outcome: { output: 'outcome', type: 'string' },
-  retryClassification: { output: 'retry.classification', type: 'string' },
-  messageCount: { output: 'message.count', type: 'number' },
-  matchCategory: { output: 'match.category', type: 'string' },
-  step: { output: 'orchestrator.step.ordinal', type: 'number' },
-  inputTokens: { output: 'usage.input_tokens', type: 'number' },
-  outputTokens: { output: 'usage.output_tokens', type: 'number' },
-  toolCallCount: { output: 'tool.call.count', type: 'number' },
-  team: { output: 'team', type: 'string' },
-  jobId: { output: 'scheduler.job.id', type: 'string' },
-  occurrenceId: { output: 'scheduler.occurrence.id', type: 'string' },
-  targetKind: { output: 'scheduler.target.kind', type: 'string' },
-  retryCount: { output: 'retry.count', type: 'number' },
-  sent: { output: 'delivery.send.attempted', type: 'boolean' },
-  operation: { output: 'working_memory.operation', type: 'string' },
-  outcomeCode: { output: 'working_memory.outcome.code', type: 'string' },
-  retryDirective: { output: 'retry.directive', type: 'string' },
-  requestedBy: { output: 'request.source', type: 'string' },
-  findingCount: { output: 'working_memory.finding.count', type: 'number' },
-  recordCount: { output: 'record.count', type: 'number' },
-  component: { output: 'logging.component', type: 'string' },
-  validationCategory: { output: 'logging.validation.category', type: 'string' },
-  sink: { output: 'logging.sink.name', type: 'string' },
-  droppedCount: { output: 'logging.records.dropped.count', type: 'number' },
-  droppedSeverity: { output: 'logging.records.dropped.severity', type: 'string' },
-  dropReason: { output: 'logging.records.dropped.reason', type: 'string' },
+  mode: stringAttribute('runtime.mode'),
+  readiness: stringAttribute('runtime.readiness'),
+  status: stringAttribute('status'),
+  channel: stringAttribute('channel'),
+  durationMs: numberAttribute('duration.ms'),
+  failureCategory: stringAttribute('failure.category'),
+  role: stringAttribute('agent.role'),
+  model: stringAttribute('agent.model'),
+  attemptOrdinal: numberAttribute('agent.attempt.ordinal'),
+  outcome: stringAttribute('outcome'),
+  retryClassification: stringAttribute('retry.classification'),
+  messageCount: numberAttribute('message.count'),
+  matchCategory: stringAttribute('match.category'),
+  step: numberAttribute('orchestrator.step.ordinal'),
+  inputTokens: numberAttribute('usage.input_tokens'),
+  outputTokens: numberAttribute('usage.output_tokens'),
+  toolCallCount: numberAttribute('tool.call.count'),
+  team: stringAttribute('team'),
+  jobId: stringAttribute('scheduler.job.id', 'correlation'),
+  occurrenceId: stringAttribute('scheduler.occurrence.id', 'correlation'),
+  targetKind: stringAttribute('scheduler.target.kind'),
+  retryCount: numberAttribute('retry.count'),
+  sent: booleanAttribute('delivery.send.attempted'),
+  operation: stringAttribute('working_memory.operation'),
+  outcomeCode: stringAttribute('working_memory.outcome.code'),
+  retryDirective: stringAttribute('retry.directive'),
+  requestedBy: stringAttribute('request.source'),
+  findingCount: numberAttribute('working_memory.finding.count'),
+  recordCount: numberAttribute('record.count'),
+  component: stringAttribute('logging.component'),
+  validationCategory: stringAttribute('logging.validation.category'),
+  sink: stringAttribute('logging.sink.name'),
+  droppedCount: numberAttribute('logging.records.dropped.count'),
+  droppedSeverity: stringAttribute('logging.records.dropped.severity'),
+  dropReason: stringAttribute('logging.records.dropped.reason'),
 } as const;
 
 export type CatalogAttributeName = keyof typeof ATTRIBUTE_DEFINITIONS;
@@ -312,6 +359,49 @@ export type LogComponent = (typeof EVENT_CATALOG)[LogEventName]['component'];
 export type ComponentEventName<C extends LogComponent> = {
   [E in LogEventName]: (typeof EVENT_CATALOG)[E]['component'] extends C ? E : never;
 }[LogEventName];
+
+type AttributeValue<Name extends CatalogAttributeName> =
+  (typeof ATTRIBUTE_DEFINITIONS)[Name]['type'] extends 'string'
+    ? string
+    : (typeof ATTRIBUTE_DEFINITIONS)[Name]['type'] extends 'number'
+      ? number
+      : boolean;
+
+type RequiredAttributeName<E extends LogEventName> =
+  (typeof EVENT_CATALOG)[E]['requiredAttributes'][number];
+
+type OptionalAttributeName<E extends LogEventName> =
+  (typeof EVENT_CATALOG)[E]['optionalAttributes'][number];
+
+export type EventFields<E extends LogEventName> = Readonly<
+  { [Name in RequiredAttributeName<E>]: AttributeValue<Name> }
+  & { [Name in OptionalAttributeName<E>]?: AttributeValue<Name> }
+>;
+
+export type EventLogOptions<E extends LogEventName> =
+  Omit<LogOptions, 'fields'>
+  & ([RequiredAttributeName<E>] extends [never]
+    ? { fields?: EventFields<E> }
+    : { fields: EventFields<E> });
+
+type EventLogArguments<E extends LogEventName> =
+  [RequiredAttributeName<E>] extends [never]
+    ? readonly [event: E, options?: EventLogOptions<E>]
+    : readonly [event: E, options: EventLogOptions<E>];
+
+type ComponentLogArguments<C extends LogComponent> = {
+  [E in ComponentEventName<C>]: EventLogArguments<E>;
+}[ComponentEventName<C>];
+
+type CatalogLogMethod<C extends LogComponent> =
+  (...arguments_: ComponentLogArguments<C>) => void;
+
+export interface CatalogLogger<C extends LogComponent> {
+  debug: CatalogLogMethod<C>;
+  info: CatalogLogMethod<C>;
+  warn: CatalogLogMethod<C>;
+  error: CatalogLogMethod<C>;
+}
 
 export function eventDefinition(eventName: string): EventDefinition | undefined {
   return (EVENT_CATALOG as Readonly<Record<string, EventDefinition>>)[eventName];
