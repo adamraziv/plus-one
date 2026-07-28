@@ -6,7 +6,6 @@ import {
 import { sanitizeLogString, serializeLogError } from './redaction.js';
 import type {
   BuildLogEnvelopeInput,
-  LogAttributes,
   LogEnvelopeV1,
   LogScalar,
   LogSeverityText,

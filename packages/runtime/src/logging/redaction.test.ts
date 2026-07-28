@@ -29,7 +29,7 @@ describe('logging redaction', () => {
   });
 
   it('bounds strings and removes record-injection characters', () => {
-    expect(sanitizeLogString(`first\r\nsecond ${'x'.repeat(2_000)}`, 1_000)).toMatch(/^first  second /);
+    expect(sanitizeLogString(`first\r\nsecond ${'x'.repeat(2_000)}`, 1_000)).toMatch(/^first {2}second /);
     expect(sanitizeLogString(`first\r\nsecond ${'x'.repeat(2_000)}`, 1_000)).toHaveLength(1_000);
   });
 });
