@@ -21,7 +21,13 @@ import {
   type TeamResultEnvelopeV2,
   type UtcInstant,
 } from '@plus-one/contracts';
-import { configureLogging, withLogContext, type TeamDefinition } from '@plus-one/runtime';
+import {
+  configureLogging,
+  parseLogEnvelope,
+  withLogContext,
+  type LogEnvelopeV1,
+  type TeamDefinition,
+} from '@plus-one/runtime';
 import { AccountingJournalMutationProposalSchemaV1 } from '@plus-one/accounting';
 import { confirmationDecision, OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
@@ -1321,7 +1327,7 @@ describe('OrchestratorAgent', () => {
 
   it('logs turn lifecycle metadata while preserving inherited request context', async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
-    const logging = configureLogging({ homeDirectory });
+    const logging = configureLogging({ homeDirectory, level: 'DEBUG' });
     const inbound = message('What did we spend this month?');
     const generate = vi.fn(async (_prompt: unknown, options: { onStepFinish?: (step: unknown) => void }) => {
       options.onStepFinish?.({ usage: { inputTokens: 10, outputTokens: 8 }, toolCalls: [] });
@@ -1335,19 +1341,30 @@ describe('OrchestratorAgent', () => {
 
     try {
       await withLogContext({ requestId: 'req_inherited' }, () => orchestrator.run({ message: inbound }));
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('turn.started');
-      expect(agentLog).toContain('turn.context.prepared');
-      expect(agentLog).toContain('orchestrator.step.completed');
-      expect(agentLog).toContain('durationMs=');
-      expect(agentLog).toContain('turn.completed');
-      expect(agentLog).toContain('requestId=req_inherited');
-      expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).not.toContain('What did we spend this month?');
-      expect(agentLog).not.toContain('Private final response body');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ eventName: 'turn.started', severityText: 'INFO' }),
+        expect.objectContaining({ eventName: 'turn.context.prepared', severityText: 'INFO' }),
+        expect.objectContaining({
+          eventName: 'orchestrator.step.completed',
+          severityText: 'DEBUG',
+          attributes: expect.objectContaining({ 'duration.ms': expect.any(Number) }),
+        }),
+        expect.objectContaining({ eventName: 'turn.completed', severityText: 'INFO' }),
+      ]));
+      expect(records.every(({ attributes }) => (
+        attributes['request.id'] === 'req_inherited'
+        && attributes['plus_one.conversation.id'] === inbound.conversationId
+        && attributes['plus_one.household.id'] === inbound.householdId
+      ))).toBe(true);
+      expect(JSON.stringify(records)).not.toContain('What did we spend this month?');
+      expect(JSON.stringify(records)).not.toContain('Private final response body');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -1362,13 +1379,22 @@ describe('OrchestratorAgent', () => {
     try {
       await expect(orchestrator.run({ message: message('What did we spend this month?') }))
         .rejects.toThrow('Private model response should not be logged');
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('turn.failed');
-      expect(agentLog).toContain('failureCategory=runtime_failure');
-      expect(agentLog).not.toContain('Private model response should not be logged');
-      expect(agentLog).not.toContain('What did we spend this month?');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'turn.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          'failure.category': 'runtime_failure',
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toContain('Private model response should not be logged');
+      expect(JSON.stringify(records)).not.toContain('What did we spend this month?');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -2201,12 +2227,19 @@ describe('OrchestratorAgent', () => {
     try {
       await expect(orchestrator.run({ message: message('Can you help?') }))
         .resolves.toMatchObject({ body: 'I could not prepare a safe response. Please try again.' });
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('orchestrator.response.withheld');
-      expect(agentLog).toContain('matchCategory=identifier_token');
-      expect(agentLog).not.toContain('account_private_001');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'orchestrator.response.withheld',
+        severityText: 'WARN',
+        attributes: expect.objectContaining({ 'match.category': 'identifier_token' }),
+      }));
+      expect(JSON.stringify(records)).not.toContain('account_private_001');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -2482,12 +2515,19 @@ describe('OrchestratorAgent', () => {
 
     try {
       await orchestrator.run({ message: message('List our accounts.') });
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('orchestrator.delegate.completed');
-      expect(agentLog).toContain('durationMs=');
-      expect(agentLog).not.toContain('Private checked answer body.');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'orchestrator.delegation.completed',
+        severityText: 'INFO',
+        attributes: expect.objectContaining({ 'duration.ms': expect.any(Number) }),
+      }));
+      expect(JSON.stringify(records)).not.toContain('Private checked answer body.');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 

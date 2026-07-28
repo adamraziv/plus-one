@@ -4,6 +4,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  configureLogging,
+  createOperationalLogError,
+  getLogger,
+  type Logger,
+} from '@plus-one/runtime';
+import {
   clearBackgroundRuntimeState,
   defaultBackgroundStatePath,
   loadBackgroundRuntimeState,
@@ -41,102 +47,171 @@ export interface DaemonRuntimeDependencies {
   launcherPath?: string;
   logFilePath?: string;
   timeoutMs?: number;
+  configureLogging?: typeof configureLogging;
+  logger?: Logger;
 }
 
 export async function startGatewayDaemon(input: DaemonRuntimeDependencies = {}): Promise<number> {
   const environment = input.environment ?? process.env;
   const stdout = input.stdout ?? process.stdout;
-  const isProcessAlive = input.isProcessAlive ?? defaultIsProcessAlive;
-  const state = input.state ?? createStateStore(environment, isProcessAlive);
-  const existing = await state.load();
-  if (existing !== undefined) {
-    stdout.write(`Plus One is already running (pid ${existing.enginePid}).\n`);
-    return 0;
-  }
-
-  const address = gatewayAddress(environment);
-  const installationRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-  const launcherPath = input.launcherPath ?? resolve(installationRoot, 'bin/plus-one.mjs');
-  const logFilePath = input.logFilePath ?? join(dirname(defaultBackgroundStatePath(environment)), 'gateway.log');
-  stdout.write('Plus One gateway starting...\n');
-
-  const child = await (input.spawnProcess ?? spawnForegroundGateway)({
-    launcherPath,
-    installationRoot,
-    logFilePath,
+  const stderr = input.stderr ?? process.stderr;
+  const logging = (input.configureLogging ?? configureLogging)({
+    environment,
+    mode: 'launcher',
+    stderr,
   });
-  if (child.pid === undefined) throw new Error('Plus One gateway process did not expose a PID.');
-  const killProcess = input.killProcess ?? process.kill;
-  child.unref?.();
-
-  const ready = await waitForGatewayReady({
-    address,
-    fetchFn: input.fetch ?? fetch,
-    isProcessAlive,
-    pid: child.pid,
-    sleep: input.sleep ?? defaultSleep,
-    timeoutMs: input.timeoutMs ?? 15_000,
-  });
-  if (!ready) {
-    try {
-      killProcess(-child.pid, 'SIGTERM');
-    } catch {
-      // The process may have exited while readiness was being checked.
-    }
-    throw new Error(`Plus One gateway did not become ready at ${address.url}.`);
-  }
-
+  const logger = input.logger ?? getLogger('engine.gateway.launcher');
+  const startedAt = Date.now();
+  let failureCategory = 'state_load_failed';
   try {
-    await state.save({
-      schemaVersion: 1,
-      enginePid: child.pid,
-      startedAt: (input.now ?? (() => new Date()))().toISOString(),
-      command: ['plus-one', '--foreground'],
-      cwd: installationRoot,
+    const isProcessAlive = input.isProcessAlive ?? defaultIsProcessAlive;
+    const state = input.state ?? createStateStore(environment, isProcessAlive);
+    const existing = await state.load();
+    if (existing !== undefined) {
+      stdout.write(`Plus One is already running (pid ${existing.enginePid}).\n`);
+      return 0;
+    }
+
+    const address = gatewayAddress(environment);
+    const installationRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const launcherPath = input.launcherPath ?? resolve(installationRoot, 'bin/plus-one.mjs');
+    const logFilePath = input.logFilePath
+      ?? join(dirname(defaultBackgroundStatePath(environment)), 'launcher-console.log');
+    logger.info('launcher.starting');
+    stdout.write('Plus One gateway starting...\n');
+
+    failureCategory = 'spawn_failed';
+    const child = await (input.spawnProcess ?? spawnForegroundGateway)({
+      launcherPath,
+      installationRoot,
       logFilePath,
     });
-  } catch (error) {
-    try {
-      killProcess(-child.pid, 'SIGTERM');
-    } catch {
-      // The process may have exited while state was being persisted.
+    if (child.pid === undefined) throw new Error('Plus One gateway process did not expose a PID.');
+    const killProcess = input.killProcess ?? process.kill;
+    child.unref?.();
+
+    failureCategory = 'readiness_failed';
+    const ready = await waitForGatewayReady({
+      address,
+      fetchFn: input.fetch ?? fetch,
+      isProcessAlive,
+      pid: child.pid,
+      sleep: input.sleep ?? defaultSleep,
+      timeoutMs: input.timeoutMs ?? 15_000,
+    });
+    if (!ready) {
+      try {
+        killProcess(-child.pid, 'SIGTERM');
+      } catch {
+        // The process may have exited while readiness was being checked.
+      }
+      throw new Error(
+        `Plus One gateway did not become ready at ${address.url}. See ${logFilePath}.`,
+      );
     }
+
+    failureCategory = 'state_save_failed';
+    try {
+      await state.save({
+        schemaVersion: 1,
+        enginePid: child.pid,
+        startedAt: (input.now ?? (() => new Date()))().toISOString(),
+        command: ['plus-one', '--foreground'],
+        cwd: installationRoot,
+        logFilePath,
+      });
+    } catch (error) {
+      try {
+        killProcess(-child.pid, 'SIGTERM');
+      } catch {
+        // The process may have exited while state was being persisted.
+      }
+      throw error;
+    }
+    logger.info('launcher.started', {
+      fields: { durationMs: Date.now() - startedAt },
+    });
+    stdout.write(`Plus One gateway listening on ${address.display}.\n`);
+    return 0;
+  } catch (error) {
+    logger.error('launcher.start.failed', {
+      fields: {
+        failureCategory,
+        durationMs: Date.now() - startedAt,
+      },
+      error: createOperationalLogError({
+        message: 'Plus One gateway launcher start failed.',
+        code: 'gateway_launcher_start_failed',
+        category: failureCategory,
+      }),
+    });
     throw error;
+  } finally {
+    await logging.close().catch(() => undefined);
   }
-  stdout.write(`Plus One gateway listening on ${address.display}.\n`);
-  return 0;
 }
 
 export async function stopGatewayDaemon(input: DaemonRuntimeDependencies = {}): Promise<number> {
   const environment = input.environment ?? process.env;
   const stdout = input.stdout ?? process.stdout;
-  const isProcessAlive = input.isProcessAlive ?? defaultIsProcessAlive;
-  const state = input.state ?? createStateStore(environment, isProcessAlive);
-  const current = await state.load();
-  if (current === undefined) {
+  const stderr = input.stderr ?? process.stderr;
+  const logging = (input.configureLogging ?? configureLogging)({
+    environment,
+    mode: 'launcher',
+    stderr,
+  });
+  const logger = input.logger ?? getLogger('engine.gateway.launcher');
+  const startedAt = Date.now();
+  let failureCategory = 'state_load_failed';
+  try {
+    const isProcessAlive = input.isProcessAlive ?? defaultIsProcessAlive;
+    const state = input.state ?? createStateStore(environment, isProcessAlive);
+    const current = await state.load();
+    if (current === undefined) {
+      stdout.write('Plus One is stopped.\n');
+      return 0;
+    }
+
+    logger.info('launcher.stop.requested');
+    failureCategory = 'stop_failed';
+    const killProcess = input.killProcess ?? process.kill;
+    try {
+      try {
+        killProcess(-current.enginePid, 'SIGTERM');
+      } catch {
+        // The process may have exited between state loading and signaling.
+      }
+      await waitForProcessExit({
+        isProcessAlive,
+        pid: current.enginePid,
+        sleep: input.sleep ?? defaultSleep,
+        timeoutMs: input.timeoutMs ?? 5_000,
+      });
+      if (isProcessAlive(current.enginePid)) killProcess(-current.enginePid, 'SIGKILL');
+    } finally {
+      await state.clear();
+    }
+    logger.info('launcher.stopped', {
+      fields: { durationMs: Date.now() - startedAt },
+    });
     stdout.write('Plus One is stopped.\n');
     return 0;
-  }
-
-  const killProcess = input.killProcess ?? process.kill;
-  try {
-    try {
-      killProcess(-current.enginePid, 'SIGTERM');
-    } catch {
-      // The process may have exited between state loading and signaling.
-    }
-    await waitForProcessExit({
-      isProcessAlive,
-      pid: current.enginePid,
-      sleep: input.sleep ?? defaultSleep,
-      timeoutMs: input.timeoutMs ?? 5_000,
+  } catch (error) {
+    logger.error('launcher.stop.failed', {
+      fields: {
+        failureCategory,
+        durationMs: Date.now() - startedAt,
+      },
+      error: createOperationalLogError({
+        message: 'Plus One gateway launcher stop failed.',
+        code: 'gateway_launcher_stop_failed',
+        category: failureCategory,
+      }),
     });
-    if (isProcessAlive(current.enginePid)) killProcess(-current.enginePid, 'SIGKILL');
+    throw error;
   } finally {
-    await state.clear();
+    await logging.close().catch(() => undefined);
   }
-  stdout.write('Plus One is stopped.\n');
-  return 0;
 }
 
 export async function getGatewayDaemonStatus(input: DaemonRuntimeDependencies = {}): Promise<number> {

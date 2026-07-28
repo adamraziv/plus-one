@@ -51,86 +51,117 @@ export class AgentInvocationRunner {
           attemptOrdinal: input.attemptOrdinal,
         },
       });
-      await this.dependencies.ledger.startRun({
-        householdId: input.householdId, taskId: input.taskId, runId,
-        role: input.role.identity.roleName, roleVersion: input.role.identity.roleVersion,
-        modelId, policy,
-      });
+      let terminalLogged = false;
       try {
-        await this.dependencies.ledger.startAttempt({
+        await this.dependencies.ledger.startRun({
           householdId: input.householdId, taskId: input.taskId, runId,
-          role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
-          configuredLimit: policy.maxAttempts, resumable: true,
+          role: input.role.identity.roleName, roleVersion: input.role.identity.roleVersion,
+          modelId, policy,
         });
-      } catch (cause) {
-        await this.dependencies.ledger.finishRun(runId, 'failed', 'attempt_start_failed');
-        logger.warn('agent.failed', {
-          fields: {
-            role: input.role.identity.roleName,
-            model: modelId,
-            attemptOrdinal: input.attemptOrdinal,
-            failureCategory: 'attempt_start_failed',
-            durationMs: Date.now() - startedAt,
-          },
-        });
-        throw new PlusOneError({ category: 'storage_unavailable', code: 'attempt_start_failed',
-          message: 'Agent attempt could not be started', retry: 'after_state_resolution',
-          receiptLookupRequired: false, details: { runId }, cause });
-      }
+        try {
+          await this.dependencies.ledger.startAttempt({
+            householdId: input.householdId, taskId: input.taskId, runId,
+            role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
+            configuredLimit: policy.maxAttempts, resumable: true,
+          });
+        } catch (cause) {
+          await this.dependencies.ledger.finishRun(runId, 'failed', 'attempt_start_failed');
+          const recoverable = input.attemptOrdinal < policy.maxAttempts;
+          const options = {
+            fields: {
+              role: input.role.identity.roleName,
+              model: modelId,
+              attemptOrdinal: input.attemptOrdinal,
+              failureCategory: 'attempt_start_failed',
+              retryClassification: recoverable ? 'retryable' : 'exhausted',
+              durationMs: Date.now() - startedAt,
+            },
+          };
+          if (recoverable) logger.warn('agent.failed', options);
+          else logger.error('agent.failed', options);
+          terminalLogged = true;
+          throw new PlusOneError({ category: 'storage_unavailable', code: 'attempt_start_failed',
+            message: 'Agent attempt could not be started', retry: 'after_state_resolution',
+            receiptLookupRequired: false, details: { runId }, cause });
+        }
 
-      try {
-        const abortSignal = AbortSignal.any([
-          input.abortSignal,
-          AbortSignal.timeout(policy.callDeadlineMs),
-        ]);
-        const output = await this.dependencies.agents.generate({
-          runId, agentId: input.role.agentId, modelId, roleKind: input.role.kind,
-          ...input.context, outputSchema: input.outputSchema,
-          maxSteps: policy.maxModelSteps, maxRetries: policy.maxModelRequestRetries,
-          maxToolConcurrency: policy.maxToolConcurrency,
-          maxProcessorRetries: policy.maxProcessorRetries,
-          maxOutputBytes: policy.maxOutputBytes, abortSignal,
-        });
-        await this.dependencies.ledger.finishAttempt({
-          householdId: input.householdId, taskId: input.taskId,
-          role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
-          outcome: 'succeeded', resumable: false,
-        });
-        await this.dependencies.ledger.finishRun(runId, 'succeeded');
-        logger.info('agent.completed', {
-          fields: {
-            role: input.role.identity.roleName,
-            model: modelId,
-            attemptOrdinal: input.attemptOrdinal,
-            durationMs: Date.now() - startedAt,
-          },
-        });
-        return output;
+        try {
+          const abortSignal = AbortSignal.any([
+            input.abortSignal,
+            AbortSignal.timeout(policy.callDeadlineMs),
+          ]);
+          const output = await this.dependencies.agents.generate({
+            runId, agentId: input.role.agentId, modelId, roleKind: input.role.kind,
+            ...input.context, outputSchema: input.outputSchema,
+            maxSteps: policy.maxModelSteps, maxRetries: policy.maxModelRequestRetries,
+            maxToolConcurrency: policy.maxToolConcurrency,
+            maxProcessorRetries: policy.maxProcessorRetries,
+            maxOutputBytes: policy.maxOutputBytes, abortSignal,
+          });
+          await this.dependencies.ledger.finishAttempt({
+            householdId: input.householdId, taskId: input.taskId,
+            role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
+            outcome: 'succeeded', resumable: false,
+          });
+          await this.dependencies.ledger.finishRun(runId, 'succeeded');
+          logger.info('agent.completed', {
+            fields: {
+              role: input.role.identity.roleName,
+              model: modelId,
+              attemptOrdinal: input.attemptOrdinal,
+              durationMs: Date.now() - startedAt,
+            },
+          });
+          terminalLogged = true;
+          return output;
+        } catch (cause) {
+          const failure = this.classifyFailure(cause, input.abortSignal);
+          await this.dependencies.ledger.finishAttempt({
+            householdId: input.householdId, taskId: input.taskId,
+            role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
+            outcome: failure.outcome, retryCategory: failure.category,
+            resumable: failure.outcome !== 'cancelled',
+          });
+          await this.dependencies.ledger.finishRun(runId, failure.runStatus, failure.category);
+          const recoverable = failure.outcome !== 'cancelled'
+            && input.attemptOrdinal < policy.maxAttempts;
+          const options = {
+            fields: {
+              role: input.role.identity.roleName,
+              model: modelId,
+              attemptOrdinal: input.attemptOrdinal,
+              failureCategory: failure.category,
+              retryClassification: failure.outcome === 'cancelled'
+                ? 'cancelled'
+                : recoverable ? 'retryable' : 'exhausted',
+              durationMs: Date.now() - startedAt,
+            },
+          };
+          if (recoverable) logger.warn('agent.failed', options);
+          else logger.error('agent.failed', options);
+          terminalLogged = true;
+          throw new PlusOneError({
+            category: failure.errorCategory, code: failure.code, message: failure.message,
+            retry: failure.outcome === 'cancelled' ? 'never' : 'after_backoff',
+            receiptLookupRequired: false,
+            details: { role: input.role.identity.roleName, attemptOrdinal: input.attemptOrdinal, modelId },
+            cause,
+          });
+        }
       } catch (cause) {
-        const failure = this.classifyFailure(cause, input.abortSignal);
-        await this.dependencies.ledger.finishAttempt({
-          householdId: input.householdId, taskId: input.taskId,
-          role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
-          outcome: failure.outcome, retryCategory: failure.category,
-          resumable: failure.outcome !== 'cancelled',
-        });
-        await this.dependencies.ledger.finishRun(runId, failure.runStatus, failure.category);
-        logger.warn('agent.failed', {
-          fields: {
-            role: input.role.identity.roleName,
-            model: modelId,
-            attemptOrdinal: input.attemptOrdinal,
-            failureCategory: failure.category,
-            durationMs: Date.now() - startedAt,
-          },
-        });
-        throw new PlusOneError({
-          category: failure.errorCategory, code: failure.code, message: failure.message,
-          retry: failure.outcome === 'cancelled' ? 'never' : 'after_backoff',
-          receiptLookupRequired: false,
-          details: { role: input.role.identity.roleName, attemptOrdinal: input.attemptOrdinal, modelId },
-          cause,
-        });
+        if (!terminalLogged) {
+          logger.error('agent.failed', {
+            fields: {
+              role: input.role.identity.roleName,
+              model: modelId,
+              attemptOrdinal: input.attemptOrdinal,
+              failureCategory: 'runtime_failure',
+              retryClassification: 'exhausted',
+              durationMs: Date.now() - startedAt,
+            },
+          });
+        }
+        throw cause;
       }
     });
   }

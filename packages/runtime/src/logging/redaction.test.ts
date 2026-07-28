@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { redactSecrets, sanitizeFields, serializeLogError } from './redaction.js';
+import {
+  redactSecrets,
+  sanitizeFields,
+  sanitizeLogString,
+  serializeLogError,
+} from './redaction.js';
 
 describe('logging redaction', () => {
   it('drops content-bearing fields', () => {
@@ -17,7 +22,14 @@ describe('logging redaction', () => {
   it('serializes only bounded error metadata', () => {
     const error = new Error('database password=secret-password');
     error.name = 'DatabaseError';
-    expect(serializeLogError(error)).toMatchObject({ name: 'DatabaseError' });
-    expect(JSON.stringify(serializeLogError(error))).not.toContain('secret-password');
+    error.stack = `DatabaseError: password=secret-password\n${'frame\n'.repeat(2_000)}`;
+    expect(serializeLogError(error, { includeStack: true })).toMatchObject({ name: 'DatabaseError' });
+    expect(serializeLogError(error, { includeStack: true }).stack?.length).toBeLessThanOrEqual(8_000);
+    expect(JSON.stringify(serializeLogError(error, { includeStack: true }))).not.toContain('secret-password');
+  });
+
+  it('bounds strings and removes record-injection characters', () => {
+    expect(sanitizeLogString(`first\r\nsecond ${'x'.repeat(2_000)}`, 1_000)).toMatch(/^first {2}second /);
+    expect(sanitizeLogString(`first\r\nsecond ${'x'.repeat(2_000)}`, 1_000)).toHaveLength(1_000);
   });
 });

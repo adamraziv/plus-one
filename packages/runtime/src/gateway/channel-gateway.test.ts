@@ -9,7 +9,24 @@ import {
 } from '@plus-one/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import { ChannelGateway } from './channel-gateway.js';
-import { configureLogging } from '../logging/index.js';
+import {
+  configureLogging,
+  parseLogEnvelope,
+  type LogEnvelopeV1,
+  type LoggingHandle,
+} from '../logging/index.js';
+
+async function logRecords(
+  homeDirectory: string,
+  logging: LoggingHandle,
+): Promise<LogEnvelopeV1[]> {
+  await logging.flush();
+  return (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => parseLogEnvelope(line))
+    .filter((record): record is LogEnvelopeV1 => record !== undefined);
+}
 
 const message = InboundChannelMessageSchemaV1.parse({
   schemaName: 'inbound-channel-message',
@@ -103,13 +120,17 @@ describe('ChannelGateway', () => {
     try {
       await expect(gateway.handleInbound(message)).resolves.toEqual({ status: 'duplicate' });
       expect(sink.emit).not.toHaveBeenCalled();
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('gateway.inbound.duplicate');
-      expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).not.toContain('What did we spend this month?');
+      const records = await logRecords(homeDirectory, logging);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'gateway.inbound.duplicate',
+        attributes: expect.objectContaining({
+          'plus_one.conversation.id': message.conversationId,
+          'plus_one.household.id': message.householdId,
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toContain('What did we spend this month?');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -126,11 +147,14 @@ describe('ChannelGateway', () => {
 
     try {
       await expect(gateway.handleInbound(message)).resolves.toEqual({ status: 'queued' });
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('gateway.inbound.queued');
-      expect(agentLog).not.toContain(message.body);
+      const records = await logRecords(homeDirectory, logging);
+      expect(records.map(({ eventName }) => eventName)).toEqual([
+        'gateway.inbound.accepted',
+        'gateway.inbound.queued',
+      ]);
+      expect(JSON.stringify(records)).not.toContain(message.body);
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -152,13 +176,22 @@ describe('ChannelGateway', () => {
       expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivery-started', target: expect.any(Object) });
       expect(sink.emit).toHaveBeenCalledWith({ kind: 'final.delivered', target: expect.any(Object), platformMessageId: '200' });
       expect(sink.emit).toHaveBeenLastCalledWith({ kind: 'typing.stop', target: expect.any(Object) });
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('gateway.inbound.accepted');
-      expect(agentLog).toContain('conversationId=conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).not.toContain('What did we spend this month?');
+      const records = await logRecords(homeDirectory, logging);
+      expect(records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ eventName: 'gateway.inbound.accepted' }),
+        expect.objectContaining({ eventName: 'gateway.turn.started' }),
+        expect.objectContaining({
+          eventName: 'gateway.turn.completed',
+          severityText: 'INFO',
+          attributes: expect.objectContaining({
+            status: 'delivered',
+            'duration.ms': expect.any(Number),
+          }),
+        }),
+      ]));
+      expect(JSON.stringify(records)).not.toContain('What did we spend this month?');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -248,11 +281,19 @@ describe('ChannelGateway', () => {
         status: 'failed', error: 'orchestrator_timed_out', sent: false,
       });
       expect(run).toHaveBeenCalledWith(expect.objectContaining({ message, signal: expect.any(AbortSignal) }));
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('gateway.turn.timed_out');
-      expect(agentLog).not.toContain(message.body);
+      const records = await logRecords(homeDirectory, logging);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'gateway.turn.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          'failure.category': 'orchestrator_timed_out',
+          'duration.ms': expect.any(Number),
+        }),
+      }));
+      expect(records.some(({ eventName }) => eventName === 'gateway.turn.completed')).toBe(false);
+      expect(JSON.stringify(records)).not.toContain(message.body);
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 

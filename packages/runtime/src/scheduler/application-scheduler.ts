@@ -76,10 +76,13 @@ export class ApplicationScheduler {
       : { householdId: claim.householdId, taskId: claim.taskId };
     return withLogContext(logContext, async () => {
       logger.info('scheduler.run.started', { fields });
+      let terminalLogged = false;
       const logCompleted = (
         status: 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'skipped',
         failureCategory?: string,
       ): void => {
+        if (terminalLogged) return;
+        terminalLogged = true;
         const options = {
           fields: {
             ...fields,
@@ -88,25 +91,24 @@ export class ApplicationScheduler {
             durationMs: Date.now() - startedAt,
           },
         };
-        if (status === 'succeeded' || status === 'skipped') {
-          logger.info('scheduler.run.completed', options);
-        } else {
-          logger.warn('scheduler.run.completed', options);
-        }
+        if (status === 'succeeded') logger.info('scheduler.run.completed', options);
+        else if (status === 'skipped') logger.info('scheduler.run.skipped', options);
+        else if (status === 'timed_out') logger.error('scheduler.run.timed_out', options);
+        else logger.error('scheduler.run.failed', options);
       };
 
-      if (claim.missedRunPolicy === 'skip'
-        && new Date(claim.scheduledFor).getTime() < new Date(now).getTime()) {
-        const completed = await this.dependencies.repository.completeRun({
-          householdId: claim.householdId,
-          occurrenceId: claim.occurrenceId,
-          status: 'skipped',
-        });
-        logCompleted('skipped');
-        return completed;
-      }
-
       try {
+        if (claim.missedRunPolicy === 'skip'
+          && new Date(claim.scheduledFor).getTime() < new Date(now).getTime()) {
+          const completed = await this.dependencies.repository.completeRun({
+            householdId: claim.householdId,
+            occurrenceId: claim.occurrenceId,
+            status: 'skipped',
+          });
+          logCompleted('skipped');
+          return completed;
+        }
+
         const response = await this.runWithRetries(claim);
         const delivered = await this.dependencies.delivery.deliver(response);
         if (delivered.status !== 'delivered') {
@@ -135,14 +137,19 @@ export class ApplicationScheduler {
         const failureCategory = timedOut ? 'timeout'
           : schemaFailed ? 'target_schema_validation'
           : 'runtime_failure';
-        const completed = await this.dependencies.repository.completeRun({
-          householdId: claim.householdId,
-          occurrenceId: claim.occurrenceId,
-          status,
-          failureCategory,
-        });
-        logCompleted(status, failureCategory);
-        return completed;
+        try {
+          const completed = await this.dependencies.repository.completeRun({
+            householdId: claim.householdId,
+            occurrenceId: claim.occurrenceId,
+            status,
+            failureCategory,
+          });
+          logCompleted(status, failureCategory);
+          return completed;
+        } catch (completionError) {
+          logCompleted('failed', 'run_completion_failed');
+          throw completionError;
+        }
       }
     });
   }

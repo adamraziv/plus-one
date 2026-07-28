@@ -1,9 +1,16 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { Memory } from '@mastra/memory';
 import {
   FlexibleWorkingMemorySchema,
   WorkingMemoryEntryIdSchema,
 } from '@plus-one/contracts';
+import {
+  configureLogging,
+  type LogEnvelopeV1,
+} from '@plus-one/runtime';
 import {
   createOrchestratorSessionMemory,
   orchestratorSessionMemoryOptions,
@@ -19,9 +26,15 @@ const model = {
 const threadId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const resourceId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 
-function fakeMemory(initial: string | null = null, options: { persist?: boolean; writeError?: unknown } = {}) {
+function fakeMemory(
+  initial: string | null = null,
+  options: { persist?: boolean; readError?: unknown; writeError?: unknown } = {},
+) {
   let workingMemory = initial;
-  const getWorkingMemory = vi.fn(async () => workingMemory);
+  const getWorkingMemory = vi.fn(async () => {
+    if (options.readError !== undefined) throw options.readError;
+    return workingMemory;
+  });
   const updateWorkingMemory = vi.fn(async (input: { workingMemory: string }) => {
     if (options.writeError !== undefined) throw options.writeError;
     if (options.persist !== false) workingMemory = input.workingMemory;
@@ -35,6 +48,23 @@ function fakeMemory(initial: string | null = null, options: { persist?: boolean;
 
 function createMemoryPort(input: ReturnType<typeof fakeMemory>): OrchestratorSessionMemoryPort {
   return createOrchestratorSessionMemory({ memory: input.memory });
+}
+
+async function captureMemoryLogs(
+  action: () => Promise<void>,
+): Promise<LogEnvelopeV1[]> {
+  const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-memory-logs-'));
+  const logging = configureLogging({ homeDirectory, level: 'DEBUG' });
+  try {
+    await action();
+  } finally {
+    await logging.close();
+  }
+  return (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8').catch(() => ''))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as LogEnvelopeV1);
 }
 
 describe('orchestratorSessionMemoryOptions', () => {
@@ -317,6 +347,194 @@ describe('OrchestratorSessionMemory', () => {
       releaseFirst();
       await Promise.all([first, second]);
       expect(calls).toBe(2);
+    });
+  });
+
+  describe('operational logging', () => {
+    const privateThreadId = 'thread_1_private';
+    const privateResourceId = 'resource_1_private';
+    const privatePrincipalRef = 'principal_1_private';
+    const privateSummary = 'private summary';
+    const privateValue = 'private value';
+    const prohibited = /private summary|private value|principal_1_private|resource_1_private|thread_1_private/;
+
+    function privateDocument() {
+      return FlexibleWorkingMemorySchema.parse({
+        version: 1,
+        entries: {
+          [memoryEntryId]: {
+            kind: 'goal',
+            summary: privateSummary,
+            scope: 'household',
+            value: { secret: privateValue },
+            lifecycle: {
+              createdAt: '2026-07-25T10:55:00.000Z',
+              updatedAt: '2026-07-25T10:55:00.000Z',
+            },
+          },
+        },
+      });
+    }
+
+    it('logs safe successful and failed reads without memory identifiers or contents', async () => {
+      const records = await captureMemoryLogs(async () => {
+        await createMemoryPort(fakeMemory(JSON.stringify(privateDocument())))
+          .readWorkingMemoryPromptContext({
+            threadId: privateThreadId,
+            resourceId: privateResourceId,
+            principalRef: privatePrincipalRef,
+          });
+        await createMemoryPort(fakeMemory(null, { readError: new Error(privateValue) }))
+          .inspectWorkingMemory({
+            threadId: privateThreadId,
+            resourceId: privateResourceId,
+            principalRef: privatePrincipalRef,
+          });
+      });
+
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'working_memory.read.completed',
+        severityText: 'DEBUG',
+        attributes: expect.objectContaining({
+          'working_memory.operation': 'read',
+          'working_memory.outcome.code': 'working_memory_prompt_context_succeeded',
+        }),
+      }));
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'working_memory.read.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          'working_memory.operation': 'inspect',
+          'failure.category': 'storage_unavailable',
+          'retry.directive': 'after_backoff',
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toMatch(prohibited);
+    });
+
+    it('distinguishes completed, rejected, write-failed, and readback-failed mutations', async () => {
+      const document = privateDocument();
+      const replacement = {
+        operation: 'replace' as const,
+        entryId: memoryEntryId,
+        entry: {
+          kind: 'goal' as const,
+          summary: privateSummary,
+          scope: 'household' as const,
+          value: { secret: privateValue },
+        },
+      };
+      const missing = {
+        operation: 'delete' as const,
+        entryId: WorkingMemoryEntryIdSchema.parse('wme_01ARZ3NDEKTSV4RRFFQ69G5FAW'),
+      };
+      const emptyDocument = FlexibleWorkingMemorySchema.parse({ version: 1, entries: {} });
+      const create = {
+        operation: 'create' as const,
+        entryId: memoryEntryId,
+        entry: replacement.entry,
+      };
+      const call = {
+        threadId: privateThreadId,
+        resourceId: privateResourceId,
+        principalRef: privatePrincipalRef,
+        basedOnRevision: workingMemoryRevision(document),
+      };
+
+      const records = await captureMemoryLogs(async () => {
+        await createMemoryPort(fakeMemory(JSON.stringify(emptyDocument)))
+          .applyWorkingMemoryMutation({
+            ...call,
+            basedOnRevision: workingMemoryRevision(emptyDocument),
+            mutation: create,
+          });
+        await createMemoryPort(fakeMemory(JSON.stringify(document)))
+          .applyWorkingMemoryMutation({ ...call, mutation: missing });
+        await createMemoryPort(fakeMemory(JSON.stringify(document), {
+          writeError: new Error(privateValue),
+        })).applyWorkingMemoryMutation({ ...call, mutation: replacement });
+        await createMemoryPort(fakeMemory(JSON.stringify(document), { persist: false }))
+          .applyWorkingMemoryMutation({ ...call, mutation: replacement });
+      });
+
+      expect(records.map((record) => [record.eventName, record.severityText])).toEqual(expect.arrayContaining([
+        ['working_memory.mutation.completed', 'INFO'],
+        ['working_memory.mutation.rejected', 'WARN'],
+        ['working_memory.write.failed', 'ERROR'],
+        ['working_memory.readback.failed', 'ERROR'],
+      ]));
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'working_memory.write.failed',
+        attributes: expect.objectContaining({
+          'working_memory.operation': 'mutate',
+          'failure.category': 'storage_unavailable',
+          'retry.directive': 'after_backoff',
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toMatch(prohibited);
+    });
+
+    it('logs migration completion and failure without legacy contents', async () => {
+      const legacy = JSON.stringify({
+        goals: { secret: { summary: privateSummary, horizon: privateValue } },
+      });
+      const records = await captureMemoryLogs(async () => {
+        await createMemoryPort(fakeMemory(legacy)).inspectWorkingMemory({
+          threadId: privateThreadId,
+          resourceId: privateResourceId,
+          principalRef: privatePrincipalRef,
+        });
+        await createMemoryPort(fakeMemory(legacy, { writeError: new Error(privateValue) }))
+          .inspectWorkingMemory({
+            threadId: privateThreadId,
+            resourceId: privateResourceId,
+            principalRef: privatePrincipalRef,
+          });
+      });
+
+      expect(records.map((record) => [record.eventName, record.severityText])).toEqual(expect.arrayContaining([
+        ['working_memory.migration.completed', 'INFO'],
+        ['working_memory.migration.failed', 'ERROR'],
+      ]));
+      expect(JSON.stringify(records)).not.toMatch(prohibited);
+    });
+
+    it('logs safe review completion and failure with request source and aggregate count', async () => {
+      const records = await captureMemoryLogs(async () => {
+        await createMemoryPort(fakeMemory(JSON.stringify(privateDocument()))).reviewWorkingMemory({
+          threadId: privateThreadId,
+          resourceId: privateResourceId,
+          principalRef: privatePrincipalRef,
+          requestedBy: 'scheduled_review',
+          now: new Date('2026-07-25T10:55:00.000Z'),
+        });
+        await createMemoryPort(fakeMemory(null, { readError: new Error(privateValue) }))
+          .reviewWorkingMemory({
+            threadId: privateThreadId,
+            resourceId: privateResourceId,
+            principalRef: privatePrincipalRef,
+            requestedBy: 'user',
+            now: new Date('2026-07-25T10:55:00.000Z'),
+          });
+      });
+
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'working_memory.review.completed',
+        severityText: 'INFO',
+        attributes: expect.objectContaining({
+          'request.source': 'scheduled_review',
+          'working_memory.finding.count': 0,
+        }),
+      }));
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'working_memory.review.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          'request.source': 'user',
+          'failure.category': 'storage_unavailable',
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toMatch(prohibited);
     });
   });
 });

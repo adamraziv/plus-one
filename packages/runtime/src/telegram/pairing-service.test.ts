@@ -7,7 +7,11 @@ import {
   type ChannelPairingRepositoryPort,
   type PendingChannelPairingRecord,
 } from './pairing-service.js';
-import { configureLogging } from '../logging/index.js';
+import {
+  configureLogging,
+  parseLogEnvelope,
+  type LogEnvelopeV1,
+} from '../logging/index.js';
 
 const now = new Date('2026-07-01T00:00:00.000Z');
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -131,15 +135,21 @@ describe('TelegramPairingService', () => {
           householdId,
         },
       });
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('pairing.approved');
-      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('channel=telegram');
-      expect(agentLog).not.toContain('ABCDEFGH');
-      expect(agentLog).not.toContain('1234567890123');
-      expect(agentLog).not.toContain('9876543210987');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'pairing.approved',
+        attributes: expect.objectContaining({
+          'plus_one.household.id': householdId,
+          channel: 'telegram',
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toMatch(/ABCDEFGH|1234567890123|9876543210987/);
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -211,10 +221,11 @@ describe('TelegramPairingService', () => {
         status: 'locked',
         lockedUntil: '2026-07-01T01:00:00.000Z',
       });
+      await logging.flush();
       const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8').catch(() => '');
       expect(agentLog).not.toContain('pairing.approved');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -279,12 +290,18 @@ describe('TelegramPairingService', () => {
         externalUserId: '1234567890123',
         revokedAt: '2026-07-01T00:00:00.000Z',
       });
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('pairing.revoked');
-      expect(agentLog).toContain('channel=telegram');
-      expect(agentLog).not.toContain('1234567890123');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'pairing.revoked',
+        attributes: { channel: 'telegram' },
+      }));
+      expect(JSON.stringify(records)).not.toContain('1234567890123');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 });
