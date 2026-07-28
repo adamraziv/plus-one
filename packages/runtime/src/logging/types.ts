@@ -18,6 +18,8 @@ export type LogContextKey =
 
 export type LogContext = Readonly<Partial<Record<LogContextKey, string>>>;
 
+export type LogName = 'agent' | 'errors' | 'gateway';
+
 export interface LogOptions {
   fields?: LogFields;
   error?: unknown;
@@ -73,6 +75,29 @@ export interface LogSink {
   matches(record: LogEnvelopeV1): boolean;
   write(record: LogEnvelopeV1): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface LogQuery {
+  homeDirectory: string;
+  log: LogName;
+  lines?: number;
+  minLevel?: LogSeverityText;
+  correlations?: LogContext;
+  component?: string;
+  event?: string;
+  since?: Date;
+  diagnostics?: { write(text: string): void };
+}
+
+export interface ReadableLogRecord {
+  envelope: LogEnvelopeV1;
+  source: {
+    path: string;
+    format: 'ndjson' | 'legacy';
+    generation: number;
+    byteOffset: number;
+  };
+  legacyDisplayMessage?: string;
 }
 
 export interface LoggingOptions {

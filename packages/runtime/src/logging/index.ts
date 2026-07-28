@@ -2,6 +2,7 @@ export * from './context.js';
 export * from './dispatcher.js';
 export * from './event-catalog.js';
 export * from './file-sink.js';
+export * from './formatter.js';
 export * from './log-reader.js';
 export * from './logger.js';
 export * from './ndjson.js';
