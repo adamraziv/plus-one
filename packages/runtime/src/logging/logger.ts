@@ -1,29 +1,50 @@
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getLogContext } from './context.js';
-import { RotatingFileSink } from './file-sink.js';
-import { redactSecrets, sanitizeFields, serializeLogError } from './redaction.js';
+import { LogDispatcher } from './dispatcher.js';
+import {
+  type ComponentEventName,
+  type LogComponent,
+} from './event-catalog.js';
+import { NdjsonRotatingFileSink } from './file-sink.js';
+import { buildLogEnvelope } from './record-builder.js';
+import { NdjsonStdoutSink } from './stdout-sink.js';
 import type {
-  LogLevel,
   LogOptions,
-  LogRecord,
   Logger,
   LoggingHandle,
   LoggingOptions,
-  LegacyLogSink,
+  LogSeverityText,
+  LogSink,
 } from './types.js';
 
-const DEFAULT_LEVEL: LogLevel = 'INFO';
+const DEFAULT_LEVEL: LogSeverityText = 'INFO';
 const DEFAULT_MAX_SIZE_MB = 5;
 const DEFAULT_BACKUP_COUNT = 3;
 const ERROR_MAX_SIZE_MB = 2;
 const ERROR_BACKUP_COUNT = 2;
+const SEVERITY_ORDER: Record<LogSeverityText, number> = {
+  DEBUG: 0,
+  INFO: 1,
+  WARN: 2,
+  ERROR: 3,
+};
+
+type TransitionalEventName =
+  | 'orchestrator.delegate.completed'
+  | 'orchestrator.delegate.failed'
+  | 'delivery.processed'
+  | 'gateway.turn.timed_out'
+  | 'gateway.turn.model_temporarily_unavailable'
+  | 'gateway.turn.orchestrator_failed';
 
 interface LoggingState {
-  directory: string;
-  sinks: LegacyLogSink[];
-  stderr: { write(text: string): void };
-  fallbackReported: boolean;
+  key: string;
+  dispatcher: LogDispatcher;
+  level: LogSeverityText;
+  clock: () => Date;
+  resource: Readonly<Record<string, string>>;
   handle: LoggingHandle;
 }
 
@@ -31,135 +52,205 @@ let state: LoggingState | undefined;
 
 export function configureLogging(options: LoggingOptions = {}): LoggingHandle {
   const environment = options.environment ?? process.env;
-  const directory = resolve(
+  const mode = options.mode ?? 'cli';
+  const logDirectory = resolve(
     join(options.homeDirectory ?? environment.PLUS_ONE_HOME ?? join(homedir(), '.plus-one'), 'logs'),
   );
-  if (state !== undefined && state.directory === directory) {
-    if (options.mode === 'gateway' && state.sinks.length < 3) {
-      addGatewaySink(state, directory, resolveLevel(options, environment), resolvePositive(options.maxSizeMb, environment.PLUS_ONE_LOG_MAX_SIZE_MB, DEFAULT_MAX_SIZE_MB), resolvePositive(options.backupCount, environment.PLUS_ONE_LOG_BACKUP_COUNT, DEFAULT_BACKUP_COUNT));
-    }
-    return state.handle;
-  }
-  state?.handle.close();
+  const key = `${logDirectory}\0${mode}`;
+  if (state?.key === key) return state.handle;
 
+  const previous = state;
+  state = undefined;
+  const startAfter = previous?.handle.close() ?? Promise.resolve();
   const level = resolveLevel(options, environment);
-  const maxSizeMb = resolvePositive(options.maxSizeMb, environment.PLUS_ONE_LOG_MAX_SIZE_MB, DEFAULT_MAX_SIZE_MB);
-  const backupCount = resolvePositive(options.backupCount, environment.PLUS_ONE_LOG_BACKUP_COUNT, DEFAULT_BACKUP_COUNT);
   const stderr = options.stderr ?? process.stderr;
-  const sinks: LegacyLogSink[] = [];
-  const logDirectory = directory;
-  try {
-    sinks.push(new RotatingFileSink({
-      path: join(logDirectory, 'agent.log'), level, maxBytes: maxSizeMb * 1024 * 1024, backupCount,
-    }));
-    sinks.push(new RotatingFileSink({
-      path: join(logDirectory, 'errors.log'), level: 'WARNING', maxBytes: ERROR_MAX_SIZE_MB * 1024 * 1024, backupCount: ERROR_BACKUP_COUNT,
-    }));
-    if (options.mode === 'gateway') {
-      addGatewaySink({ sinks }, logDirectory, level, maxSizeMb, backupCount);
-    }
-  } catch (error) {
-    closeSinks(sinks);
-    reportFallback(stderr, error);
-  }
+  const stdout = options.stdout ?? process.stdout;
+  const clock = options.clock ?? (() => new Date());
+  const resource = Object.freeze({
+    'service.name': 'plus-one',
+    'service.instance.id': options.instanceId ?? `instance_${randomUUID()}`,
+    'deployment.environment.name': deploymentEnvironment(environment.NODE_ENV),
+  });
+  const sinks = options.sinks ?? defaultSinks({
+    logDirectory,
+    mode,
+    level,
+    maxSizeMb: resolveNonNegative(
+      options.maxSizeMb,
+      environment.PLUS_ONE_LOG_MAX_SIZE_MB,
+      DEFAULT_MAX_SIZE_MB,
+    ),
+    backupCount: Math.floor(resolveNonNegative(
+      options.backupCount,
+      environment.PLUS_ONE_LOG_BACKUP_COUNT,
+      DEFAULT_BACKUP_COUNT,
+    )),
+    stderr,
+    stdout,
+    stdoutEnabled: mode === 'gateway' && environment.PLUS_ONE_LOG_STDOUT?.toLowerCase() === 'true',
+  });
+  const dispatcher = new LogDispatcher({
+    sinks,
+    stderr,
+    ...(options.queueCapacity === undefined ? {} : { capacity: options.queueCapacity }),
+    startAfter,
+    now: () => clock().getTime(),
+  });
 
   const nextState = {} as LoggingState;
+  let closePromise: Promise<void> | undefined;
   const handle: LoggingHandle = {
     logDirectory,
-    flush: () => undefined,
+    flush: async () => dispatcher.flush(),
     close: () => {
-      if (state !== nextState) return;
-      closeSinks(nextState.sinks);
-      state = undefined;
+      closePromise ??= (async () => {
+        await dispatcher.close();
+        if (state === nextState) state = undefined;
+      })();
+      return closePromise;
     },
   };
-  nextState.directory = logDirectory;
-  nextState.sinks = sinks;
-  nextState.stderr = stderr;
-  nextState.fallbackReported = false;
+  nextState.key = key;
+  nextState.dispatcher = dispatcher;
+  nextState.level = level;
+  nextState.clock = clock;
+  nextState.resource = resource;
   nextState.handle = handle;
   state = nextState;
   return handle;
 }
 
+export function getLogger<C extends LogComponent>(
+  component: C,
+): Logger<ComponentEventName<C> | TransitionalEventName>;
+export function getLogger(component: string): Logger;
 export function getLogger(component: string): Logger {
   return {
     debug: (event, options) => emit('DEBUG', component, event, options),
     info: (event, options) => emit('INFO', component, event, options),
-    warn: (event, options) => emit('WARNING', component, event, options),
+    warn: (event, options) => emit('WARN', component, event, options),
     error: (event, options) => emit('ERROR', component, event, options),
   };
 }
 
-function emit(level: LogLevel, component: string, event: string, options: LogOptions | undefined): void {
-  const current = state;
-  if (current === undefined) return;
-  const record: LogRecord = {
-    timestamp: new Date(),
-    level,
-    component,
-    event,
-    context: getLogContext(),
-    fields: sanitizeFields(options?.fields),
-    ...(options?.error === undefined ? {} : { error: serializeLogError(options.error) }),
-  };
-  for (const sink of current.sinks) {
-    try {
-      sink.write(record);
-    } catch (error) {
-      reportFallback(current.stderr, error, current);
-    }
-  }
-}
-
-function addGatewaySink(
-  current: Pick<LoggingState, 'sinks'>,
-  directory: string,
-  level: LogLevel,
-  maxSizeMb: number,
-  backupCount: number,
+function emit(
+  severityText: LogSeverityText,
+  component: string,
+  eventName: string,
+  options: LogOptions | undefined,
 ): void {
-  current.sinks.push(new RotatingFileSink({
-    path: join(directory, 'gateway.log'),
-    level,
-    maxBytes: maxSizeMb * 1024 * 1024,
-    backupCount,
-    componentPrefixes: ['gateway'],
+  const current = state;
+  if (current === undefined || SEVERITY_ORDER[severityText] < SEVERITY_ORDER[current.level]) return;
+  const timestamp = current.clock();
+  const observedTimestamp = current.clock();
+  current.dispatcher.dispatch(buildLogEnvelope({
+    component,
+    eventName,
+    severityText,
+    ...(options?.fields === undefined ? {} : { fields: options.fields }),
+    ...(options?.error === undefined ? {} : { error: options.error }),
+    context: getLogContext(),
+    timestamp,
+    observedTimestamp,
+    resource: current.resource,
   }));
 }
 
-function resolveLevel(options: LoggingOptions, environment: Readonly<Record<string, string | undefined>>): LogLevel {
-  return options.level ?? parseLevel(environment.PLUS_ONE_LOG_LEVEL) ?? DEFAULT_LEVEL;
+function defaultSinks(input: {
+  logDirectory: string;
+  mode: 'cli' | 'gateway' | 'launcher';
+  level: LogSeverityText;
+  maxSizeMb: number;
+  backupCount: number;
+  stderr: { write(text: string): void };
+  stdout: { write(text: string): void };
+  stdoutEnabled: boolean;
+}): readonly LogSink[] {
+  if (input.mode === 'launcher') {
+    return [new NdjsonRotatingFileSink({
+      name: 'launcher',
+      path: join(input.logDirectory, 'launcher.log'),
+      maxBytes: input.maxSizeMb * 1024 * 1024,
+      backupCount: input.backupCount,
+      matches: (record) => record.instrumentationScope.name === 'engine.gateway.launcher',
+      diagnostics: input.stderr,
+    })];
+  }
+
+  const sinks: LogSink[] = [
+    new NdjsonRotatingFileSink({
+      name: 'agent',
+      path: join(input.logDirectory, 'agent.log'),
+      maxBytes: input.maxSizeMb * 1024 * 1024,
+      backupCount: input.backupCount,
+      matches: () => true,
+      diagnostics: input.stderr,
+    }),
+    new NdjsonRotatingFileSink({
+      name: 'errors',
+      path: join(input.logDirectory, 'errors.log'),
+      maxBytes: ERROR_MAX_SIZE_MB * 1024 * 1024,
+      backupCount: ERROR_BACKUP_COUNT,
+      matches: (record) => SEVERITY_ORDER[record.severityText] >= SEVERITY_ORDER.WARN,
+      diagnostics: input.stderr,
+    }),
+  ];
+  if (input.mode === 'gateway') {
+    sinks.push(new NdjsonRotatingFileSink({
+      name: 'gateway',
+      path: join(input.logDirectory, 'gateway.log'),
+      maxBytes: input.maxSizeMb * 1024 * 1024,
+      backupCount: input.backupCount,
+      matches: (record) => (
+        record.instrumentationScope.name.startsWith('gateway.')
+        || record.instrumentationScope.name === 'engine.gateway'
+      ),
+      diagnostics: input.stderr,
+    }));
+    if (input.stdoutEnabled) {
+      sinks.push(new NdjsonStdoutSink({
+        name: 'stdout',
+        output: input.stdout,
+        matches: () => true,
+      }));
+    }
+  }
+  return sinks;
 }
 
-function parseLevel(value: string | undefined): LogLevel | undefined {
+function resolveLevel(
+  options: LoggingOptions,
+  environment: Readonly<Record<string, string | undefined>>,
+): LogSeverityText {
+  return normalizeLevel(options.level)
+    ?? normalizeLevel(environment.PLUS_ONE_LOG_LEVEL)
+    ?? DEFAULT_LEVEL;
+}
+
+function normalizeLevel(value: string | undefined): LogSeverityText | undefined {
   if (value === undefined) return undefined;
   const normalized = value.toUpperCase();
-  return normalized === 'DEBUG' || normalized === 'INFO' || normalized === 'WARNING' || normalized === 'ERROR'
+  if (normalized === 'WARNING') return 'WARN';
+  return normalized === 'DEBUG'
+    || normalized === 'INFO'
+    || normalized === 'WARN'
+    || normalized === 'ERROR'
     ? normalized
     : undefined;
 }
 
-function resolvePositive(explicit: number | undefined, configured: string | undefined, fallback: number): number {
+function resolveNonNegative(
+  explicit: number | undefined,
+  configured: string | undefined,
+  fallback: number,
+): number {
   if (explicit !== undefined && Number.isFinite(explicit) && explicit >= 0) return explicit;
   const parsed = configured === undefined ? Number.NaN : Number(configured);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function closeSinks(sinks: readonly LegacyLogSink[]): void {
-  for (const sink of sinks) sink.close();
-}
-
-function reportFallback(
-  stderr: { write(text: string): void },
-  error: unknown,
-  current?: LoggingState,
-): void {
-  if (current?.fallbackReported) return;
-  if (current !== undefined) current.fallbackReported = true;
-  try {
-    stderr.write(`WARNING logging.file_sink_failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}\n`);
-  } catch {
-    return;
-  }
+function deploymentEnvironment(value: string | undefined): string {
+  return value === 'development' || value === 'test' || value === 'production'
+    ? value
+    : 'unknown';
 }

@@ -68,11 +68,6 @@ export interface LogRecord {
   }>;
 }
 
-export interface LegacyLogSink {
-  write(record: LogRecord): void;
-  close(): void;
-}
-
 export interface LogSink {
   readonly name: string;
   matches(record: LogEnvelopeV1): boolean;
@@ -83,17 +78,22 @@ export interface LogSink {
 export interface LoggingOptions {
   environment?: Readonly<Record<string, string | undefined>>;
   homeDirectory?: string;
-  level?: LogLevel;
+  level?: LogSeverityText | 'WARNING';
   maxSizeMb?: number;
   backupCount?: number;
-  mode?: 'cli' | 'gateway';
+  mode?: 'cli' | 'gateway' | 'launcher';
   stderr?: { write(text: string): void };
+  stdout?: { write(text: string): void };
+  queueCapacity?: number;
+  clock?: () => Date;
+  instanceId?: string;
+  sinks?: readonly LogSink[];
 }
 
 export interface LoggingHandle {
   logDirectory: string;
-  flush(): void;
-  close(): void;
+  flush(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export interface Logger<EventName extends string = string> {
