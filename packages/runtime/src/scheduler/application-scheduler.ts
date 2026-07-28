@@ -88,11 +88,10 @@ export class ApplicationScheduler {
             durationMs: Date.now() - startedAt,
           },
         };
-        if (status === 'succeeded' || status === 'skipped') {
-          logger.info('scheduler.run.completed', options);
-        } else {
-          logger.warn('scheduler.run.completed', options);
-        }
+        if (status === 'succeeded') logger.info('scheduler.run.completed', options);
+        else if (status === 'skipped') logger.info('scheduler.run.skipped', options);
+        else if (status === 'timed_out') logger.error('scheduler.run.timed_out', options);
+        else logger.error('scheduler.run.failed', options);
       };
 
       if (claim.missedRunPolicy === 'skip'

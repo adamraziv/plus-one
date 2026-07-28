@@ -9,7 +9,11 @@ import {
   ScheduledRunSchemaV1,
   TeamResultEnvelopeSchemaV2,
 } from '@plus-one/contracts';
-import { configureLogging } from '../logging/index.js';
+import {
+  configureLogging,
+  parseLogEnvelope,
+  type LogEnvelopeV1,
+} from '../logging/index.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const occurrenceId = 'occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -143,22 +147,31 @@ describe('ApplicationScheduler', () => {
 
     try {
       await scheduler.dispatchDue(now, 5);
-      const agentLog = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-      expect(agentLog).toContain('scheduler.run.started');
-      expect(agentLog).toContain('scheduler.run.completed');
-      expect(agentLog).toContain('householdId=hh_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('taskId=task_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('jobId=job_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('occurrenceId=occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K');
-      expect(agentLog).toContain('targetKind=team_lead');
-      expect(agentLog).toContain('team=query');
-      expect(agentLog).toContain('retryCount=1');
-      expect(agentLog).toContain('status=succeeded');
-      expect(agentLog).toContain('durationMs=');
-      expect(agentLog).not.toContain(finalResponse.body);
-      expect(agentLog).not.toContain('telegram-chat-42');
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'scheduler.run.completed',
+        severityText: 'INFO',
+        attributes: expect.objectContaining({
+          'plus_one.household.id': 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          'plus_one.task.id': 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          'scheduler.job.id': 'job_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          'scheduler.occurrence.id': 'occurrence_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          'scheduler.target.kind': 'team_lead',
+          team: 'query',
+          'retry.count': 1,
+          status: 'succeeded',
+          'duration.ms': expect.any(Number),
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toContain(finalResponse.body);
+      expect(JSON.stringify(records)).not.toContain('telegram-chat-42');
     } finally {
-      logging.close();
+      await logging.close();
     }
   });
 
@@ -262,6 +275,8 @@ describe('ApplicationScheduler', () => {
   });
 
   it('skips stale missed runs when the job policy says skip', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-scheduler-'));
+    const logging = configureLogging({ homeDirectory });
     const repository = {
       claimDueRuns: vi.fn(async () => [claim({
         scheduledFor: '2026-06-22T09:00:00.000Z',
@@ -276,9 +291,20 @@ describe('ApplicationScheduler', () => {
       delivery: { deliver: vi.fn() },
     });
 
-    await scheduler.dispatchDue(now, 5);
-    expect(orchestrator).not.toHaveBeenCalled();
-    expect(repository.completeRun).toHaveBeenCalledWith({ householdId, occurrenceId, status: 'skipped' });
+    try {
+      await scheduler.dispatchDue(now, 5);
+      expect(orchestrator).not.toHaveBeenCalled();
+      expect(repository.completeRun).toHaveBeenCalledWith({ householdId, occurrenceId, status: 'skipped' });
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n').map((line) => parseLogEnvelope(line));
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'scheduler.run.skipped',
+        severityText: 'INFO',
+      }));
+    } finally {
+      await logging.close();
+    }
   });
 
   it('uses bounded retries before marking a run successful', async () => {
@@ -311,6 +337,8 @@ describe('ApplicationScheduler', () => {
   });
 
   it('classifies timeout failures as timed out', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-scheduler-'));
+    const logging = configureLogging({ homeDirectory });
     const repository = {
       claimDueRuns: vi.fn(async () => [claim({ target: { kind: 'orchestrator' } })]),
       completeRun: vi.fn(async (_input) => ({ ...claim(), status: _input.status })),
@@ -327,13 +355,24 @@ describe('ApplicationScheduler', () => {
       delivery: { deliver: vi.fn() },
     });
 
-    await scheduler.dispatchDue(now, 5);
-    expect(repository.completeRun).toHaveBeenCalledWith({
-      householdId,
-      occurrenceId,
-      status: 'timed_out',
-      failureCategory: 'timeout',
-    });
+    try {
+      await scheduler.dispatchDue(now, 5);
+      expect(repository.completeRun).toHaveBeenCalledWith({
+        householdId,
+        occurrenceId,
+        status: 'timed_out',
+        failureCategory: 'timeout',
+      });
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n').map((line) => parseLogEnvelope(line));
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'scheduler.run.timed_out',
+        severityText: 'ERROR',
+      }));
+    } finally {
+      await logging.close();
+    }
   });
 
   it('rejects invalid team-lead results before orchestrator reconciliation', async () => {

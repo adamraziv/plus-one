@@ -31,14 +31,6 @@ const SEVERITY_ORDER: Record<LogSeverityText, number> = {
   ERROR: 3,
 };
 
-type TransitionalEventName =
-  | 'orchestrator.delegate.completed'
-  | 'orchestrator.delegate.failed'
-  | 'delivery.processed'
-  | 'gateway.turn.timed_out'
-  | 'gateway.turn.model_temporarily_unavailable'
-  | 'gateway.turn.orchestrator_failed';
-
 interface LoggingState {
   key: string;
   dispatcher: LogDispatcher;
@@ -122,7 +114,7 @@ export function configureLogging(options: LoggingOptions = {}): LoggingHandle {
 
 export function getLogger<C extends LogComponent>(
   component: C,
-): Logger<ComponentEventName<C> | TransitionalEventName>;
+): Logger<ComponentEventName<C>>;
 export function getLogger(component: string): Logger;
 export function getLogger(component: string): Logger {
   return {

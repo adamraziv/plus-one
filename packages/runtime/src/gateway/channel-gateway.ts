@@ -105,6 +105,19 @@ export class ChannelGateway {
       typingEveryMs: this.dependencies.heartbeat?.typingEveryMs ?? 2_000,
       signal,
     });
+    const durationMs = () => Date.now() - startedAt;
+    const logFailure = (failureCategory: string): void => {
+      this.logger.error('gateway.turn.failed', {
+        fields: {
+          channel: message.channel,
+          failureCategory,
+          durationMs: durationMs(),
+        },
+      });
+    };
+    this.logger.info('gateway.turn.started', {
+      fields: { channel: message.channel },
+    });
     try {
       let response: OrchestratorFinalResponseV1;
       try {
@@ -114,9 +127,7 @@ export class ChannelGateway {
         );
       } catch (error) {
         if (signal.aborted) {
-          this.logger.warn('gateway.turn.timed_out', {
-            fields: { channel: message.channel, durationMs: Date.now() - startedAt },
-          });
+          logFailure('orchestrator_timed_out');
           void emitGatewayEvent(sink, {
             kind: 'final.failed',
             target,
@@ -128,9 +139,7 @@ export class ChannelGateway {
         const reason = isTransientModelError(error)
           ? 'model_temporarily_unavailable'
           : 'orchestrator_failed';
-        this.logger.warn(`gateway.turn.${reason}`, {
-          fields: { channel: message.channel, durationMs: Date.now() - startedAt },
-        });
+        logFailure(reason);
         void emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
@@ -140,9 +149,7 @@ export class ChannelGateway {
         return { status: 'failed', error: reason, sent: false };
       }
       if (signal.aborted) {
-        this.logger.warn('gateway.turn.timed_out', {
-          fields: { channel: message.channel, durationMs: Date.now() - startedAt },
-        });
+        logFailure('orchestrator_timed_out');
         void emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
@@ -161,9 +168,7 @@ export class ChannelGateway {
         );
       } catch (error) {
         if (signal.aborted) {
-          this.logger.warn('gateway.turn.timed_out', {
-            fields: { channel: message.channel, durationMs: Date.now() - startedAt },
-          });
+          logFailure('orchestrator_timed_out');
           void emitGatewayEvent(sink, {
             kind: 'final.failed',
             target,
@@ -172,6 +177,7 @@ export class ChannelGateway {
           });
           return { status: 'failed', error: 'orchestrator_timed_out', sent: false };
         }
+        logFailure('delivery_failed');
         void emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
@@ -181,9 +187,7 @@ export class ChannelGateway {
         throw error;
       }
       if (signal.aborted && delivery.status !== 'delivered') {
-        this.logger.warn('gateway.turn.timed_out', {
-          fields: { channel: message.channel, durationMs: Date.now() - startedAt },
-        });
+        logFailure('orchestrator_timed_out');
         void emitGatewayEvent(sink, {
           kind: 'final.failed',
           target,
@@ -199,6 +203,14 @@ export class ChannelGateway {
           status: 'blocked',
           reason: delivery.processorResult.reason,
         }, signal);
+        this.logger.info('gateway.turn.completed', {
+          fields: {
+            channel: message.channel,
+            status: 'blocked',
+            failureCategory: 'processor_blocked',
+            durationMs: durationMs(),
+          },
+        });
         return { status: 'blocked', processorResult: delivery.processorResult };
       }
       if (delivery.status === 'delivered') {
@@ -209,6 +221,13 @@ export class ChannelGateway {
             ? {}
             : { platformMessageId: delivery.delivery.platformMessageId }),
         }, signal.aborted ? undefined : signal);
+        this.logger.info('gateway.turn.completed', {
+          fields: {
+            channel: message.channel,
+            status: 'delivered',
+            durationMs: durationMs(),
+          },
+        });
       } else {
         await emitGatewayEvent(sink, {
           kind: 'final.failed',
@@ -216,6 +235,7 @@ export class ChannelGateway {
           status: delivery.status,
           reason: delivery.delivery.failureCategory ?? delivery.status,
         }, signal);
+        logFailure(delivery.delivery.failureCategory ?? delivery.status);
       }
       return { status: delivery.status, delivery, sent: delivery.sent };
     } finally {

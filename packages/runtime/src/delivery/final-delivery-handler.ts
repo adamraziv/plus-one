@@ -107,7 +107,7 @@ export class FinalDeliveryHandler {
       response,
       this.dependencies.processors ?? [mandatoryPolicyProcessor, channelFormatProcessor],
     );
-    logger.info('delivery.processed', {
+    logger.info('delivery.processing.completed', {
       fields: {
         channel,
         status: processed.status,
@@ -127,15 +127,31 @@ export class FinalDeliveryHandler {
       return { status: 'blocked', processorResult: processed };
     }
 
-    throwIfAborted(options.signal);
-    const delivery = await abortable(
-      this.dependencies.repository.reserveDelivery({
-        deliveryId: this.dependencies.ids.nextDeliveryId(),
-        idempotencyKey: createDeliveryKey(response),
-        response,
-      }),
-      options.signal,
-    );
+    let delivery: DeliveryRecordV1;
+    try {
+      throwIfAborted(options.signal);
+      delivery = await abortable(
+        this.dependencies.repository.reserveDelivery({
+          deliveryId: this.dependencies.ids.nextDeliveryId(),
+          idempotencyKey: createDeliveryKey(response),
+          response,
+        }),
+        options.signal,
+      );
+    } catch (error) {
+      logger.error('delivery.failed', {
+        fields: {
+          channel,
+          status: 'failed',
+          failureCategory: options.signal?.aborted
+            ? 'delivery_aborted'
+            : 'delivery_operation_failed',
+          sent: false,
+          durationMs: Date.now() - startedAt,
+        },
+      });
+      throw error;
+    }
     return withLogContext({
       deliveryId: delivery.deliveryId,
       householdId: response.householdId,
@@ -161,7 +177,7 @@ export class FinalDeliveryHandler {
         return { status: 'delivered', delivery, sent: false };
       }
       if (delivery.status === 'failed' || delivery.status === 'ambiguous') {
-        logger.warn('delivery.failed', {
+        const logOptions = {
           fields: {
             channel,
             status: delivery.status,
@@ -169,7 +185,9 @@ export class FinalDeliveryHandler {
             sent: false,
             durationMs: Date.now() - startedAt,
           },
-        });
+        };
+        if (delivery.status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
+        else logger.error('delivery.failed', logOptions);
         return { status: delivery.status, delivery, sent: false };
       }
 
@@ -234,7 +252,7 @@ export class FinalDeliveryHandler {
           status,
           failure.category,
         );
-        logger.warn('delivery.failed', {
+        const logOptions = {
           fields: {
             channel,
             status,
@@ -242,7 +260,9 @@ export class FinalDeliveryHandler {
             sent: true,
             durationMs: Date.now() - startedAt,
           },
-        });
+        };
+        if (status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
+        else logger.error('delivery.failed', logOptions);
         return { status, sent: true, delivery: failed };
       }
     });

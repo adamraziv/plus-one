@@ -10,7 +10,12 @@ import {
   type DeliveryRecordV1,
   type OutputProcessorResultV1,
 } from '@plus-one/contracts';
-import { configureLogging } from '../logging/index.js';
+import {
+  configureLogging,
+  formatReadableLogRecord,
+  parseLogEnvelope,
+  type LogEnvelopeV1,
+} from '../logging/index.js';
 
 const response = OrchestratorFinalResponseSchemaV1.parse({
   schemaName: 'orchestrator-final-response',
@@ -61,15 +66,33 @@ function record(status: DeliveryRecordV1['status'], platformMessageId?: string):
   });
 }
 
-async function captureDeliveryLog<T>(action: () => Promise<T>): Promise<{ result: T; log: string }> {
+async function captureDeliveryLog<T>(action: () => Promise<T>): Promise<{
+  result: T;
+  log: string;
+  records: LogEnvelopeV1[];
+}> {
   const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-delivery-'));
   const logging = configureLogging({ homeDirectory });
   try {
     const result = await action();
-    const log = await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8');
-    return { result, log };
+    await logging.close();
+    const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => parseLogEnvelope(line))
+      .filter((record): record is LogEnvelopeV1 => record !== undefined);
+    const log = records.map((record) => formatReadableLogRecord({
+      envelope: record,
+      source: {
+        path: join(homeDirectory, 'logs', 'agent.log'),
+        format: 'ndjson',
+        generation: 0,
+        byteOffset: 0,
+      },
+    })).join('');
+    return { result, log, records };
   } finally {
-    logging.close();
+    await logging.close();
   }
 }
 
@@ -93,8 +116,8 @@ describe('FinalDeliveryHandler', () => {
     expect(log).toContain('delivery.started');
     expect(log).toContain('delivery.completed');
     expect(log).toContain('status=blocked');
-    expect(log).toContain('failureCategory=processor_blocked');
-    expect(log).toContain('sent=false');
+    expect(log).toContain('failure.category=processor_blocked');
+    expect(log).toContain('delivery.send.attempted=false');
     expect(log).not.toContain(response.body);
     expect(log).not.toContain('telegram-chat-42');
     expect(repository.reserveDelivery).not.toHaveBeenCalled();
@@ -123,8 +146,8 @@ describe('FinalDeliveryHandler', () => {
     expect(log).toContain('delivery.started');
     expect(log).toContain('delivery.completed');
     expect(log).toContain('status=delivered');
-    expect(log).toContain('sent=false');
-    expect(log).toContain('deliveryId=delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K');
+    expect(log).toContain('delivery.send.attempted=false');
+    expect(log).toContain('plus_one.delivery.id=delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K');
     expect(log).not.toContain(response.body);
     expect(log).not.toContain('telegram-chat-42');
     expect(send).not.toHaveBeenCalled();
@@ -143,17 +166,18 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    const { result, log, records } = await captureDeliveryLog(() => handler.deliver(response));
     expect(result).toMatchObject({ status: 'delivered', sent: true });
     expect(log).toContain('delivery.started');
-    expect(log).toContain('delivery.processed');
+    expect(log).toContain('delivery.processing.completed');
     expect(log).toContain('delivery.reserved');
     expect(log).toContain('delivery.sent');
-    expect(log).toMatch(/delivery\.reserved[^\n]*durationMs=/);
+    expect(log).toMatch(/delivery\.reserved[^\n]*duration\.ms=/);
     expect(log).toContain('delivery.completed');
     expect(log).toContain('status=delivered');
-    expect(log).toContain('sent=true');
-    expect(log).toContain('durationMs=');
+    expect(log).toContain('delivery.send.attempted=true');
+    expect(log).toContain('duration.ms=');
+    expect(records.filter(({ eventName }) => eventName === 'delivery.completed')).toHaveLength(1);
     expect(log).not.toContain(response.body);
     expect(log).not.toContain('telegram-chat-42');
     expect(repository.reserveDelivery).toHaveBeenCalledWith({
@@ -189,13 +213,17 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    const { result, log, records } = await captureDeliveryLog(() => handler.deliver(response));
     expect(result).toMatchObject({ status: 'failed', sent: true });
     expect(log).toContain('delivery.started');
     expect(log).toContain('delivery.failed');
     expect(log).toContain('status=failed');
-    expect(log).toContain('failureCategory=forbidden');
-    expect(log).toContain('sent=true');
+    expect(log).toContain('failure.category=forbidden');
+    expect(log).toContain('delivery.send.attempted=true');
+    expect(records).toContainEqual(expect.objectContaining({
+      eventName: 'delivery.failed',
+      severityText: 'ERROR',
+    }));
     expect(log).not.toContain(response.body);
     expect(log).not.toContain('telegram-chat-42');
     expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
@@ -226,13 +254,17 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    const { result, log } = await captureDeliveryLog(() => handler.deliver(response));
+    const { result, log, records } = await captureDeliveryLog(() => handler.deliver(response));
     expect(result).toMatchObject({ status: 'ambiguous', sent: true });
     expect(log).toContain('delivery.started');
-    expect(log).toContain('delivery.failed');
+    expect(log).toContain('delivery.ambiguous');
     expect(log).toContain('status=ambiguous');
-    expect(log).toContain('failureCategory=ambiguous');
-    expect(log).toContain('sent=true');
+    expect(log).toContain('failure.category=ambiguous');
+    expect(log).toContain('delivery.send.attempted=true');
+    expect(records).toContainEqual(expect.objectContaining({
+      eventName: 'delivery.ambiguous',
+      severityText: 'WARN',
+    }));
     expect(log).not.toContain(response.body);
     expect(log).not.toContain('telegram-chat-42');
     expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
@@ -276,5 +308,43 @@ describe('FinalDeliveryHandler', () => {
       'ambiguous',
       'timeout',
     );
+  });
+
+  it('records an unrecovered reservation failure without raw error content', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-delivery-'));
+    const logging = configureLogging({ homeDirectory });
+    const failure = new Error('private database connection details');
+    const handler = new FinalDeliveryHandler({
+      repository: {
+        reserveDelivery: vi.fn(async () => {
+          throw failure;
+        }),
+        markDelivered: vi.fn(),
+        markDeliveryFailed: vi.fn(),
+      },
+      transports: { telegram: { send: vi.fn() }, slack: { send: vi.fn() } },
+      ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+
+    try {
+      await expect(handler.deliver(response)).rejects.toBe(failure);
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'delivery.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          status: 'failed',
+          'failure.category': 'delivery_operation_failed',
+          'delivery.send.attempted': false,
+        }),
+      }));
+      expect(JSON.stringify(records)).not.toContain('private database connection details');
+    } finally {
+      await logging.close();
+    }
   });
 });

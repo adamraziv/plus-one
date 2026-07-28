@@ -250,7 +250,7 @@ export class OrchestratorAgent {
             throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
           }
           active?.teamResults.push(result);
-          logger.info('orchestrator.delegate.completed', {
+          logger.info('orchestrator.delegation.completed', {
             fields: {
               team: input.team.team,
               status: result.status,
@@ -266,7 +266,7 @@ export class OrchestratorAgent {
           }, active?.signal);
           return result;
         } catch (error) {
-          logger.warn('orchestrator.delegate.failed', {
+          logger.warn('orchestrator.delegation.failed', {
             fields: {
               team: input.team.team,
               durationMs: Date.now() - startedAt,
@@ -857,7 +857,7 @@ export class OrchestratorAgent {
         });
         return turn;
       } catch (error) {
-        logger.warn('turn.failed', {
+        logger.error('turn.failed', {
           fields: {
             failureCategory: turnFailureCategory(error),
             durationMs: Date.now() - startedAt,
@@ -915,7 +915,7 @@ export class OrchestratorAgent {
         toolCalls?: unknown[];
       }) => {
         const usage = step.usage ?? {};
-        input.logger.info('orchestrator.step.completed', {
+        input.logger.debug('orchestrator.step.completed', {
           fields: {
             step: input.nextStep(),
             durationMs: Date.now() - input.getStepStartedAt(),
