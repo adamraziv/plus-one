@@ -47,6 +47,25 @@ describe('telegram pairing CLI command handler', () => {
     expect(service.revoke).toHaveBeenCalledWith({ externalUserId: '1234567890123' });
   });
 
+  it('formats pairing approval lockouts for operators', async () => {
+    const service = {
+      approveCode: vi.fn(async () => ({
+        status: 'locked' as const,
+        lockedUntil: '2026-07-01T13:05:00.000Z',
+      })),
+      revoke: vi.fn(),
+      listPending: vi.fn(),
+    };
+
+    await expect(handleTelegramPairingCommand({
+      argv: ['approve', 'ABCDEFGH', '--household', householdId],
+      service,
+      approvedBy: 'cli:test',
+    })).resolves.toEqual(
+      'Pairing approval is locked until 1 July 2026, at 01:05 PM.',
+    );
+  });
+
   it('lists pending Telegram pairing requests without revealing raw codes', async () => {
     const service = {
       approveCode: vi.fn(),
@@ -72,7 +91,7 @@ describe('telegram pairing CLI command handler', () => {
       service,
       approvedBy: 'cli:test',
     })).resolves.toEqual(
-      'telegram 1234567890123 Ada Lovelace expires 2026-07-01T01:00:00.000Z code-hash abcdef12',
+      'telegram 1234567890123 Ada Lovelace expires 1 July 2026, at 01:00 AM code-hash abcdef12',
     );
   });
 });

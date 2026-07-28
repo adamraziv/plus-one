@@ -1,5 +1,6 @@
 import { InboundChannelMessageSchemaV1, type InboundChannelMessageV1 } from '@plus-one/contracts';
 import type { ChannelPrincipalRecord, TelegramPairingService } from '@plus-one/runtime';
+import { formatReadableUtcInstant } from './date-format.js';
 
 export interface TelegramMessageUpdate {
   update_id: number;
@@ -81,7 +82,7 @@ export class TelegramUpdateProcessor {
       if (pairing.status === 'rate-limited') {
         await this.input.telegram.sendMessage({
           chatId: externalChatId,
-          text: `A pairing code was sent recently. Try again after ${pairing.retryAfter}.`,
+          text: `A pairing code was sent recently. Try again after ${formatReadableUtcInstant(pairing.retryAfter)}.`,
         });
         return { status: 'pairing-required' };
       }
@@ -94,7 +95,7 @@ export class TelegramUpdateProcessor {
       }
       await this.input.telegram.sendMessage({
         chatId: externalChatId,
-        text: `Pair this Telegram account with Plus One using code ${pairing.code}. Give this code to your household admin. It expires at ${pairing.expiresAt}.`,
+        text: `Pair this Telegram account with Plus One using code ${pairing.code}. Give this code to your household admin. It expires in an hour.`,
       });
       return { status: 'pairing-required' };
     }

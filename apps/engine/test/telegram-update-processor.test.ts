@@ -105,6 +105,7 @@ describe('TelegramUpdateProcessor', () => {
       chatId: '9876543210987',
       text: expect.stringContaining('ABCDEFGH'),
     });
+    expect(sendMessage.mock.calls[0]?.[0].text).toContain('It expires in an hour.');
     expect(inboundHandler).not.toHaveBeenCalled();
   });
 
@@ -129,7 +130,7 @@ describe('TelegramUpdateProcessor', () => {
     });
     expect(sendMessage).toHaveBeenCalledWith({
       chatId: '9876543210987',
-      text: 'A pairing code was sent recently. Try again after 2026-07-01T00:10:00.000Z.',
+      text: 'A pairing code was sent recently. Try again after 1 July 2026, at 12:10 AM.',
     });
   });
 
