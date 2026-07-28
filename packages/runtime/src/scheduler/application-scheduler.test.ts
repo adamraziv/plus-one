@@ -402,4 +402,57 @@ describe('ApplicationScheduler', () => {
       failureCategory: 'target_schema_validation',
     });
   });
+
+  it('emits one terminal failure when run completion persistence fails', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-scheduler-'));
+    const logging = configureLogging({ homeDirectory });
+    const failure = new Error('private scheduler database error');
+    const repository = {
+      claimDueRuns: vi.fn(async () => [claim({ target: { kind: 'orchestrator' } })]),
+      completeRun: vi.fn(async () => {
+        throw failure;
+      }),
+    };
+    const scheduler = new ApplicationScheduler({
+      repository,
+      targets: {
+        orchestrator: vi.fn(async () => finalResponse),
+        teamLead: vi.fn(),
+        orchestratorReconciler: { reconcile: vi.fn() },
+      },
+      delivery: { deliver: vi.fn(async () => ({
+        status: 'delivered' as const,
+        sent: true as const,
+        delivery: deliveryRecord(),
+      })) },
+    });
+
+    try {
+      await expect(scheduler.dispatchDue(now, 5)).rejects.toBe(failure);
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records.filter(({ eventName }) => (
+        eventName === 'scheduler.run.completed'
+        || eventName === 'scheduler.run.skipped'
+        || eventName === 'scheduler.run.timed_out'
+        || eventName === 'scheduler.run.failed'
+      ))).toEqual([
+        expect.objectContaining({
+          eventName: 'scheduler.run.failed',
+          severityText: 'ERROR',
+          attributes: expect.objectContaining({
+            status: 'failed',
+            'failure.category': 'run_completion_failed',
+          }),
+        }),
+      ]);
+      expect(JSON.stringify(records)).not.toContain('private scheduler database error');
+    } finally {
+      await logging.close();
+    }
+  });
 });

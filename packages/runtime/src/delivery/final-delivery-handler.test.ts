@@ -96,6 +96,28 @@ async function captureDeliveryLog<T>(action: () => Promise<T>): Promise<{
   }
 }
 
+async function captureRejectedDeliveryLog(action: () => Promise<unknown>): Promise<{
+  error: unknown;
+  records: LogEnvelopeV1[];
+}> {
+  const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-delivery-rejected-'));
+  const logging = configureLogging({ homeDirectory });
+  let error: unknown;
+  try {
+    await action();
+  } catch (caught) {
+    error = caught;
+  } finally {
+    await logging.close();
+  }
+  const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => parseLogEnvelope(line))
+    .filter((record): record is LogEnvelopeV1 => record !== undefined);
+  return { error, records };
+}
+
 describe('FinalDeliveryHandler', () => {
   it('blocks before reserving delivery or sending transport output', async () => {
     const repository = {
@@ -297,17 +319,74 @@ describe('FinalDeliveryHandler', () => {
       ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
     });
 
-    const delivery = handler.deliver(response, { signal: controller.signal });
-    await startedPromise;
-    controller.abort(new DOMException('Timed out', 'TimeoutError'));
+    const captured = await captureRejectedDeliveryLog(async () => {
+      const delivery = handler.deliver(response, { signal: controller.signal });
+      await startedPromise;
+      controller.abort(new DOMException('Timed out', 'TimeoutError'));
+      await delivery;
+    });
 
-    await expect(delivery).rejects.toThrow('Timed out');
+    expect(captured.error).toMatchObject({ message: 'Timed out' });
     expect(repository.markDeliveryFailed).toHaveBeenCalledWith(
       response.householdId,
       'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       'ambiguous',
       'timeout',
     );
+    expect(captured.records.filter(({ eventName }) => (
+      eventName === 'delivery.completed'
+      || eventName === 'delivery.failed'
+      || eventName === 'delivery.ambiguous'
+    ))).toEqual([
+      expect.objectContaining({
+        eventName: 'delivery.ambiguous',
+        severityText: 'WARN',
+        attributes: expect.objectContaining({
+          status: 'ambiguous',
+          'failure.category': 'delivery_aborted',
+          'delivery.send.attempted': true,
+        }),
+      }),
+    ]);
+  });
+
+  it('emits one safe terminal failure when output processing throws', async () => {
+    const failure = new Error('private processor payload');
+    const handler = new FinalDeliveryHandler({
+      repository: {
+        reserveDelivery: vi.fn(),
+        markDelivered: vi.fn(),
+        markDeliveryFailed: vi.fn(),
+      },
+      processors: [{
+        name: 'throws',
+        version: 1,
+        process: () => {
+          throw failure;
+        },
+      }],
+      transports: { telegram: { send: vi.fn() }, slack: { send: vi.fn() } },
+      ids: { nextDeliveryId: () => 'delivery_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+
+    const captured = await captureRejectedDeliveryLog(() => handler.deliver(response));
+    expect(captured.error).toBe(failure);
+    expect(captured.records.filter(({ eventName }) => (
+      eventName === 'delivery.completed'
+      || eventName === 'delivery.failed'
+      || eventName === 'delivery.ambiguous'
+    ))).toEqual([
+      expect.objectContaining({
+        eventName: 'delivery.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          status: 'failed',
+          'failure.category': 'processor_failed',
+          'delivery.send.attempted': false,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(captured.records)).not.toContain('private processor payload');
   });
 
   it('records an unrecovered reservation failure without raw error content', async () => {

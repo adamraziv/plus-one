@@ -103,10 +103,24 @@ export class FinalDeliveryHandler {
     throwIfAborted(options.signal);
     logger.info('delivery.started', { fields: { channel } });
     const processingStartedAt = Date.now();
-    const processed = runOutputProcessors(
-      response,
-      this.dependencies.processors ?? [mandatoryPolicyProcessor, channelFormatProcessor],
-    );
+    let processed: ReturnType<typeof runOutputProcessors>;
+    try {
+      processed = runOutputProcessors(
+        response,
+        this.dependencies.processors ?? [mandatoryPolicyProcessor, channelFormatProcessor],
+      );
+    } catch (error) {
+      logger.error('delivery.failed', {
+        fields: {
+          channel,
+          status: 'failed',
+          failureCategory: 'processor_failed',
+          sent: false,
+          durationMs: Date.now() - startedAt,
+        },
+      });
+      throw error;
+    }
     logger.info('delivery.processing.completed', {
       fields: {
         channel,
@@ -152,120 +166,138 @@ export class FinalDeliveryHandler {
       });
       throw error;
     }
-    return withLogContext({
-      deliveryId: delivery.deliveryId,
-      householdId: response.householdId,
-      conversationId: response.conversationId,
-    }, async () => {
-      throwIfAborted(options.signal);
-      logger.info('delivery.reserved', {
-        fields: {
-          channel,
-          status: delivery.status,
-          durationMs: Date.now() - startedAt,
-        },
-      });
-      if (delivery.status === 'delivered') {
-        logger.info('delivery.completed', {
-          fields: {
-            channel,
-            status: 'delivered',
-            sent: false,
-            durationMs: Date.now() - startedAt,
-          },
-        });
-        return { status: 'delivered', delivery, sent: false };
-      }
-      if (delivery.status === 'failed' || delivery.status === 'ambiguous') {
-        const logOptions = {
+    let sendAttempted = false;
+    try {
+      return await withLogContext({
+        deliveryId: delivery.deliveryId,
+        householdId: response.householdId,
+        conversationId: response.conversationId,
+      }, async () => {
+        throwIfAborted(options.signal);
+        logger.info('delivery.reserved', {
           fields: {
             channel,
             status: delivery.status,
-            failureCategory: delivery.failureCategory,
-            sent: false,
-            durationMs: Date.now() - startedAt,
-          },
-        };
-        if (delivery.status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
-        else logger.error('delivery.failed', logOptions);
-        return { status: delivery.status, delivery, sent: false };
-      }
-
-      let sendAttempted = false;
-      try {
-        throwIfAborted(options.signal);
-        const sendStartedAt = Date.now();
-        sendAttempted = true;
-        const sent = await abortable(this.dependencies.transports[channel].send({
-          body: response.body,
-          destination: response.delivery.destination,
-          format: response.delivery.format,
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-        }), options.signal);
-        throwIfAborted(options.signal);
-        const delivered = await abortable(this.dependencies.repository.markDelivered(
-          response.householdId,
-          delivery.deliveryId,
-          sent.platformMessageId,
-        ), options.signal);
-        logger.info('delivery.sent', {
-          fields: {
-            channel,
-            sent: true,
-            durationMs: Date.now() - sendStartedAt,
-          },
-        });
-        logger.info('delivery.completed', {
-          fields: {
-            channel,
-            status: 'delivered',
-            sent: true,
             durationMs: Date.now() - startedAt,
           },
         });
-        return { status: 'delivered', sent: true, delivery: delivered };
-      } catch (error) {
-        if (options.signal?.aborted) {
-          if (sendAttempted) {
-            try {
-              await this.dependencies.repository.markDeliveryFailed(
-                response.householdId,
-                delivery.deliveryId,
-                'ambiguous',
-                'timeout',
-              );
-            } catch {
-              throw abortReason(options.signal);
-            }
-          }
-          throw abortReason(options.signal);
+        if (delivery.status === 'delivered') {
+          logger.info('delivery.completed', {
+            fields: {
+              channel,
+              status: 'delivered',
+              sent: false,
+              durationMs: Date.now() - startedAt,
+            },
+          });
+          return { status: 'delivered', delivery, sent: false };
         }
-        const failure = error instanceof TransportSendError
-          ? error.failure
-          : transportFailureFromUnknown(error);
-        const status = failure.receiptLookupRequired || failure.category === 'ambiguous'
-          ? 'ambiguous'
-          : 'failed';
-        const failed = await this.dependencies.repository.markDeliveryFailed(
-          response.householdId,
-          delivery.deliveryId,
-          status,
-          failure.category,
-        );
-        const logOptions = {
-          fields: {
-            channel,
+        if (delivery.status === 'failed' || delivery.status === 'ambiguous') {
+          const logOptions = {
+            fields: {
+              channel,
+              status: delivery.status,
+              failureCategory: delivery.failureCategory,
+              sent: false,
+              durationMs: Date.now() - startedAt,
+            },
+          };
+          if (delivery.status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
+          else logger.error('delivery.failed', logOptions);
+          return { status: delivery.status, delivery, sent: false };
+        }
+
+        try {
+          throwIfAborted(options.signal);
+          const sendStartedAt = Date.now();
+          sendAttempted = true;
+          const sent = await abortable(this.dependencies.transports[channel].send({
+            body: response.body,
+            destination: response.delivery.destination,
+            format: response.delivery.format,
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          }), options.signal);
+          throwIfAborted(options.signal);
+          const delivered = await abortable(this.dependencies.repository.markDelivered(
+            response.householdId,
+            delivery.deliveryId,
+            sent.platformMessageId,
+          ), options.signal);
+          logger.info('delivery.sent', {
+            fields: {
+              channel,
+              sent: true,
+              durationMs: Date.now() - sendStartedAt,
+            },
+          });
+          logger.info('delivery.completed', {
+            fields: {
+              channel,
+              status: 'delivered',
+              sent: true,
+              durationMs: Date.now() - startedAt,
+            },
+          });
+          return { status: 'delivered', sent: true, delivery: delivered };
+        } catch (error) {
+          if (options.signal?.aborted) {
+            if (sendAttempted) {
+              try {
+                await this.dependencies.repository.markDeliveryFailed(
+                  response.householdId,
+                  delivery.deliveryId,
+                  'ambiguous',
+                  'timeout',
+                );
+              } catch {
+                throw abortReason(options.signal);
+              }
+            }
+            throw abortReason(options.signal);
+          }
+          const failure = error instanceof TransportSendError
+            ? error.failure
+            : transportFailureFromUnknown(error);
+          const status = failure.receiptLookupRequired || failure.category === 'ambiguous'
+            ? 'ambiguous'
+            : 'failed';
+          const failed = await this.dependencies.repository.markDeliveryFailed(
+            response.householdId,
+            delivery.deliveryId,
             status,
-            failureCategory: failure.category,
-            sent: true,
-            durationMs: Date.now() - startedAt,
-          },
-        };
-        if (status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
-        else logger.error('delivery.failed', logOptions);
-        return { status, sent: true, delivery: failed };
-      }
-    });
+            failure.category,
+          );
+          const logOptions = {
+            fields: {
+              channel,
+              status,
+              failureCategory: failure.category,
+              sent: true,
+              durationMs: Date.now() - startedAt,
+            },
+          };
+          if (status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
+          else logger.error('delivery.failed', logOptions);
+          return { status, sent: true, delivery: failed };
+        }
+      });
+    } catch (error) {
+      const status = sendAttempted ? 'ambiguous' : 'failed';
+      const logOptions = {
+        fields: {
+          channel,
+          status,
+          failureCategory: options.signal?.aborted
+            ? 'delivery_aborted'
+            : 'delivery_operation_failed',
+          sent: sendAttempted,
+          durationMs: Date.now() - startedAt,
+        },
+      };
+      if (status === 'ambiguous') logger.warn('delivery.ambiguous', logOptions);
+      else logger.error('delivery.failed', logOptions);
+      throw error;
+    }
   }
 }
 
