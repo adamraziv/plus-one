@@ -124,6 +124,68 @@ describe('team-lead supervised retry through the production gateway', () => {
     expect(checkers[0]).not.toHaveProperty('executionState');
     expect(checkers[0]).not.toHaveProperty('suggestedPlan');
   }, 180_000);
+
+  it('does not start a fresh delegation after supervised attempts are exhausted', async () => {
+    context = await createPostgresTestContext('gateway_lead_exhausted');
+    owner = new Pool({ connectionString: context.migratorUrl, max: 1 });
+    await owner.query(
+      `INSERT INTO operations.households
+         (household_id, reporting_currency, reporting_timezone)
+       VALUES ($1, 'IDR', 'Asia/Shanghai')`,
+      [householdId],
+    );
+    server = await startProductionGatewayServer({
+      env: databaseEnvironment(context),
+      modelResponder: persistentBudgetingFailureResponder(),
+    });
+
+    const response = await fetch(`${server.baseUrl}/plus-one/inbound`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(InboundChannelMessageSchemaV1.parse({
+        schemaName: 'inbound-channel-message',
+        schemaVersion: 1,
+        conversationId: 'conversation_01KYNZJ66YXP77RPW2BMEV0ZXR',
+        householdId,
+        channel: 'telegram',
+        externalMessageId: 'telegram:budgeting-exhausted:1',
+        receivedAt: '2026-07-29T08:47:01.224Z',
+        speaker: { principalRef: 'telegram:user:42', displayName: 'Rajip' },
+        body: 'can u try again',
+        attachments: [],
+        metadata: { destination: { chatId: 'telegram-chat-42' } },
+      })),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      body: 'I could not complete that request safely. Please try again.',
+    });
+    const invocations = server.modelRequests()
+      .map(contractInvocation)
+      .filter((invocation): invocation is Record<string, unknown> => invocation !== undefined);
+    expect(invocations.map(invocationRole)).toEqual([
+      'budgeting-lead',
+      'budget-maker',
+      'budgeting-lead',
+      'budget-maker',
+    ]);
+    expect(invocations[2]).toMatchObject({
+      executionState: {
+        remainingAttempts: 1,
+        executions: [{
+          executionOrdinal: 1,
+          outcome: 'failed',
+          work: [{
+            failure: {
+              code: 'structured_result_not_submitted',
+              retry: 'safe',
+            },
+          }],
+        }],
+      },
+    });
+  }, 180_000);
 });
 
 function budgetingRetryResponder(): OpenAiCompatibleTestResponder {
@@ -236,6 +298,65 @@ function budgetingRetryResponder(): OpenAiCompatibleTestResponder {
         content: 'I processed the checked jajan budget request.',
       },
     };
+  };
+}
+
+function persistentBudgetingFailureResponder(): OpenAiCompatibleTestResponder {
+  let delegationOrdinal = 0;
+  return ({ body }) => {
+    const invocation = contractInvocation({ path: '', body });
+    if (invocation?.schemaName === 'maker-invocation') {
+      return {
+        finishReason: 'stop',
+        message: {
+          role: 'assistant',
+          content: 'I did not submit the required contractual result.',
+        },
+      };
+    }
+    if (invocation !== undefined) return undefined;
+    if (hasFunctionTool(body, 'delegateTeam')) {
+      delegationOrdinal += 1;
+      return budgetingDelegation(`delegate-team-budgeting-exhausted-${delegationOrdinal}`);
+    }
+    return {
+      finishReason: 'stop',
+      message: {
+        role: 'assistant',
+        content: 'I could not complete that request safely. Please try again.',
+      },
+    };
+  };
+}
+
+function budgetingDelegation(toolCallId: string) {
+  return {
+    finishReason: 'tool_calls' as const,
+    message: {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: toolCallId,
+        type: 'function',
+        function: {
+          name: 'delegateTeam',
+          arguments: JSON.stringify({
+            team: 'budgeting',
+            request: {
+              schemaName: 'budgeting-lead-request',
+              schemaVersion: 1,
+              intent: 'budget_plan',
+              request: {
+                schemaName: 'budget-plan-request-draft',
+                schemaVersion: 1,
+                instruction: 'Set up the confirmed recurring jajan budget.',
+                scopeKey: 'monthly jajan',
+              },
+            },
+          }),
+        },
+      }],
+    },
   };
 }
 
