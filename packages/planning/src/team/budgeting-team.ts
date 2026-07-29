@@ -5,8 +5,8 @@ import {
 } from '@plus-one/contracts';
 import type { TeamDefinition } from '@plus-one/runtime';
 import {
+  BudgetingIntakeRequestSchemaV1,
   BudgetingLeadRequestSchemaV1,
-  type BudgetingLeadRequestV1,
 } from './contracts.js';
 import { planningRoles } from './roles.js';
 import { budgetingWorkCells } from './work-cells.js';
@@ -31,13 +31,16 @@ const expectedCell = {
   budget_scenarios: 'budget-scenarios',
 } as const;
 
-export function validateBudgetingLeadPlan(request: BudgetingLeadRequestV1,
+export function validateBudgetingLeadPlan(request: unknown,
   candidate: unknown): TeamLeadPlanV1 {
   const input = BudgetingLeadRequestSchemaV1.parse(request);
   const plan = TeamLeadPlanSchemaV1.parse(candidate);
+  const expectedWorkCell = BudgetingIntakeRequestSchemaV1.safeParse(input.request).success
+    ? 'budgeting-intake'
+    : expectedCell[input.intent];
   if (plan.recommendedStrategyName !== 'single-maker-checker'
     || plan.work.length !== 1
-    || plan.work[0]!.workCellId !== expectedCell[input.intent]) {
+    || plan.work[0]!.workCellId !== expectedWorkCell) {
     throw new PlusOneError({
       category: 'policy_rejected',
       code: 'budgeting_lead_plan_invalid',
