@@ -546,6 +546,7 @@ describe('conversational accounting through the live service', () => {
 });
 
 const incompleteTransactionResponder: OpenAiCompatibleTestResponder = ({ body }) => {
+  if (hasFunctionTool(body, 'submitResult')) return undefined;
   if (hasFunctionTool(body, 'delegateTeam') && !hasToolResult(body)) {
     return {
       finishReason: 'tool_calls',
@@ -583,6 +584,7 @@ const incompleteTransactionResponder: OpenAiCompatibleTestResponder = ({ body })
 };
 
 const gasConversationResponder: OpenAiCompatibleTestResponder = ({ body }) => {
+  if (hasFunctionTool(body, 'submitResult')) return undefined;
   const userText = latestUserText(body).toLowerCase();
   if (hasFunctionTool(body, 'delegateTeam') && !hasToolResult(body)) {
     const isQuery = userText.includes('list my transactions')
@@ -689,6 +691,7 @@ const gasConversationResponder: OpenAiCompatibleTestResponder = ({ body }) => {
 };
 
 const foodsCombinedContinuationResponder: OpenAiCompatibleTestResponder = ({ body }) => {
+  if (hasFunctionTool(body, 'submitResult')) return undefined;
   const userText = latestUserText(body).toLowerCase();
   const checkedContext = latestToolResultText(body);
   if (hasFunctionTool(body, 'delegateTeam')
@@ -780,6 +783,7 @@ const foodsCombinedContinuationResponder: OpenAiCompatibleTestResponder = ({ bod
 };
 
 const accountConversationResponder: OpenAiCompatibleTestResponder = ({ body }) => {
+  if (hasFunctionTool(body, 'submitResult')) return undefined;
   const userText = latestUserText(body).toLowerCase();
   if (hasFunctionTool(body, 'delegateTeam') && !hasToolResult(body)) {
     const isQuery = userText.includes('list my accounts')
@@ -858,6 +862,7 @@ const existingCategoryCorrectionScenario = {
 } as const;
 
 const existingCategoryCorrectionResponder: OpenAiCompatibleTestResponder = ({ body }) => {
+  if (hasFunctionTool(body, 'submitResult')) return undefined;
   const scenario = existingCategoryCorrectionScenario;
   const userText = latestUserText(body).toLowerCase();
   if (hasFunctionTool(body, 'delegateTeam') && !hasToolResult(body)) {

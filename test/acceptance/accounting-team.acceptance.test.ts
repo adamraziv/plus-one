@@ -35,6 +35,7 @@ import {
   TeamExecutionCoordinator,
   TeamExecutor,
   TeamLeadPlanner,
+  TeamLeadSupervisor,
   TeamResultAssembler,
   VerificationRuntime,
   type ArtifactRepository,
@@ -272,6 +273,8 @@ async function runAccountingScenario(input: {
           'run_01JNZQ4A9B8C7D6E5F4G3H2J3K',
           'run_01JNZQ4A9B8C7D6E5F4G3H2J4K',
           'run_01JNZQ4A9B8C7D6E5F4G3H2J5K',
+          'run_01JNZQ4A9B8C7D6E5F4G3H2J6K',
+          'run_01JNZQ4A9B8C7D6E5F4G3H2J7K',
         ];
         return () => ids.shift()!;
       })(),
@@ -307,36 +310,58 @@ async function runAccountingScenario(input: {
   const teamRuntime: OrchestratorTeamRuntime = {
     runTeamLead: vi.fn(async (runtimeInput) => {
       const leadSkill = accountingSkills.find((skill) => skill.identity.skillName === 'accounting-lead-routing')!.identity;
-      const plan = await planner.plan({
-        householdId,
+      const taskIds = [
         taskId,
-        team: accountingTeamDefinition,
-        selectedSkill: leadSkill,
-        request: runtimeInput.request,
-        policyLabels: ['personalized_finance'],
-        abortSignal: runtimeInput.signal,
-      });
-      const workCell = accountingTeamDefinition.workCells.find((cell) => cell.workCellId === plan.work[0]!.workCellId)!;
-      const selectedSkill = skillFor(workCell.allowedSkillNames[0]!);
-      return coordinator.execute({
-        team: accountingTeamDefinition,
-        strategyName: plan.recommendedStrategyName,
-        selectedSkill: selectedSkill.identity,
-        resultTaskId,
-        work: [{
+        'task_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+      ];
+      return new TeamLeadSupervisor().run({
+        attemptLimit: 2,
+        plan: (executionState, executionOrdinal) => planner.plan({
           householdId,
-          taskId,
-          team: 'accounting',
-          workCell,
-          selectedSkill: selectedSkill.identity,
-          makerInput: plan.work[0]!.makerInput,
-          permittedEvidence: [],
+          taskId: taskIds[executionOrdinal - 1]!,
+          team: accountingTeamDefinition,
+          selectedSkill: leadSkill,
+          request: runtimeInput.request,
           policyLabels: ['personalized_finance'],
-          stopCondition: plan.stopCondition,
-          strategyName: plan.recommendedStrategyName,
+          executionState,
           abortSignal: runtimeInput.signal,
-        }],
-        stopCondition: plan.stopCondition,
+        }),
+        execute: async (plan, executionOrdinal) => {
+          const workCell = accountingTeamDefinition.workCells.find(
+            (cell) => cell.workCellId === plan.work[0]!.workCellId,
+          )!;
+          const selectedSkill = skillFor(workCell.allowedSkillNames[0]!);
+          const execution = await coordinator.executeWithDetails({
+            team: accountingTeamDefinition,
+            strategyName: plan.recommendedStrategyName,
+            selectedSkill: selectedSkill.identity,
+            resultTaskId,
+            work: [{
+              householdId,
+              taskId: taskIds[executionOrdinal - 1]!,
+              team: 'accounting',
+              workCell,
+              selectedSkill: selectedSkill.identity,
+              makerInput: plan.work[0]!.makerInput,
+              permittedEvidence: [],
+              policyLabels: ['personalized_finance'],
+              stopCondition: plan.stopCondition,
+              strategyName: plan.recommendedStrategyName,
+              abortSignal: runtimeInput.signal,
+            }],
+            stopCondition: plan.stopCondition,
+          });
+          return {
+            result: execution.result,
+            work: execution.work.map((result) => ({
+              taskId: result.taskId,
+              workCellId: workCell.workCellId,
+              role: workCell.maker.identity,
+              status: result.status,
+              ...(result.failure === undefined ? {} : { failure: result.failure }),
+            })),
+          };
+        },
       });
     }),
     resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },

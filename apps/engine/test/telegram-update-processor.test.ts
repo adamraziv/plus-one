@@ -81,9 +81,10 @@ describe('TelegramUpdateProcessor', () => {
   });
 
   it('sends a pairing code for an unknown private DM and skips orchestration', async () => {
-    const sendMessage = vi.fn(async (_input: { chatId: string; text: string }) => ({
-      platformMessageId: 'telegram-platform-1',
-    }));
+    const sendMessage = vi.fn(async (input: { chatId: string; text: string }) => {
+      void input;
+      return { platformMessageId: 'telegram-platform-1' };
+    });
     const inboundHandler = vi.fn();
     const processor = new TelegramUpdateProcessor({
       pairing: {
