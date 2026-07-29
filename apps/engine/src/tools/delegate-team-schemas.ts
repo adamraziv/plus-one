@@ -4,6 +4,7 @@ import {
   JsonValueSchema,
   type JsonValue,
 } from '@plus-one/contracts';
+import { BudgetingDelegateRequestSchemaV1 } from '@plus-one/planning';
 import { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
 import {
   type TransactionCaptureRequestDraftV1,
@@ -20,6 +21,7 @@ const TeamIdSchema = z.enum([
 ]);
 
 export { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
+export { BudgetingDelegateRequestSchemaV1 } from '@plus-one/planning';
 export { TransactionCaptureRequestDraftSchemaV1 } from '../accounting/accounting-request-drafts.js';
 
 export const QueryLeadRequestDraftSchemaV1 = z.object({
@@ -49,21 +51,26 @@ export const DelegateTeamToolInputSchema = z.object({
     'Exact registered specialist team id.',
     'Use query for checked reads of household finance data.',
     'Use accounting for transaction capture, journal, chart, ingestion, or reconciliation work.',
+    'Use budgeting for budget intake, checked budget proposals, or scenario comparisons.',
   ].join(' ')),
   request: z.union([
     QueryDelegateRequestSchemaV1,
     AccountingDelegateRequestSchemaV1,
+    BudgetingDelegateRequestSchemaV1,
     jsonObjectSchema,
   ]).describe([
     'JSON object for the selected team.',
     'For query, use query-lead-request-draft or full EvidenceRequestV1.',
     'For accounting, use AccountingLeadRequestV1; transaction_capture must contain transaction-capture-request-draft or TransactionCaptureRequestV1.',
     'For account creation or chart changes, use intent chart_of_accounts with a chart-work-request-draft or ChartWorkRequestV1.',
+    'For budgeting, use budgeting-lead-request with a budget-plan-request-draft or budget-scenario-request-draft.',
   ].join(' ')),
 }).strict().superRefine((value, context) => {
   const schema = value.team === 'query'
     ? QueryDelegateRequestSchemaV1
-    : value.team === 'accounting' ? AccountingDelegateRequestSchemaV1 : undefined;
+    : value.team === 'accounting'
+      ? AccountingDelegateRequestSchemaV1
+      : value.team === 'budgeting' ? BudgetingDelegateRequestSchemaV1 : undefined;
   if (schema === undefined || schema.safeParse(value.request).success) return;
   context.addIssue({
     code: 'custom',

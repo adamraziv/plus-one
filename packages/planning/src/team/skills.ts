@@ -23,8 +23,12 @@ const skill = (
 export const planningSkills = [
   skill('budgeting-lead-routing', ['budgeting'], ['budgeting-lead'],
     'Route one typed budgeting request to one budgeting work cell.',
-    ['Choose only budget-plan or budget-scenarios.'],
+    ['Choose only budgeting-intake, budget-plan, or budget-scenarios.'],
     ['Reject extra work cells or non-budgeting strategies.']),
+  skill('budgeting-intake', ['budgeting'], ['budget-maker', 'budget-checker'],
+    'Ask for the user-visible inputs needed before checked budget work can begin.',
+    ['Return only a planning clarification; never invent checked evidence or internal identifiers.'],
+    ['Verify the questions are concise, actionable, and do not claim a budget was created.']),
   skill('budget-plan', ['budgeting'], ['budget-maker', 'budget-checker'],
     'Create or revise one budget proposal from checked evidence.',
     ['Use only checked Evidence Package facts and explicit user priorities.'],

@@ -18,12 +18,18 @@ import {
   accountingSkills,
   accountingTeamDefinition,
 } from '@plus-one/accounting';
+import {
+  BudgetingIntakeRequestSchemaV1,
+  MaterializedBudgetingLeadRequestSchemaV1,
+  budgetingTeamDefinition,
+} from '@plus-one/planning';
 import { ArtifactStore, createArtifactEnvelope } from '@plus-one/runtime';
 import { createChartMakerAgent } from '../src/agents/accounting/index.js';
 import {
   deterministicLeadPlanForRequest,
   makerInputForLeadWorkItem,
   normalizeAccountingLeadRequest,
+  normalizeBudgetingLeadRequest,
   normalizeQueryLeadRequest,
 } from '../src/team-runtime.js';
 import {
@@ -1099,6 +1105,33 @@ describe('normalizeQueryLeadRequest', () => {
   });
 });
 
+describe('normalizeBudgetingLeadRequest', () => {
+  it('materializes a budget-plan draft with authenticated scope and no invented evidence', () => {
+    const normalized = normalizeBudgetingLeadRequest(message, {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Help me create a budget.',
+        scopeKey: 'monthly',
+      },
+    });
+
+    const parsed = MaterializedBudgetingLeadRequestSchemaV1.parse(normalized);
+    expect(BudgetingIntakeRequestSchemaV1.parse(parsed.request)).toEqual({
+      schemaName: 'budgeting-intake-request',
+      schemaVersion: 1,
+      householdId: message.householdId,
+      intent: 'budget_plan',
+      instruction: 'Help me create a budget.',
+      scopeKey: 'monthly',
+    });
+    expect(parsed.request).not.toHaveProperty('evidencePackage');
+  });
+});
+
 describe('makerInputForLeadWorkItem', () => {
   it('uses the normalized Query request as query-evidence maker input, but leaves query-analyst maker input unchanged', async () => {
     const { pools } = queryPools({ 'reporting.accounts': ['household', 'account'] });
@@ -1148,6 +1181,34 @@ describe('makerInputForLeadWorkItem', () => {
 });
 
 describe('deterministicLeadPlanForRequest', () => {
+  it('routes a materialized budget draft to checked budgeting intake', () => {
+    const request = normalizeBudgetingLeadRequest(message, {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Help me create a budget.',
+        scopeKey: 'monthly',
+      },
+    });
+
+    expect(deterministicLeadPlanForRequest(budgetingTeamDefinition, request)).toEqual({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{
+        workCellId: 'budgeting-intake',
+        makerInput: (request as { request: unknown }).request,
+      }],
+      stopCondition: {
+        code: 'budgeting-intake',
+        description: 'Return one checked budgeting clarification.',
+      },
+    });
+  });
+
   it('builds the one valid Query lead plan for the normalized account-list slice', async () => {
     const { pools } = queryPools({ 'reporting.accounts': ['household', 'account'] });
     const request = await normalizeQueryLeadRequest(pools, message, queryDraft('List our accounts.', {

@@ -4,6 +4,7 @@ import type { TeamDefinition } from '@plus-one/runtime';
 import { createDelegateTeamTool } from '../src/tools/delegate-team.js';
 import {
   AccountingDelegateRequestSchemaV1,
+  BudgetingDelegateRequestSchemaV1,
   DelegateTeamToolInputSchema,
 } from '../src/tools/delegate-team-schemas.js';
 import { MaterializedAccountingLeadRequestSchemaV1 } from '../src/accounting/accounting-lead-contracts.js';
@@ -43,7 +44,35 @@ describe('createDelegateTeamTool', () => {
     });
     expect(providerSchema).toContain('"const":"accounting-lead-request"');
     expect(providerSchema).toContain('"const":"transaction-capture-request-draft"');
+    expect(providerSchema).toContain('"const":"budgeting-lead-request"');
+    expect(providerSchema).toContain('"const":"budget-plan-request-draft"');
     expect(providerSchema).toContain('"const":"query-lead-request-draft"');
+  });
+
+  it('accepts typed budgeting drafts and rejects query-shaped budgeting requests', () => {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Help me create a budget.',
+        scopeKey: 'monthly',
+      },
+    });
+
+    expect(DelegateTeamToolInputSchema.parse({ team: 'budgeting', request }).request)
+      .toEqual(request);
+    expect(DelegateTeamToolInputSchema.safeParse({
+      team: 'budgeting',
+      request: {
+        schemaName: 'query-lead-request-draft',
+        schemaVersion: 1,
+        businessQuestion: 'What information is needed to create a budget?',
+        requiredCalculations: [],
+      },
+    }).success).toBe(false);
   });
 
   it('rejects the malformed accounting shape observed from a generic request schema', () => {
