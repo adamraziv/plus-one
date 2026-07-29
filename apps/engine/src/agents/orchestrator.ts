@@ -909,9 +909,12 @@ export class OrchestratorAgent {
       logger: CatalogLogger<'runtime.orchestrator'>;
     },
   ) {
+    const stopAtStepLimit = stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS);
     const generationOptions = {
       ...this.orchestratorGenerateOptions(message, invocation.requestContext),
-      stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
+      stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+        (invocation.delegationCount > 0 && !canDelegateAnotherSubstep(invocation))
+        || stopAtStepLimit({ steps }),
       errorProcessors: [createTransientModelRetryProcessor({
         maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
       })],
