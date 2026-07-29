@@ -48,7 +48,7 @@ export class TeamExecutor {
     }
     const makerPolicy = this.dependencies.policies.resolve(input.workCell.maker.runtimePolicy);
     const checkerPolicy = this.dependencies.policies.resolve(input.workCell.checker.runtimePolicy);
-    const attemptLimit = Math.min(makerPolicy.maxAttempts, checkerPolicy.maxAttempts);
+    const attemptLimit = 1;
     const deadlineAt = new Date(Date.now()
       + Math.min(makerPolicy.teamDeadlineMs, checkerPolicy.teamDeadlineMs)).toISOString();
     const teamAbortSignal = AbortSignal.any([

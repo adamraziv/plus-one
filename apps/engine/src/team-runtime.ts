@@ -17,10 +17,10 @@ import {
   AccountSourceMappingIdSchema,
   EvidenceRequestSchemaV1,
   PeriodIdSchema,
-  TeamLeadExecutionStateSchemaV1,
   TeamLeadPlanSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
+  type TeamResultStatusV1,
 } from '@plus-one/contracts';
 import {
   CheckedMutationExecutor,
@@ -54,10 +54,13 @@ import {
   TeamExecutionCoordinator,
   TeamExecutor,
   TeamLeadPlanner,
+  TeamLeadSupervisor,
   TeamResultAssembler,
   VerificationRuntime,
   findWorkCell,
+  type CheckedWorkCellResult,
   type SkillRegistration,
+  type SupervisedWorkExecution,
   type TeamDefinition,
   type WorkCellDefinition,
 } from '@plus-one/runtime';
@@ -159,7 +162,6 @@ export function createTeamRuntime(input: {
 
   return {
     runTeamLead: async (runtimeInput) => {
-      const leadTaskId = nextId('task');
       const resultTaskId = nextId('task');
       const leadSkill = findLeadSkill(runtimeInput.team);
       const leadPolicy = input.agentSystem.policies.resolve(runtimeInput.team.lead.runtimePolicy);
@@ -175,87 +177,121 @@ export function createTeamRuntime(input: {
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
           : runtimeInput.request;
-      await runtime.createTask({
-        householdId: runtimeInput.message.householdId,
-        taskId: leadTaskId,
-        team: runtimeInput.team.team,
-        attemptLimit: leadPolicy.maxAttempts,
-        deadlineAt: new Date(Date.now() + leadPolicy.teamDeadlineMs).toISOString(),
-      });
       const suggestedPlan = suggestedLeadPlanForRequest(runtimeInput.team, request);
-      const planCandidate = await planner.plan({
-        householdId: runtimeInput.message.householdId,
-        taskId: leadTaskId,
-        team: runtimeInput.team,
-        selectedSkill: leadSkill.identity,
-        request,
-        policyLabels: ['personalized_finance'],
-        ...(suggestedPlan === undefined ? {} : { suggestedPlan }),
-        executionState: TeamLeadExecutionStateSchemaV1.parse({
-          schemaName: 'team-lead-execution-state',
-          schemaVersion: 1,
-          remainingAttempts: Math.min(leadPolicy.maxAttempts, 8),
-          executions: [],
-        }),
-        abortSignal: runtimeInput.signal,
-      });
       const accountingRequest = runtimeInput.team.team === 'accounting'
         ? MaterializedAccountingLeadRequestSchemaV1.safeParse(request)
         : undefined;
       const budgetingRequest = runtimeInput.team.team === 'budgeting'
         ? MaterializedBudgetingLeadRequestSchemaV1.safeParse(request)
         : undefined;
-      const plan = accountingRequest?.success
-        ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
-        : budgetingRequest?.success
-          ? validateBudgetingLeadPlan(budgetingRequest.data, planCandidate)
-        : planCandidate;
-      const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
-        householdId: runtimeInput.message.householdId,
-        parentTaskId: leadTaskId,
-        makerInput: makerInputForLeadWorkItem(runtimeInput.team, item.workCellId, item.makerInput, request),
-        stopCondition: plan.stopCondition,
-        strategyName: plan.recommendedStrategyName,
-        abortSignal: runtimeInput.signal,
-      }));
-
-      const resultMetadata = {
-        householdId: runtimeInput.message.householdId,
-        resultTaskId,
-        team: runtimeInput.team.team,
-        strategyName: plan.recommendedStrategyName,
-        selectedSkill: work[0]!.selectedSkill,
-        stopCondition: plan.stopCondition,
-      };
-      if (plan.work.length === 1 && plan.work[0]?.workCellId === 'chart-of-accounts') {
-        return chartMutations.prepare({
-          workCellInput: work[0]!,
-          resultMetadata,
-        });
-      }
-      if (plan.work.length === 1
-        && (plan.work[0]?.workCellId === 'transaction-capture' || plan.work[0]?.workCellId === 'journal')) {
-        const prepared = await checkedMutations.prepare({
-          workCellInput: work[0]!,
-          commandId: nextId('command'),
-          idempotencyKey: nextId('idem'),
-          adapter: new AccountingJournalCommandAdapter(),
-        });
-        const result = prepared.completionState === 'checked_mutation_pending'
-          ? await checkedMutations.executePrepared({ prepared })
-          : prepared;
-        return new TeamResultAssembler().assemble({
-          ...resultMetadata,
-          results: [result],
-        });
-      }
-      return coordinator.execute({
-        team: runtimeInput.team,
-        strategyName: plan.recommendedStrategyName,
-        selectedSkill: work[0]!.selectedSkill,
-        resultTaskId,
-        work,
-        stopCondition: plan.stopCondition,
+      const attemptLimit = Math.min(8, Math.max(...runtimeInput.team.workCells.map((cell) => {
+        const maker = input.agentSystem.policies.resolve(cell.maker.runtimePolicy);
+        const checker = input.agentSystem.policies.resolve(cell.checker.runtimePolicy);
+        return Math.min(maker.maxAttempts, checker.maxAttempts);
+      })));
+      const deadlineAt = new Date(Date.now() + leadPolicy.endToEndDeadlineMs).toISOString();
+      const supervisionSignal = AbortSignal.any([
+        runtimeInput.signal,
+        AbortSignal.timeout(leadPolicy.endToEndDeadlineMs),
+      ]);
+      const leadTaskIds = new Map<number, string>();
+      return new TeamLeadSupervisor().run({
+        attemptLimit,
+        plan: async (executionState, executionOrdinal) => {
+          const leadTaskId = nextId('task');
+          leadTaskIds.set(executionOrdinal, leadTaskId);
+          await runtime.createTask({
+            householdId: runtimeInput.message.householdId,
+            taskId: leadTaskId,
+            team: runtimeInput.team.team,
+            attemptLimit: leadPolicy.maxAttempts,
+            deadlineAt,
+          });
+          const planCandidate = await planner.plan({
+            householdId: runtimeInput.message.householdId,
+            taskId: leadTaskId,
+            team: runtimeInput.team,
+            selectedSkill: leadSkill.identity,
+            request,
+            policyLabels: ['personalized_finance'],
+            ...(suggestedPlan === undefined ? {} : { suggestedPlan }),
+            executionState,
+            abortSignal: supervisionSignal,
+          });
+          return accountingRequest?.success
+            ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
+            : budgetingRequest?.success
+              ? validateBudgetingLeadPlan(budgetingRequest.data, planCandidate)
+              : planCandidate;
+        },
+        execute: async (plan, executionOrdinal) => {
+          const leadTaskId = leadTaskIds.get(executionOrdinal);
+          if (leadTaskId === undefined) throw new Error('Missing lead task for supervised execution');
+          const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
+            householdId: runtimeInput.message.householdId,
+            parentTaskId: leadTaskId,
+            makerInput: makerInputForLeadWorkItem(
+              runtimeInput.team,
+              item.workCellId,
+              item.makerInput,
+              request,
+            ),
+            stopCondition: plan.stopCondition,
+            strategyName: plan.recommendedStrategyName,
+            abortSignal: supervisionSignal,
+          }));
+          const resultMetadata = {
+            householdId: runtimeInput.message.householdId,
+            resultTaskId,
+            team: runtimeInput.team.team,
+            strategyName: plan.recommendedStrategyName,
+            selectedSkill: work[0]!.selectedSkill,
+            stopCondition: plan.stopCondition,
+          };
+          if (plan.work.length === 1 && plan.work[0]?.workCellId === 'chart-of-accounts') {
+            const result = await chartMutations.prepare({
+              workCellInput: work[0]!,
+              resultMetadata,
+            });
+            return {
+              result,
+              work: supervisedWorkExecutions(work, [], result.status),
+            };
+          }
+          if (plan.work.length === 1
+            && (plan.work[0]?.workCellId === 'transaction-capture'
+              || plan.work[0]?.workCellId === 'journal')) {
+            const prepared = await checkedMutations.prepare({
+              workCellInput: work[0]!,
+              commandId: nextId('command'),
+              idempotencyKey: nextId('idem'),
+              adapter: new AccountingJournalCommandAdapter(),
+            });
+            const checked = prepared.completionState === 'checked_mutation_pending'
+              ? await checkedMutations.executePrepared({ prepared })
+              : prepared;
+            const result = new TeamResultAssembler().assemble({
+              ...resultMetadata,
+              results: [checked],
+            });
+            return {
+              result,
+              work: supervisedWorkExecutions(work, [checked], result.status),
+            };
+          }
+          const execution = await coordinator.executeWithDetails({
+            team: runtimeInput.team,
+            strategyName: plan.recommendedStrategyName,
+            selectedSkill: work[0]!.selectedSkill,
+            resultTaskId,
+            work,
+            stopCondition: plan.stopCondition,
+          });
+          return {
+            result: execution.result,
+            work: supervisedWorkExecutions(work, execution.work, execution.result.status),
+          };
+        },
       });
     },
     resumePendingMutation: async ({ message, pending, signal }) => {
@@ -396,6 +432,24 @@ export function makerInputForLeadWorkItem(
     if (plan.success) return JSON.parse(JSON.stringify(plan.data)) as JsonValue;
   }
   return planMakerInput;
+}
+
+function supervisedWorkExecutions(
+  work: readonly ReturnType<typeof workInputFor>[],
+  checked: readonly CheckedWorkCellResult[],
+  fallbackStatus: TeamResultStatusV1,
+): SupervisedWorkExecution[] {
+  const byTask = new Map(checked.map((result) => [result.taskId, result]));
+  return work.map((item) => {
+    const result = byTask.get(item.taskId);
+    return {
+      taskId: item.taskId,
+      workCellId: item.workCell.workCellId,
+      role: item.workCell.maker.identity,
+      status: result?.status ?? fallbackStatus,
+      ...(result?.failure === undefined ? {} : { failure: result.failure }),
+    };
+  });
 }
 
 export function suggestedLeadPlanForRequest(

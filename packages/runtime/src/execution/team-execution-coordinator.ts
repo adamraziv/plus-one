@@ -4,7 +4,11 @@ import {
   type TeamLeadPlanV1, type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import type { ExecutionStrategyRegistry } from '../strategies/execution-strategy-registry.js';
-import { findWorkCell, type TeamDefinition } from '../teams/definitions.js';
+import {
+  findWorkCell,
+  type CheckedWorkCellResult,
+  type TeamDefinition,
+} from '../teams/definitions.js';
 import type { TeamExecutor } from './team-executor.js';
 import type { TeamResultAssembler } from './team-result-assembler.js';
 
@@ -35,6 +39,18 @@ export class TeamExecutionCoordinator {
     reconciliation?: Omit<WorkInput, 'makerInput'>;
     stopCondition: StopConditionV1;
   }): Promise<TeamResultEnvelopeV2> {
+    return (await this.executeWithDetails(input)).result;
+  }
+
+  async executeWithDetails(input: {
+    team: TeamDefinition;
+    strategyName: string;
+    selectedSkill: SkillIdentityV1;
+    resultTaskId: string;
+    work: readonly WorkInput[];
+    reconciliation?: Omit<WorkInput, 'makerInput'>;
+    stopCondition: StopConditionV1;
+  }): Promise<{ result: TeamResultEnvelopeV2; work: readonly CheckedWorkCellResult[] }> {
     const strategy = this.dependencies.strategies.assertAllowed(
       input.strategyName, input.team.allowedStrategyNames, input.work.length,
     );
@@ -62,11 +78,12 @@ export class TeamExecutionCoordinator {
     }
     const householdId = input.work[0]?.householdId ?? input.reconciliation?.householdId;
     if (householdId === undefined) throw new Error('Team execution requires at least one work item');
-    return this.dependencies.assembler.assemble({
+    const result = this.dependencies.assembler.assemble({
       householdId, resultTaskId: input.resultTaskId, team: input.team.team,
       strategyName: input.strategyName, selectedSkill: input.selectedSkill,
       stopCondition: input.stopCondition, results: allResults, claimSources,
     });
+    return { result, work: allResults };
   }
 
   private async executeSequentially(work: readonly WorkInput[]) {
