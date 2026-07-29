@@ -67,6 +67,8 @@ export interface LogRecord {
     stack?: string;
     code?: string;
     category?: string;
+    responseBody?: string;
+    statusCode?: number;
   }>;
 }
 

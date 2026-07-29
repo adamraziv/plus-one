@@ -133,10 +133,32 @@ describe('MastraStructuredAgentAdapter', () => {
   });
 
   it('preserves an exhausted Mastra API retry result as transient provider unavailability', async () => {
-    const generate = vi.fn().mockResolvedValue({ text: '', finishReason: 'retry' });
+    const providerError = Object.assign(new Error('Inference capacity queue is full'), {
+      responseBody: '{"error":{"message":"capacity queue is full"}}',
+      statusCode: 503,
+    });
+    const generate = vi.fn(async (_messages: unknown, rawOptions: unknown) => {
+      const options = rawOptions as GenerationOptions;
+      const processor = options.errorProcessors[0] as {
+        processAPIError(args: unknown): Promise<unknown>;
+      };
+      await processor.processAPIError({
+        error: providerError,
+        retryCount: 1,
+        stepNumber: 0,
+        steps: [],
+        state: {},
+        abortSignal: new AbortController().signal,
+      });
+      return { text: '', finishReason: 'retry' };
+    });
 
     await expect(adapterWith(generate).generate(call()))
-      .rejects.toMatchObject({ code: 'model_temporarily_unavailable', isRetryable: true });
+      .rejects.toMatchObject({
+        code: 'model_temporarily_unavailable',
+        isRetryable: true,
+        cause: providerError,
+      });
   });
 
   it('rejects duplicate result submissions', async () => {
