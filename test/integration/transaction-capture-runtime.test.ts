@@ -11,6 +11,7 @@ import { closeDatabasePools, createDatabasePools } from '@plus-one/database';
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { createDefaultQueryTools } from '../../apps/engine/src/query-tools.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
+import { submitContractResult } from '../helpers/contract-agent-test-double.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const ids = {
@@ -41,6 +42,19 @@ describe('production transaction capture runtime', () => {
     pools = createDatabasePools(context.roleUrls);
 
     const queryTools = createDefaultQueryTools(pools);
+    const leadGenerate = vi.fn(async (
+      messages: readonly { content: string }[],
+      options: unknown,
+    ) => {
+      const invocation = JSON.parse(messages[0]?.content ?? '{}') as {
+        schemaName?: string;
+        suggestedPlan?: unknown;
+      };
+      if (invocation.schemaName !== 'team-lead-invocation') {
+        throw new Error('Only the accounting lead should require a model call in this runtime path.');
+      }
+      return submitContractResult(options, invocation.suggestedPlan);
+    });
     const agentSystem = createAgentSystem({
       models: {
         lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -50,7 +64,7 @@ describe('production transaction capture runtime', () => {
       },
       queryTools,
       queryAgentFactory: () => ({ generate: vi.fn() } as never),
-      accountingAgentFactory: () => ({ generate: vi.fn() } as never),
+      accountingAgentFactory: () => ({ generate: leadGenerate } as never),
       agentFactory: () => ({ generate: vi.fn() } as never),
     });
     const runtime = createTeamRuntime({ pools, agentSystem });
@@ -82,6 +96,7 @@ describe('production transaction capture runtime', () => {
       status: 'verified',
       effect: { state: 'persisted', readback: { ok: true } },
     });
+    expect(leadGenerate).toHaveBeenCalledTimes(1);
     expect((await owner.query<{ occurred_on: string; transaction_currency: string }>(
       'SELECT occurred_on::text, transaction_currency FROM accounting.journals',
     )).rows).toEqual([{ occurred_on: '2026-07-16', transaction_currency: 'IDR' }]);

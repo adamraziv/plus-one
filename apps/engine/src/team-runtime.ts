@@ -17,6 +17,7 @@ import {
   AccountSourceMappingIdSchema,
   EvidenceRequestSchemaV1,
   PeriodIdSchema,
+  TeamLeadExecutionStateSchemaV1,
   TeamLeadPlanSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
@@ -181,16 +182,23 @@ export function createTeamRuntime(input: {
         attemptLimit: leadPolicy.maxAttempts,
         deadlineAt: new Date(Date.now() + leadPolicy.teamDeadlineMs).toISOString(),
       });
-      const planCandidate = deterministicLeadPlanForRequest(runtimeInput.team, request)
-        ?? await planner.plan({
-          householdId: runtimeInput.message.householdId,
-          taskId: leadTaskId,
-          team: runtimeInput.team,
-          selectedSkill: leadSkill.identity,
-          request,
-          policyLabels: ['personalized_finance'],
-          abortSignal: runtimeInput.signal,
-        });
+      const suggestedPlan = suggestedLeadPlanForRequest(runtimeInput.team, request);
+      const planCandidate = await planner.plan({
+        householdId: runtimeInput.message.householdId,
+        taskId: leadTaskId,
+        team: runtimeInput.team,
+        selectedSkill: leadSkill.identity,
+        request,
+        policyLabels: ['personalized_finance'],
+        suggestedPlan,
+        executionState: TeamLeadExecutionStateSchemaV1.parse({
+          schemaName: 'team-lead-execution-state',
+          schemaVersion: 1,
+          remainingAttempts: Math.min(leadPolicy.maxAttempts, 8),
+          executions: [],
+        }),
+        abortSignal: runtimeInput.signal,
+      });
       const accountingRequest = runtimeInput.team.team === 'accounting'
         ? MaterializedAccountingLeadRequestSchemaV1.safeParse(request)
         : undefined;
@@ -390,7 +398,7 @@ export function makerInputForLeadWorkItem(
   return planMakerInput;
 }
 
-export function deterministicLeadPlanForRequest(
+export function suggestedLeadPlanForRequest(
   team: TeamDefinition,
   request: JsonValue,
 ) {
