@@ -1,7 +1,8 @@
 import {
   PlusOneError, type CheckedCommandV1, type MutationReceiptV1, type ReadbackResultV1,
   type ArtifactEnvelopeV1, type CheckerRubricV1, type CheckerVerdictV1, type MakerArtifactV1,
-  type RoleIdentityV1, type SchemaIdentityV1, type StopConditionV1, type TeamResultStatusV1,
+  type LeadExecutionFailureV1, type RoleIdentityV1, type SchemaIdentityV1,
+  type StopConditionV1, type TeamResultStatusV1,
 } from '@plus-one/contracts';
 import type { z } from 'zod';
 
@@ -87,6 +88,7 @@ export interface CheckedWorkCellResult {
   makerArtifacts: readonly ArtifactEnvelopeV1[];
   checkerVerdicts: readonly CheckerVerdictV1[];
   acceptedMaker?: MakerArtifactV1;
+  failure?: LeadExecutionFailureV1;
   completionReason: string;
   outstanding: readonly string[];
 }

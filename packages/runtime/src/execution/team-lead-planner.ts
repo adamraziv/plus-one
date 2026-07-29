@@ -1,9 +1,11 @@
 import {
   JsonValueSchema,
   TeamLeadInvocationSchemaV1,
+  TeamLeadExecutionStateSchemaV1,
   TeamLeadPlanSchemaV1,
   type JsonValue,
   type SkillIdentityV1,
+  type TeamLeadExecutionStateV1,
   type TeamLeadPlanV1,
 } from '@plus-one/contracts';
 import { z } from 'zod';
@@ -40,8 +42,16 @@ export class TeamLeadPlanner {
     selectedSkill: SkillIdentityV1;
     request: JsonValue;
     policyLabels: readonly string[];
+    suggestedPlan?: TeamLeadPlanV1;
+    executionState?: TeamLeadExecutionStateV1;
     abortSignal: AbortSignal;
   }): Promise<TeamLeadPlanV1> {
+    const executionState = TeamLeadExecutionStateSchemaV1.parse(input.executionState ?? {
+      schemaName: 'team-lead-execution-state',
+      schemaVersion: 1,
+      remainingAttempts: 0,
+      executions: [],
+    });
     const invocation = TeamLeadInvocationSchemaV1.parse({
       schemaName: 'team-lead-invocation',
       schemaVersion: 1,
@@ -54,6 +64,8 @@ export class TeamLeadPlanner {
       availableWorkCellIds: input.team.workCells.map((cell) => cell.workCellId),
       availableStrategyNames: input.team.allowedStrategyNames,
       policyLabels: input.policyLabels,
+      suggestedPlan: input.suggestedPlan ?? null,
+      executionState,
     });
     const draft = await this.dependencies.runner.run({
       householdId: input.householdId,

@@ -1,10 +1,10 @@
-import { QueryResultSchemaV1 } from '@plus-one/contracts';
+import { PlusOneError, QueryResultSchemaV1 } from '@plus-one/contracts';
 import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 import { TeamExecutor } from '../index.js';
 
 describe('TeamExecutor', () => {
-  it('freezes maker output before checking and retries revisions with new artifacts', async () => {
+  it('freezes maker output before checking and returns revision state for lead supervision', async () => {
     const calls: string[] = [];
     const runtime = {
       createTask: vi.fn(), selectContract: vi.fn(), beginMaker: vi.fn(() => calls.push('begin-maker')),
@@ -53,13 +53,18 @@ describe('TeamExecutor', () => {
         .mockReturnValueOnce('artifact_01JNZQ4A9B8C7D6E5F4G3H2J8K') },
     });
     const result = await executor.executeWorkCell(makeExecutionInput());
-    expect(result.status).toBe('verified');
-    expect(result.makerArtifacts).toHaveLength(2);
+    expect(result.status).toBe('failed');
+    expect(result.makerArtifacts).toHaveLength(1);
+    expect(result.failure).toMatchObject({
+      phase: 'checker_rejection',
+      code: 'checker_revision_requested',
+      retry: 'safe',
+    });
     expect(calls).toEqual(['begin-maker', 'freeze-maker', 'begin-checker', 'freeze-checker',
-      'revision', 'begin-maker', 'freeze-maker', 'begin-checker', 'freeze-checker']);
+    ]);
   });
 
-  it('stops a revision before rechecking an unchanged maker artifact', async () => {
+  it('does not launch a second maker before a lead evaluates checker revision state', async () => {
     const runtime = {
       createTask: vi.fn(),
       selectContract: vi.fn(),
@@ -119,13 +124,13 @@ describe('TeamExecutor', () => {
 
     const result = await executor.executeWorkCell(makeExecutionInput());
 
-    expect(result).toMatchObject({ status: 'failed', outstanding: ['revision_no_progress'] });
-    expect(runner.run).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      status: 'failed',
+      failure: { code: 'checker_revision_requested', retry: 'safe' },
+    });
+    expect(runner.run).toHaveBeenCalledTimes(2);
     expect(runtime.beginChecker).toHaveBeenCalledTimes(1);
-    expect(runtime.fail).toHaveBeenCalledWith(expect.objectContaining({
-      expectedFrom: 'maker_validated',
-      failureCategory: 'checker_rejected',
-    }));
+    expect(runtime.complete).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 
   it('leaves an accepted mutation work cell at checker_validated', async () => {
@@ -324,7 +329,7 @@ describe('TeamExecutor', () => {
     expect(result.effectRequirement).toEqual({ kind: 'none' });
   });
 
-  it('retries maker output that references evidence outside permittedEvidence before freezing it', async () => {
+  it('returns invalid maker evidence state before freezing it or retrying blindly', async () => {
     const runtime = {
       createTask: vi.fn(),
       selectContract: vi.fn(),
@@ -406,10 +411,17 @@ describe('TeamExecutor', () => {
 
     const result = await executor.executeWorkCell(makeExecutionInput());
 
-    expect(result.status).toBe('verified');
-    expect(runner.run).toHaveBeenCalledTimes(3);
-    expect(runtime.validateMaker).toHaveBeenCalledTimes(1);
-    expect(runtime.fail).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'failed',
+      failure: {
+        phase: 'maker_validation',
+        code: 'maker_claim_evidence_not_permitted',
+        retry: 'safe',
+      },
+    });
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    expect(runtime.validateMaker).not.toHaveBeenCalled();
+    expect(runtime.fail).toHaveBeenCalledTimes(1);
   });
 
   it('synthesizes one checked claim for verified query results that omit claims', async () => {
@@ -510,7 +522,7 @@ describe('TeamExecutor', () => {
     }]);
   });
 
-  it('returns a failed terminal result instead of throwing when maker retries are exhausted', async () => {
+  it('returns a failed terminal result instead of throwing on a maker failure', async () => {
     const runtime = {
       createTask: vi.fn(),
       selectContract: vi.fn(),
@@ -560,6 +572,71 @@ describe('TeamExecutor', () => {
     expect(result.completionState).toBe('terminal');
     expect(result.makerArtifacts).toEqual([]);
     expect(runtime.fail).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the first retryable maker failure for lead supervision instead of retrying blindly', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      validateMaker: vi.fn(),
+      beginChecker: vi.fn(),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const failure = new PlusOneError({
+      category: 'validation_rejected',
+      code: 'structured_result_not_submitted',
+      message: 'The model did not submit the required contractual result.',
+      retry: 'safe',
+      receiptLookupRequired: false,
+      details: {},
+    });
+    const runner = { run: vi.fn().mockRejectedValue(failure) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({
+          systemPrompt: 'maker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+        forChecker: vi.fn(() => ({
+          systemPrompt: 'checker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({
+        maxAttempts: 2,
+        teamDeadlineMs: 5_000,
+        identity: { policyName: 'test', policyVersion: 1 },
+      })) } as never,
+      ids: { nextArtifactId: vi.fn() },
+    });
+
+    const result = await executor.executeWorkCell(makeExecutionInput());
+
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 'failed',
+      failure: {
+        phase: 'maker_generation',
+        role: { roleName: 'query-maker', roleVersion: 1 },
+        category: 'validation_rejected',
+        code: 'structured_result_not_submitted',
+        retry: 'safe',
+      },
+    });
   });
 });
 

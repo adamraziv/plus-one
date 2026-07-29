@@ -1536,7 +1536,8 @@ function canDelegateAnotherSubstep(input: {
 }): boolean {
   if (input.delegationFailed || input.delegationCount >= MAX_DELEGATIONS_PER_TURN) return false;
   return !input.teamResults.some((result) =>
-    result.effect.state === 'awaiting_confirmation'
+    result.status === 'failed'
+    || result.effect.state === 'awaiting_confirmation'
     || result.effect.state === 'persisted'
     || result.effect.state === 'unresolved');
 }

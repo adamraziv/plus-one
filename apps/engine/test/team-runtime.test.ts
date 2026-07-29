@@ -26,11 +26,11 @@ import {
 import { ArtifactStore, createArtifactEnvelope } from '@plus-one/runtime';
 import { createChartMakerAgent } from '../src/agents/accounting/index.js';
 import {
-  deterministicLeadPlanForRequest,
   makerInputForLeadWorkItem,
   normalizeAccountingLeadRequest,
   normalizeBudgetingLeadRequest,
   normalizeQueryLeadRequest,
+  suggestedLeadPlanForRequest,
 } from '../src/team-runtime.js';
 import {
   accountingRequestMaterializers,
@@ -1180,7 +1180,7 @@ describe('makerInputForLeadWorkItem', () => {
   });
 });
 
-describe('deterministicLeadPlanForRequest', () => {
+describe('suggestedLeadPlanForRequest', () => {
   it('routes a materialized budget draft to checked budgeting intake', () => {
     const request = normalizeBudgetingLeadRequest(message, {
       schemaName: 'budgeting-lead-request',
@@ -1194,7 +1194,7 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     });
 
-    expect(deterministicLeadPlanForRequest(budgetingTeamDefinition, request)).toEqual({
+    expect(suggestedLeadPlanForRequest(budgetingTeamDefinition, request)).toEqual({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
@@ -1216,7 +1216,7 @@ describe('deterministicLeadPlanForRequest', () => {
       coverage: ['account list'],
     }));
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
+    expect(suggestedLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
@@ -1231,7 +1231,7 @@ describe('deterministicLeadPlanForRequest', () => {
       businessQuestion: 'What are our balances?',
     });
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
+    expect(suggestedLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
   it('leaves calculation requests with known coverage on the modeled team-lead path', () => {
@@ -1250,7 +1250,7 @@ describe('deterministicLeadPlanForRequest', () => {
       coverage: ['balance snapshot'],
     });
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
+    expect(suggestedLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
   it('leaves calculation-heavy Query requests on the modeled team-lead path', () => {
@@ -1269,7 +1269,7 @@ describe('deterministicLeadPlanForRequest', () => {
       coverage: ['all'],
     });
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
+    expect(suggestedLeadPlanForRequest(queryTeamDefinition, request)).toBeUndefined();
   });
 
   it('uses deterministic Query evidence for explicit category spend coverage', () => {
@@ -1288,7 +1288,7 @@ describe('deterministicLeadPlanForRequest', () => {
       coverage: ['category spend monthly'],
     });
 
-    expect(deterministicLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
+    expect(suggestedLeadPlanForRequest(queryTeamDefinition, request)).toEqual({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
@@ -1313,7 +1313,7 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     };
 
-    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toEqual({
+    expect(suggestedLeadPlanForRequest(accountingTeamDefinition, request)).toEqual({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
@@ -1339,7 +1339,7 @@ describe('deterministicLeadPlanForRequest', () => {
       },
     };
 
-    expect(deterministicLeadPlanForRequest(accountingTeamDefinition, request)).toMatchObject({
+    expect(suggestedLeadPlanForRequest(accountingTeamDefinition, request)).toMatchObject({
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'chart-of-accounts', makerInput: request.request }],
       stopCondition: { code: 'checked-chart-change' },

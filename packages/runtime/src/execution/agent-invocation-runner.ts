@@ -1,4 +1,8 @@
-import { PlusOneError } from '@plus-one/contracts';
+import {
+  PlusOneError,
+  type ErrorCategoryV1,
+  type RetryDirectiveV1,
+} from '@plus-one/contracts';
 import { ZodError, type z } from 'zod';
 import type { StructuredAgentPort } from '../agents/structured-agent-port.js';
 import type { ContractualRoleContext } from '../context/role-context-builder.js';
@@ -143,7 +147,7 @@ export class AgentInvocationRunner {
           terminalLogged = true;
           throw new PlusOneError({
             category: failure.errorCategory, code: failure.code, message: failure.message,
-            retry: failure.outcome === 'cancelled' ? 'never' : 'after_backoff',
+            retry: failure.retry,
             receiptLookupRequired: false,
             details: { role: input.role.identity.roleName, attemptOrdinal: input.attemptOrdinal, modelId },
             cause,
@@ -171,36 +175,56 @@ export class AgentInvocationRunner {
     outcome: 'schema_failed' | 'model_failed' | 'tool_failed' | 'timed_out' | 'cancelled';
     runStatus: 'failed' | 'timed_out' | 'cancelled';
     category: string;
-    errorCategory: 'validation_rejected' | 'timeout' | 'runtime_failure';
+    errorCategory: ErrorCategoryV1;
     code: string;
     message: string;
+    retry: RetryDirectiveV1;
   } {
     if (callerSignal.aborted) {
       if (callerSignal.reason instanceof DOMException && callerSignal.reason.name === 'TimeoutError') {
         return { outcome: 'timed_out', runStatus: 'timed_out', category: 'team_deadline',
-          errorCategory: 'timeout', code: 'agent_call_timed_out', message: 'Agent call exceeded the team deadline' };
+          errorCategory: 'timeout', code: 'agent_call_timed_out', message: 'Agent call exceeded the team deadline',
+          retry: 'after_backoff' };
       }
       return { outcome: 'cancelled', runStatus: 'cancelled',
         category: 'cancelled', errorCategory: 'runtime_failure',
-        code: 'agent_call_cancelled', message: 'Agent call was cancelled' };
+        code: 'agent_call_cancelled', message: 'Agent call was cancelled', retry: 'never' };
     }
     if (cause instanceof ZodError) return { outcome: 'schema_failed', runStatus: 'failed',
       category: 'schema_validation', errorCategory: 'validation_rejected',
-      code: 'agent_output_schema_failed', message: 'Agent output failed structured validation' };
+      code: 'agent_output_schema_failed', message: 'Agent output failed structured validation', retry: 'safe' };
     if (cause instanceof DOMException && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) {
       return { outcome: 'timed_out', runStatus: 'timed_out', category: 'call_deadline',
-        errorCategory: 'timeout', code: 'agent_call_timed_out', message: 'Agent call exceeded its deadline' };
+        errorCategory: 'timeout', code: 'agent_call_timed_out', message: 'Agent call exceeded its deadline',
+        retry: 'after_backoff' };
     }
-    const code = cause instanceof PlusOneError ? cause.code : '';
-    if (code.startsWith('tool_')) return { outcome: 'tool_failed', runStatus: 'failed',
-      category: 'tool_failure', errorCategory: 'runtime_failure',
-      code: 'agent_tool_failed', message: 'Agent tool execution failed' };
+    if (cause instanceof PlusOneError) {
+      const outcome = cause.category === 'validation_rejected'
+        ? 'schema_failed'
+        : cause.code.startsWith('tool_') ? 'tool_failed' : 'model_failed';
+      return {
+        outcome,
+        runStatus: 'failed',
+        category: cause.category,
+        errorCategory: cause.category,
+        code: cause.code,
+        message: safeFailureMessage(cause),
+        retry: cause.retry,
+      };
+    }
     return { outcome: 'model_failed', runStatus: 'failed', category: 'model_failure',
-      errorCategory: 'runtime_failure', code: 'agent_model_failed', message: 'Agent model call failed' };
+      errorCategory: 'runtime_failure', code: 'agent_model_failed', message: 'Agent model call failed',
+      retry: 'after_backoff' };
   }
 
   private error(code: string, message: string): PlusOneError {
     return new PlusOneError({ category: 'policy_rejected', code, message, retry: 'never',
       receiptLookupRequired: false, details: {} });
   }
+}
+
+function safeFailureMessage(error: PlusOneError): string {
+  if (error.category === 'validation_rejected') return 'Agent output failed contractual validation';
+  if (error.code.startsWith('tool_')) return 'Agent tool execution failed';
+  return 'Agent model call failed';
 }
