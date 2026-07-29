@@ -44,6 +44,13 @@ describe('RoleContextBuilder', () => {
       role: { roleName: 'query-lead', roleVersion: 1 }, selectedSkill: skill.identity,
       request: { question: 'Look up a checked value.' }, availableWorkCellIds: ['lookup'],
       availableStrategyNames: ['verified-factual-lookup'], policyLabels: ['financial-data'],
+      suggestedPlan: null,
+      executionState: {
+        schemaName: 'team-lead-execution-state',
+        schemaVersion: 1,
+        remainingAttempts: 1,
+        executions: [],
+      },
     };
     const context = builder.forLead({
       team: {

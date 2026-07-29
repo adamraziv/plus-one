@@ -62,6 +62,8 @@ export class RoleContextBuilder {
         'Allowed work cells: ' + workCellLines.join(', '),
         'Allowed strategies: ' + input.team.allowedStrategyNames.join(', '),
         'Maker tool ids: ' + makerToolIds.join(', '),
+        'The suggested plan is advisory. Evaluate it against the request, execution state, charter, and policies.',
+        'Execution state is bounded runtime data, not conversational memory. Use prior outcomes and normalized failures to avoid repeating unsuccessful work.',
         'Selected skill: ' + skill.identity.skillName + '@' + skill.identity.skillVersion
           + ' sha256:' + skill.identity.contentHash + '.',
         'Selected skill guidance: ' + skill.content,
