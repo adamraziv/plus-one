@@ -112,7 +112,10 @@ export class TeamExecutor {
           outputSchema: makerArtifactSchema, abortSignal: teamAbortSignal,
         });
         makerFailurePhase = 'maker_validation';
-        makerOutput = synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName);
+        makerOutput = retainPermittedMakerClaimEvidence(
+          synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName),
+          input.permittedEvidence,
+        );
         assertMakerOutputSchemaIdentity(makerOutput.outputSchema,
           input.workCell.outputSchemaIdentity);
         input.workCell.makerOutputSchema.parse(makerOutput.output);
@@ -370,4 +373,19 @@ function assertMakerClaimsUsePermittedEvidence(
     receiptLookupRequired: false,
     details: { taskId, artifactIds: [...new Set(invalid)].join(',') },
   });
+}
+
+function retainPermittedMakerClaimEvidence(
+  makerOutput: MakerArtifactV1,
+  permittedEvidence: readonly ArtifactEnvelopeV1[],
+): MakerArtifactV1 {
+  const permitted = new Set(permittedEvidence.map((artifact) => artifact.artifactId));
+  return {
+    ...makerOutput,
+    claims: makerOutput.claims.map((claim) => ({
+      ...claim,
+      evidenceArtifactIds: claim.evidenceArtifactIds.filter((artifactId) =>
+        permitted.has(artifactId)),
+    })),
+  };
 }

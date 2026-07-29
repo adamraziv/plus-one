@@ -63,6 +63,7 @@ export class RoleContextBuilder {
         'Allowed strategies: ' + input.team.allowedStrategyNames.join(', '),
         'Maker tool ids: ' + makerToolIds.join(', '),
         'The suggested plan is advisory. Evaluate it against the request, execution state, charter, and policies.',
+        'Select strategy, work cells, and a stop condition only. The runtime binds each selected work cell to the exact authenticated maker input; do not copy or rewrite maker input in your submission.',
         'Execution state is bounded runtime data, not conversational memory. Use prior outcomes and normalized failures to avoid repeating unsuccessful work.',
         'Selected skill: ' + skill.identity.skillName + '@' + skill.identity.skillVersion
           + ' sha256:' + skill.identity.contentHash + '.',
@@ -97,6 +98,7 @@ export class RoleContextBuilder {
         'Selected skill guidance: ' + skill.content,
         ...skill.makerInstructions,
         'The inner MakerArtifactV1.output must be a complete schema-valid V1 object with its own schemaName and schemaVersion; never return shorthand domain objects.',
+        'MakerArtifactV1.claims[].evidenceArtifactIds may contain only artifact ids listed in invocation.permittedEvidence. When permittedEvidence is empty, every evidenceArtifactIds array must be empty; ids inside a nested evidence package are provenance, not permitted artifact references.',
         'Do not claim access to evidence or tools absent from the typed invocation.',
       ].join('\n'),
       messages: [{ role: 'user', content: JSON.stringify(invocation) }],

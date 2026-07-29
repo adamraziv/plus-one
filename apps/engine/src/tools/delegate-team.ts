@@ -21,6 +21,7 @@ import {
 import type { TransactionCaptureRequestDraftV1 } from '../accounting/accounting-request-drafts.js';
 import {
   DelegateTeamToolInputSchema,
+  delegateTeamRequestCorrection,
   parseDelegateTeamToolInput,
   requestForRuntime,
 } from './delegate-team-schemas.js';
@@ -174,6 +175,7 @@ export function createDelegateTeamTool(input: {
     signal: AbortSignal;
     delegationCount: number;
     delegationFailed: boolean;
+    delegationValidationFailed: boolean;
     transactionCaptureContinuation?: TransactionCaptureContinuationV1;
   } | undefined;
 }) {
@@ -187,6 +189,8 @@ export function createDelegateTeamTool(input: {
       `Registered teams for this runtime are: ${teamCatalog}.`,
       'The team field must be an exact team id.',
       'The request field must be a JSON object matching the selected team schema.',
+      'Budgeting example: {"team":"budgeting","request":{"intent":"budget_plan","request":{"instruction":"i wanna create a new budget","scopeKey":"monthly"}}}.',
+      'Budgeting intent is exactly budget_plan or budget_scenarios; the nested key is exactly request.',
       'You may call this tool again after receiving a checked result when the same user task requires another sequential checked substep.',
       'Call only one specialist substep at a time and use each checked result before choosing the next substep.',
       'Do not use this tool for payments, trades, tax filings, provider account changes, or external financial actions.',
@@ -195,6 +199,8 @@ export function createDelegateTeamTool(input: {
     outputSchema: TeamResultEnvelopeSchemaV2,
     toModelOutput: (result: unknown) => {
       if (isValidationError(result)) {
+        const active = input.getActiveInvocation();
+        if (active !== undefined) active.delegationValidationFailed = true;
         return {
           type: 'json',
           value: DelegateTeamRetrySignalSchema.parse({
@@ -220,7 +226,20 @@ export function createDelegateTeamTool(input: {
         active.delegationFailed = true;
         throw new Error(`Specialist delegation limit of ${MAX_DELEGATIONS_PER_TURN} was exceeded.`);
       }
-      const context = parseDelegateTeamToolInput(inputData);
+      let context: ReturnType<typeof parseDelegateTeamToolInput>;
+      try {
+        context = parseDelegateTeamToolInput(inputData);
+      } catch (error) {
+        active.delegationValidationFailed = true;
+        throw new Error(delegateTeamRequestCorrection(
+          typeof inputData === 'object'
+            && inputData !== null
+            && 'team' in inputData
+            && typeof inputData.team === 'string'
+            ? inputData.team
+            : 'unknown',
+        ), { cause: error });
+      }
       const request = requestWithTransactionContinuation(active, context.request);
       active.delegationCount += 1;
       const team = input.teams.get(context.team);

@@ -28,6 +28,7 @@ import {
   createTransientModelRetryProcessor,
   getLogger,
   internalImplementationDetailMatchCategory,
+  isTransientModelError,
   modelResultEndedOnRetry,
   ModelTemporarilyUnavailableError,
   stopAfterSemanticModelSteps,
@@ -85,7 +86,7 @@ const orchestratorInstructions = [
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
   'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
-  'For budgeting, use the budgeting team with a budgeting-lead-request and a nested budget-plan-request-draft or budget-scenario-request-draft.',
+  'For budgeting, call delegateTeam with exactly {"team":"budgeting","request":{"intent":"budget_plan","request":{"instruction":"preserve the complete user request","scopeKey":"monthly"}}}; for comparisons use intent budget_scenarios and nested request fields instruction and scenarioCount. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
   'Preserve the user’s budgeting instruction and user-visible scope, and never invent household identifiers or evidence packages; the budgeting runtime owns authenticated context and checked evidence requirements.',
   'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
@@ -168,6 +169,7 @@ type OrchestratorInvocation = {
   memoryFailures: OrchestratorMemoryFailure[];
   delegationCount: number;
   delegationFailed: boolean;
+  delegationValidationFailed: boolean;
   transactionCaptureContinuation?: TransactionCaptureContinuationV1;
   workingMemoryInspection?: WorkingMemoryInspectionContext;
   pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
@@ -705,6 +707,7 @@ export class OrchestratorAgent {
       memoryFailures: memoryState.memoryFailures,
       delegationCount: 0,
       delegationFailed: false,
+      delegationValidationFailed: false,
       ...(input.transactionContinuation === undefined
         ? {}
         : { transactionCaptureContinuation: input.transactionContinuation }),
@@ -764,6 +767,9 @@ export class OrchestratorAgent {
               }
               if (!signal.aborted && invocation.delegationFailed) {
                 return delegationFailureTurn(message);
+              }
+              if (!signal.aborted && isTransientModelError(error)) {
+                return modelUnavailableTurn(message);
               }
               throw error;
             }
@@ -838,6 +844,7 @@ export class OrchestratorAgent {
             return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
           }
           if (body === undefined) {
+            if (invocation.delegationValidationFailed) return delegationFailureTurn(message);
             if (invocation.memoryFailures.length !== 0) {
               body = await this.ensureMemoryFailureResponse(message, undefined, invocation, signal);
             }
@@ -909,12 +916,7 @@ export class OrchestratorAgent {
       toolChoice: 'auto',
       prepareStep: async () => {
         const activeTools = this.orchestratorToolNames(invocation);
-        if (canDelegateAnotherSubstep(invocation)) {
-          return { activeTools, toolChoice: 'auto' as const };
-        }
-        return activeTools.length === 0
-          ? { activeTools: [], toolChoice: 'none' as const }
-          : { activeTools, toolChoice: 'auto' as const };
+        return { activeTools, toolChoice: 'auto' as const };
       },
       abortSignal: signal,
       onStepFinish: (step: {
@@ -1380,6 +1382,16 @@ function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTu
       message,
       'I could not complete the specialist check, so I cannot give you a checked answer yet. '
         + 'No changes were made. Please try again.',
+    ),
+  };
+}
+
+function modelUnavailableTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
+  return {
+    kind: 'final',
+    response: responseFromText(
+      message,
+      'The model service is temporarily busy. No changes were made. Please try again in a moment.',
     ),
   };
 }

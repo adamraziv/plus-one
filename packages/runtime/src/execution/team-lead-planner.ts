@@ -20,7 +20,6 @@ const TeamLeadPlanDraftSchemaV1 = z.object({
   recommendedStrategyName: z.string().min(1),
   work: z.array(z.object({
     workCellId: z.string().min(1),
-    makerInput: JsonValueSchema,
   }).strict()).min(1).max(4),
   stopCondition: z.object({
     code: z.string().min(1),
@@ -45,6 +44,7 @@ export class TeamLeadPlanner {
     suggestedPlan?: TeamLeadPlanV1;
     executionState?: TeamLeadExecutionStateV1;
     validatePlan?: (plan: TeamLeadPlanV1) => TeamLeadPlanV1;
+    resolveMakerInput?: (workCellId: string) => JsonValue;
     abortSignal: AbortSignal;
   }): Promise<TeamLeadPlanV1> {
     const executionState = TeamLeadExecutionStateSchemaV1.parse(input.executionState ?? {
@@ -72,10 +72,17 @@ export class TeamLeadPlanner {
       const plan = TeamLeadPlanSchemaV1.parse({
         ...draft,
         recommendedStrategyName: normalizeLeadIdentifier(draft.recommendedStrategyName),
-        work: draft.work.map((item) => ({
-          ...item,
-          workCellId: normalizeLeadIdentifier(item.workCellId),
-        })),
+        work: draft.work.map((item) => {
+          const workCellId = normalizeLeadIdentifier(item.workCellId);
+          const suggestedInput = input.suggestedPlan?.work
+            .find((work) => work.workCellId === workCellId)?.makerInput;
+          return {
+            workCellId,
+            makerInput: input.resolveMakerInput?.(workCellId)
+              ?? suggestedInput
+              ?? input.request,
+          };
+        }),
         stopCondition: {
           ...draft.stopCondition,
           code: normalizeLeadIdentifier(draft.stopCondition.code),

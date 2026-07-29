@@ -16,6 +16,7 @@ const SubmissionAcknowledgementSchema = z.object({ accepted: z.literal(true) }).
 
 interface MastraGenerationResult {
   finishReason?: unknown;
+  text?: unknown;
   toolResults?: unknown;
   steps?: unknown;
 }
@@ -57,10 +58,14 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     }
 
     const submissions: Output[] = [];
+    const providerSubmissionSchema = z.preprocess(
+      (value) => normalizeProviderSubmission(value, call.roleKind),
+      call.outputSchema,
+    );
     const submitResult = createTool({
       id: SubmitResultToolId,
       description: 'Submit the complete result for this invocation. This is the only valid completion channel.',
-      inputSchema: call.outputSchema,
+      inputSchema: providerSubmissionSchema,
       outputSchema: SubmissionAcknowledgementSchema,
       execute: async (inputData) => {
         if (submissions.length !== 0) {
@@ -93,7 +98,10 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
         options: Record<string, unknown>,
       ) => Promise<MastraGenerationResult>;
     };
-    const stopAtStepLimit = stopAfterSemanticModelSteps(call.maxSteps);
+    const canRepairWithoutToolState = !hasDomainTools && call.maxSteps > 1;
+    const repairStepLimit = canRepairWithoutToolState ? call.maxSteps - 1 : 0;
+    const initialStepLimit = call.maxSteps - repairStepLimit;
+    const stopAtStepLimit = stopAfterSemanticModelSteps(initialStepLimit);
     const result = await agent.generate([...call.messages], {
       instructions: contractualInstructions(call, hasDomainTools),
       activeTools: [...call.activeTools],
@@ -126,17 +134,50 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       throw new ModelTemporarilyUnavailableError(lastProviderError);
     }
     assertExecutedActiveTool(call, result);
-    if (submissions.length === 0) {
-      throw new PlusOneError({
-        category: 'validation_rejected',
-        code: 'structured_result_not_submitted',
-        message: 'The model did not submit the required contractual result.',
-        retry: 'safe',
-        receiptLookupRequired: false,
-        details: { agentId: call.agentId, roleKind: call.roleKind },
+    const textSubmission = parseTextSubmission(result, call.outputSchema, call.roleKind);
+    let parsed: Output;
+    if (submissions.length !== 0) {
+      parsed = call.outputSchema.parse(submissions[0]);
+    } else if (textSubmission !== undefined) {
+      parsed = textSubmission;
+    } else if (canRepairWithoutToolState) {
+      const stopAtRepairLimit = stopAfterSemanticModelSteps(repairStepLimit);
+      const repairResult = await agent.generate([...call.messages], {
+        instructions: contractualRepairInstructions(call),
+        activeTools: [SubmitResultToolId],
+        stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+          submissions.length !== 0 || stopAtRepairLimit({ steps }),
+        maxRetries: 0,
+        errorProcessors,
+        maxProcessorRetries: Math.max(call.maxProcessorRetries, call.maxRetries),
+        toolChoice: 'auto',
+        toolCallConcurrency: call.maxToolConcurrency,
+        prepareStep: () => ({
+          tools: { [SubmitResultToolId]: submitResult },
+          activeTools: [SubmitResultToolId],
+          toolChoice: 'auto' as const,
+        }),
+        runId: `${call.runId}:contract-repair`,
+        abortSignal: call.abortSignal,
+        telemetry: { isEnabled: false },
       });
+      if (modelResultEndedOnRetry(repairResult)) {
+        throw new ModelTemporarilyUnavailableError(lastProviderError);
+      }
+      const repairedTextSubmission = parseTextSubmission(
+        repairResult,
+        call.outputSchema,
+        call.roleKind,
+      );
+      if (submissions.length === 0 && repairedTextSubmission === undefined) {
+        throw structuredResultNotSubmitted(call);
+      }
+      parsed = submissions.length === 0
+        ? repairedTextSubmission!
+        : call.outputSchema.parse(submissions[0]);
+    } else {
+      throw structuredResultNotSubmitted(call);
     }
-    const parsed = call.outputSchema.parse(submissions[0]);
     const outputBytes = Buffer.byteLength(JSON.stringify(parsed), 'utf8');
     if (outputBytes > call.maxOutputBytes) {
       throw new PlusOneError({
@@ -173,9 +214,102 @@ function contractualInstructions<Output>(
     : 'Call submitResult exactly once with the complete contractual result.';
   return [
     call.systemPrompt,
+    contractualOutputHint(call),
     completion,
-    'Do not return the contractual result as text or JSON text.',
+    'Prefer submitResult. If you do not call it, return only one raw JSON object matching the same contract; do not wrap it in prose.',
   ].join('\n');
+}
+
+function contractualRepairInstructions<Output>(call: StructuredAgentCall<Output>): string {
+  return [
+    call.systemPrompt,
+    contractualOutputHint(call),
+    'Execution state: the previous contractual attempt ended without a valid structured submission.',
+    'Complete the same task now by calling submitResult exactly once with the full contractual result.',
+    'If you do not call submitResult, return only one raw JSON object matching the same contract; do not wrap it in prose.',
+  ].join('\n');
+}
+
+function contractualOutputHint<Output>(call: StructuredAgentCall<Output>): string {
+  if (call.roleKind === 'checker') {
+    return 'Contract: {"verdict":"accepted|rejected|revision_requested|insufficient_evidence|conflicted","findings":[{"code":"non-empty","message":"non-empty"}]}.';
+  }
+  if (call.roleKind === 'lead') {
+    return 'Contract: {"schemaName":"team-lead-plan","schemaVersion":1,"recommendedStrategyName":"allowed-strategy","work":[{"workCellId":"allowed-work-cell"}],"stopCondition":{"code":"kebab-case","description":"non-empty"}}. Do not include makerInput.';
+  }
+  return 'Contract: use every required field in the submitResult input schema exactly; do not add an outer wrapper.';
+}
+
+function parseTextSubmission<Output>(
+  result: MastraGenerationResult,
+  schema: z.ZodType<Output>,
+  roleKind: StructuredAgentCall<unknown>['roleKind'],
+): Output | undefined {
+  for (const text of collectResultTexts(result)) {
+    const candidate = rawJsonCandidate(text);
+    if (candidate === undefined) continue;
+    try {
+      const parsed = schema.safeParse(normalizeProviderSubmission(JSON.parse(candidate), roleKind));
+      if (parsed.success) return parsed.data;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function normalizeProviderSubmission(
+  value: unknown,
+  roleKind: StructuredAgentCall<unknown>['roleKind'],
+): unknown {
+  if (roleKind !== 'maker' || value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const output = (value as { output?: unknown }).output;
+  if (typeof output !== 'string') return value;
+  const parsed = parseJsonObject(output);
+  return parsed === undefined ? value : { ...value, output: parsed };
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function collectResultTexts(result: MastraGenerationResult): string[] {
+  const texts: string[] = typeof result.text === 'string' ? [result.text] : [];
+  if (!Array.isArray(result.steps)) return texts;
+  for (const step of result.steps) {
+    if (step !== null && typeof step === 'object') {
+      const text = (step as { text?: unknown }).text;
+      if (typeof text === 'string') texts.push(text);
+    }
+  }
+  return texts;
+}
+
+function rawJsonCandidate(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed;
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  return fenced?.[1]?.trim();
+}
+
+function structuredResultNotSubmitted<Output>(call: StructuredAgentCall<Output>): PlusOneError {
+  return new PlusOneError({
+    category: 'validation_rejected',
+    code: 'structured_result_not_submitted',
+    message: 'The model did not submit the required contractual result.',
+    retry: 'safe',
+    receiptLookupRequired: false,
+    details: { agentId: call.agentId, roleKind: call.roleKind },
+  });
 }
 
 function assertExecutedActiveTool<Output>(

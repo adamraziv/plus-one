@@ -17,6 +17,7 @@ import {
   AccountSourceMappingIdSchema,
   EvidenceRequestSchemaV1,
   PeriodIdSchema,
+  QuerySpecificationSchemaV1,
   TeamLeadPlanSchemaV1,
   type InboundChannelMessageV1,
   type JsonValue,
@@ -31,13 +32,19 @@ import {
 } from '@plus-one/mutations';
 import { ingestionSkills } from '@plus-one/ingestion';
 import {
+  ActivateBudgetCommandAdapter,
   BudgetPlanRequestDraftSchemaV1,
+  BudgetPlanRequestSchemaV1,
   BudgetScenarioRequestDraftSchemaV1,
+  BudgetScenarioRequestSchemaV1,
   BudgetingDelegateRequestSchemaV1,
   BudgetingIntakeRequestSchemaV1,
+  CashFlowLeadRequestSchemaV1,
   MaterializedBudgetingLeadRequestSchemaV1,
+  PlanningCommandHandlers,
   planningSkills,
   validateBudgetingLeadPlan,
+  validateCashFlowLeadPlan,
 } from '@plus-one/planning';
 import {
   queryRelationForCoverage,
@@ -46,7 +53,13 @@ import {
   readReportingRelationGrain,
   type ReportingRelationMetadataReader,
 } from '@plus-one/query';
-import { reportingSkills } from '@plus-one/reporting';
+import {
+  InvestmentsRetirementLeadRequestSchemaV1,
+  RecordsReportingLeadRequestSchemaV1,
+  reportingSkills,
+  validateInvestmentsRetirementLeadPlan,
+  validateRecordsReportingLeadPlan,
+} from '@plus-one/reporting';
 import {
   AgentInvocationRunner,
   ArtifactStore,
@@ -74,6 +87,7 @@ import {
 import { materializeAccountingLeadRequest } from './accounting/accounting-request-materializers.js';
 import { QueryLeadRequestDraftSchemaV1 } from './tools/delegate-team-schemas.js';
 import { DefaultChartMutationRuntime } from './accounting/chart-mutation-runtime.js';
+import { withDefaultEvidenceHandle } from './query-tools.js';
 
 const skills = [
   ...querySkills,
@@ -138,6 +152,7 @@ export function createTeamRuntime(input: {
     registry: new CommandRegistry([
       createAccountingJournalMutationHandler(),
       createChartOfAccountsMutationHandler(),
+      ...PlanningCommandHandlers,
     ]),
     runner: mutationRunner,
     readClients: clientRouter,
@@ -173,7 +188,11 @@ export function createTeamRuntime(input: {
           allocatePeriodId: () => PeriodIdSchema.parse(nextId('period')),
         })
         : runtimeInput.team.team === 'budgeting'
-          ? normalizeBudgetingLeadRequest(runtimeInput.message, runtimeInput.request)
+          ? await materializeBudgetingLeadRequest(
+              input.pools,
+              runtimeInput.message,
+              runtimeInput.request,
+            )
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
           : runtimeInput.request;
@@ -183,6 +202,15 @@ export function createTeamRuntime(input: {
         : undefined;
       const budgetingRequest = runtimeInput.team.team === 'budgeting'
         ? MaterializedBudgetingLeadRequestSchemaV1.safeParse(request)
+        : undefined;
+      const cashFlowRequest = runtimeInput.team.team === 'cash-flow'
+        ? CashFlowLeadRequestSchemaV1.safeParse(request)
+        : undefined;
+      const investmentsRetirementRequest = runtimeInput.team.team === 'investments-retirement'
+        ? InvestmentsRetirementLeadRequestSchemaV1.safeParse(request)
+        : undefined;
+      const recordsReportingRequest = runtimeInput.team.team === 'records-reporting'
+        ? RecordsReportingLeadRequestSchemaV1.safeParse(request)
         : undefined;
       const attemptLimit = Math.min(8, Math.max(...runtimeInput.team.workCells.map((cell) => {
         const maker = input.agentSystem.policies.resolve(cell.maker.runtimePolicy);
@@ -220,7 +248,21 @@ export function createTeamRuntime(input: {
               ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
               : budgetingRequest?.success
                 ? validateBudgetingLeadPlan(budgetingRequest.data, planCandidate)
-                : planCandidate,
+                : cashFlowRequest?.success
+                  ? validateCashFlowLeadPlan(cashFlowRequest.data, planCandidate)
+                  : investmentsRetirementRequest?.success
+                    ? validateInvestmentsRetirementLeadPlan(
+                        investmentsRetirementRequest.data,
+                        planCandidate,
+                      )
+                    : recordsReportingRequest?.success
+                      ? validateRecordsReportingLeadPlan(recordsReportingRequest.data, planCandidate)
+                      : planCandidate,
+            resolveMakerInput: (workCellId) => makerInputForLeadWorkItem(
+              runtimeInput.team,
+              workCellId,
+              request,
+            ),
             abortSignal: supervisionSignal,
           });
         },
@@ -233,7 +275,6 @@ export function createTeamRuntime(input: {
             makerInput: makerInputForLeadWorkItem(
               runtimeInput.team,
               item.workCellId,
-              item.makerInput,
               request,
             ),
             stopCondition: plan.stopCondition,
@@ -256,6 +297,25 @@ export function createTeamRuntime(input: {
             return {
               result,
               work: supervisedWorkExecutions(work, [], result.status),
+            };
+          }
+          if (plan.work.length === 1 && plan.work[0]?.workCellId === 'budget-plan') {
+            const prepared = await checkedMutations.prepare({
+              workCellInput: work[0]!,
+              commandId: nextId('command'),
+              idempotencyKey: nextId('idem'),
+              adapter: new ActivateBudgetCommandAdapter(),
+            });
+            const checked = prepared.completionState === 'checked_mutation_pending'
+              ? await checkedMutations.executePrepared({ prepared })
+              : prepared;
+            const result = new TeamResultAssembler().assemble({
+              ...resultMetadata,
+              results: [checked],
+            });
+            return {
+              result,
+              work: supervisedWorkExecutions(work, [checked], result.status),
             };
           }
           if (plan.work.length === 1
@@ -367,6 +427,110 @@ export function normalizeBudgetingLeadRequest(
   }))) as JsonValue;
 }
 
+async function materializeBudgetingLeadRequest(
+  pools: DatabasePools,
+  message: InboundChannelMessageV1,
+  request: JsonValue,
+): Promise<JsonValue> {
+  const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
+  const evidencePackage = await buildBudgetingEvidencePackage(pools, message);
+  const accountContext = await planningAccountContext(pools, message.householdId);
+  const materializedRequest = parsed.intent === 'budget_plan'
+    ? (() => {
+        const draft = BudgetPlanRequestDraftSchemaV1.parse(parsed.request);
+        return BudgetPlanRequestSchemaV1.parse({
+          schemaName: 'budget-plan-request',
+          schemaVersion: 1,
+          householdId: message.householdId,
+          evidencePackage,
+          instruction: appendRuntimeContext(draft.instruction, accountContext),
+          scopeKey: draft.scopeKey,
+        });
+      })()
+    : (() => {
+        const draft = BudgetScenarioRequestDraftSchemaV1.parse(parsed.request);
+        return BudgetScenarioRequestSchemaV1.parse({
+          schemaName: 'budget-scenario-request',
+          schemaVersion: 1,
+          householdId: message.householdId,
+          evidencePackage,
+          instruction: appendRuntimeContext(draft.instruction, accountContext),
+          scenarioCount: draft.scenarioCount,
+        });
+      })();
+  return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
+    ...parsed,
+    request: materializedRequest,
+  }))) as JsonValue;
+}
+
+async function buildBudgetingEvidencePackage(
+  pools: Pick<DatabasePools, 'query'>,
+  message: InboundChannelMessageV1,
+) {
+  const date = message.receivedAt.slice(0, 10);
+  const desiredGrain = await readReportingRelationGrain(
+    queryMetadataReader(pools),
+    'reporting.accounts',
+  );
+  const request = EvidenceRequestSchemaV1.parse({
+    schemaName: 'evidence-request',
+    schemaVersion: 1,
+    householdId: message.householdId,
+    requestId: nextId('evidence'),
+    businessQuestion: 'Which active accounts can be mapped into this household budget?',
+    intendedUse: 'budget_planning',
+    timeframe: { start: date, end: date },
+    desiredGrain,
+    filters: [{ field: 'household_id', op: 'eq', value: message.householdId }],
+    requiredFreshness: 'latest available reporting projection',
+    requiredCalculations: [],
+    coverage: ['account list'],
+  });
+  const householdLiteral = message.householdId.replaceAll("'", "''");
+  const querySpecification = QuerySpecificationSchemaV1.parse({
+    schemaName: 'query-specification',
+    schemaVersion: 1,
+    relationNames: ['reporting.accounts'],
+    sql: `SELECT account_id, name FROM reporting.accounts WHERE household_id = '${householdLiteral}' LIMIT 100`,
+    filters: request.filters,
+    limit: 100,
+  });
+  return withDefaultEvidenceHandle(pools, (handle) => handle.buildEvidencePackage({
+    request,
+    querySpecification,
+  }));
+}
+
+async function planningAccountContext(
+  pools: Pick<DatabasePools, 'accounting'>,
+  householdId: string,
+): Promise<string> {
+  const result = await pools.accounting.query<{
+    databaseId: string;
+    accountId: string;
+    name: string;
+  }>(
+    `SELECT a.id::text AS "databaseId", a.account_id AS "accountId", a.name
+     FROM accounting.accounts a
+     JOIN operations.households h ON h.id = a.household_id
+     WHERE h.household_id = $1 AND a.archived_at IS NULL
+     ORDER BY a.id`,
+    [householdId],
+  );
+  if (result.rows.length === 0) {
+    return 'Runtime account evidence contains no active account available for budget mapping.';
+  }
+  const bindings = result.rows.map((account) =>
+    `${account.name.replaceAll(/\s+/g, ' ').trim()} => ${account.databaseId}`).join('; ');
+  return `Runtime-resolved planning account bindings (internal; never expose mapping ids): ${bindings}.`;
+}
+
+function appendRuntimeContext(instruction: string, context: string): string {
+  const combined = `${instruction}\n${context}`;
+  return combined.length <= 4_000 ? combined : instruction;
+}
+
 export async function normalizeQueryLeadRequest(
   pools: Pick<DatabasePools, 'query'>,
   message: InboundChannelMessageV1,
@@ -422,16 +586,32 @@ function queryMetadataReader(pools: Pick<DatabasePools, 'query'>): ReportingRela
 export function makerInputForLeadWorkItem(
   team: TeamDefinition,
   workCellId: string,
-  planMakerInput: JsonValue,
-  normalizedRequest: JsonValue,
+  planMakerInputOrNormalizedRequest: JsonValue,
+  legacyNormalizedRequest?: JsonValue,
 ): JsonValue {
-  if (team.team === 'query' && workCellId === 'query-evidence') {
-    const normalized = EvidenceRequestSchemaV1.safeParse(normalizedRequest);
-    if (normalized.success) return JSON.parse(JSON.stringify(normalized.data)) as JsonValue;
-    const plan = EvidenceRequestSchemaV1.safeParse(planMakerInput);
-    if (plan.success) return JSON.parse(JSON.stringify(plan.data)) as JsonValue;
+  const normalizedRequest = legacyNormalizedRequest ?? planMakerInputOrNormalizedRequest;
+  const suggestedWork = suggestedLeadPlanForRequest(team, normalizedRequest)?.work
+    .find((work) => work.workCellId === workCellId);
+  if (suggestedWork !== undefined) {
+    return JSON.parse(JSON.stringify(suggestedWork.makerInput)) as JsonValue;
   }
-  return planMakerInput;
+  const cell = findWorkCell(team, workCellId);
+  const nestedRequest = typeof normalizedRequest === 'object'
+    && normalizedRequest !== null
+    && !Array.isArray(normalizedRequest)
+    && 'request' in normalizedRequest
+    ? normalizedRequest.request
+    : undefined;
+  const legacyPlanMakerInput = legacyNormalizedRequest === undefined
+    ? undefined
+    : planMakerInputOrNormalizedRequest;
+  for (const candidate of [nestedRequest, normalizedRequest, legacyPlanMakerInput]) {
+    const parsed = cell.makerInputSchema.safeParse(candidate);
+    if (parsed.success) {
+      return JSON.parse(JSON.stringify(parsed.data)) as JsonValue;
+    }
+  }
+  throw new TypeError(`No authenticated maker input matches work cell ${workCellId}`);
 }
 
 function supervisedWorkExecutions(
