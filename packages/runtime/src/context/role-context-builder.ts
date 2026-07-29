@@ -122,7 +122,9 @@ export class RoleContextBuilder {
       systemPrompt: [
         'You are the independent ' + input.role.roleName + ' checker for team ' + input.team + '.',
         'Evaluate only the one typed verification task in the user message.',
-        'Return only CheckerVerdictSchemaV1 through the configured structured-output boundary.',
+        'Return only the verdict and findings through the configured structured-output boundary.',
+        'The runtime binds the exact maker artifact id and hash after validating your decision; '
+          + 'do not reproduce those opaque identity fields.',
         'Selected skill: ' + skill.identity.skillName + '@' + skill.identity.skillVersion
           + ' sha256:' + skill.identity.contentHash + '.',
         'Selected skill guidance: ' + skill.content,

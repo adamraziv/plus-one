@@ -93,10 +93,12 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
         options: Record<string, unknown>,
       ) => Promise<MastraGenerationResult>;
     };
+    const stopAtStepLimit = stopAfterSemanticModelSteps(call.maxSteps);
     const result = await agent.generate([...call.messages], {
       instructions: contractualInstructions(call, hasDomainTools),
       activeTools: [...call.activeTools],
-      stopWhen: stopAfterSemanticModelSteps(requiredSteps),
+      stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+        submissions.length !== 0 || stopAtStepLimit({ steps }),
       maxRetries: 0,
       errorProcessors,
       maxProcessorRetries: Math.max(call.maxProcessorRetries, call.maxRetries),
