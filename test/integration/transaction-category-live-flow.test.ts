@@ -5,6 +5,7 @@ import {
 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
+  TeamLeadInvocationSchemaV1,
   TeamResultEnvelopeSchemaV2,
   type JsonValue,
 } from '@plus-one/contracts';
@@ -14,6 +15,7 @@ import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js'
 import { createMastra } from '../../apps/engine/src/mastra.js';
 import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from '../../apps/engine/src/workflows/orchestrator-loop.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
+import { submitContractResult } from '../helpers/contract-agent-test-double.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const ids = {
@@ -46,6 +48,15 @@ describe('transaction category live flow', () => {
     await seedPrerequisites(owner);
     pools = createDatabasePools(context.roleUrls);
 
+    const accountingLeadGenerate = vi.fn(async (
+      messages: readonly { content: string }[],
+      options: unknown,
+    ) => {
+      const invocation = TeamLeadInvocationSchemaV1.parse(
+        JSON.parse(messages[0]?.content ?? '{}'),
+      );
+      return submitContractResult(options, invocation.suggestedPlan);
+    });
     const agentSystem = createAgentSystem({
       models: {
         lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -55,7 +66,10 @@ describe('transaction category live flow', () => {
       },
       queryTools: {},
       queryAgentFactory: () => ({ generate: vi.fn() } as never),
-      accountingAgentFactory: () => ({ generate: vi.fn() } as never),
+      accountingAgentFactory: (config) => ({
+        ...config,
+        generate: config.id === 'accounting-lead' ? accountingLeadGenerate : vi.fn(),
+      } as never),
       agentFactory: () => ({ generate: vi.fn() } as never),
     });
     const teamRuntime = createTeamRuntime({ pools, agentSystem });
@@ -149,6 +163,7 @@ describe('transaction category live flow', () => {
        WHERE household_id = (SELECT id FROM operations.households WHERE household_id = $1)`,
       [ids.householdId],
     )).rows).toEqual([{ count: '2' }]);
+    expect(accountingLeadGenerate).toHaveBeenCalledTimes(4);
 
     console.info(`\n${transcript.join('\n\n')}\n`);
   });
