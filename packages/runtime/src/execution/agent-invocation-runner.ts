@@ -69,7 +69,13 @@ export class AgentInvocationRunner {
             configuredLimit: policy.maxAttempts, resumable: true,
           });
         } catch (cause) {
-          await this.dependencies.ledger.finishRun(runId, 'failed', 'attempt_start_failed');
+          await this.dependencies.ledger.finishRun(
+            runId,
+            'failed',
+            'attempt_start_failed',
+            'attempt_start_failed',
+            'after_state_resolution',
+          );
           const recoverable = input.attemptOrdinal < policy.maxAttempts;
           const options = {
             fields: {
@@ -77,6 +83,8 @@ export class AgentInvocationRunner {
               model: modelId,
               attemptOrdinal: input.attemptOrdinal,
               failureCategory: 'attempt_start_failed',
+              failureCode: 'attempt_start_failed',
+              retryDirective: 'after_state_resolution',
               retryClassification: recoverable ? 'retryable' : 'exhausted',
               durationMs: Date.now() - startedAt,
             },
@@ -124,9 +132,16 @@ export class AgentInvocationRunner {
             householdId: input.householdId, taskId: input.taskId,
             role: input.role.identity.roleName, ordinal: input.attemptOrdinal,
             outcome: failure.outcome, retryCategory: failure.category,
+            failureCode: failure.code, retryDirective: failure.retry,
             resumable: failure.outcome !== 'cancelled',
           });
-          await this.dependencies.ledger.finishRun(runId, failure.runStatus, failure.category);
+          await this.dependencies.ledger.finishRun(
+            runId,
+            failure.runStatus,
+            failure.category,
+            failure.code,
+            failure.retry,
+          );
           const recoverable = failure.outcome !== 'cancelled'
             && input.attemptOrdinal < policy.maxAttempts;
           const options = {
@@ -135,6 +150,8 @@ export class AgentInvocationRunner {
               model: modelId,
               attemptOrdinal: input.attemptOrdinal,
               failureCategory: failure.category,
+              failureCode: failure.code,
+              retryDirective: failure.retry,
               retryClassification: failure.outcome === 'cancelled'
                 ? 'cancelled'
                 : recoverable ? 'retryable' : 'exhausted',

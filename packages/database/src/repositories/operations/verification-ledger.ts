@@ -499,15 +499,25 @@ export class PostgresVerificationLedgerRepository {
     runId: string,
     status: 'succeeded' | 'failed' | 'cancelled' | 'timed_out',
     failureCategory?: string,
+    failureCode?: string,
+    retryDirective?: string,
   ): Promise<void> {
     const result = await this.pool.query(
       `UPDATE operations.agent_runs
        SET status = $1,
            ended_at = clock_timestamp(),
-           failure_category = $2
-       WHERE run_id = $3
+           failure_category = $2,
+           failure_code = $3,
+           retry_directive = $4
+       WHERE run_id = $5
          AND status = 'running'`,
-      [status, failureCategory ?? null, RunIdSchema.parse(runId)],
+      [
+        status,
+        failureCategory ?? null,
+        failureCode ?? null,
+        retryDirective ?? null,
+        RunIdSchema.parse(runId),
+      ],
     );
 
     if (result.rowCount !== 1) {
@@ -573,22 +583,28 @@ export class PostgresVerificationLedgerRepository {
       | 'timed_out'
       | 'cancelled';
     retryCategory?: string;
+    failureCode?: string;
+    retryDirective?: string;
     resumable: boolean;
   }): Promise<void> {
     const result = await this.pool.query(
       `UPDATE operations.agent_attempts
        SET outcome = $1,
            retry_category = $2,
-           resumable = $3,
+           failure_code = $3,
+           retry_directive = $4,
+           resumable = $5,
            ended_at = clock_timestamp()
-       WHERE household_id = (SELECT id FROM operations.households WHERE household_id = $4)
-         AND task_id = $5
-         AND role = $6
-         AND ordinal = $7
+       WHERE household_id = (SELECT id FROM operations.households WHERE household_id = $6)
+         AND task_id = $7
+         AND role = $8
+         AND ordinal = $9
          AND outcome = 'running'`,
       [
         input.outcome,
         input.retryCategory ?? null,
+        input.failureCode ?? null,
+        input.retryDirective ?? null,
         input.resumable,
         input.householdId,
         input.taskId,
