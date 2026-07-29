@@ -757,29 +757,33 @@ export class OrchestratorAgent {
               }
             } else {
               if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
-              if (
-                !signal.aborted
+              if (!signal.aborted
                 && invocation.memoryFailures.length === 0
-                && !invocation.delegationFailed
-                && invocation.teamResults.length !== 0
-              ) {
+                && invocation.teamResults.length !== 0) {
                 return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+              }
+              if (!signal.aborted && invocation.delegationFailed) {
+                return delegationFailureTurn(message);
               }
               throw error;
             }
           }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
           if (modelResultEndedOnRetry(result)) {
-            if (!invocation.delegationFailed && invocation.teamResults.length !== 0) {
+            if (invocation.teamResults.length !== 0) {
               return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
             }
+            if (invocation.delegationFailed) return delegationFailureTurn(message);
             throw new ModelTemporarilyUnavailableError();
           }
           if (invocation.delegationFailed) {
-            throw new Error('Delegated team work failed before producing a checked result.');
+            if (invocation.teamResults.length !== 0) {
+              return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+            }
+            return delegationFailureTurn(message);
           }
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
-            throw new Error('Delegated team did not return a checked result.');
+            return delegationFailureTurn(message);
           }
           if (invocation.pendingWorkingMemoryMutation !== undefined) {
             const response = await this.synthesizeWorkingMemoryOutcome({
@@ -1369,6 +1373,17 @@ function turnFromTeamResults(
   return { kind: 'final', response };
 }
 
+function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
+  return {
+    kind: 'final',
+    response: responseFromText(
+      message,
+      'I could not complete the specialist check, so I cannot give you a checked answer yet. '
+        + 'No changes were made. Please try again.',
+    ),
+  };
+}
+
 function responseFromText(
   message: InboundChannelMessageV1,
   body: string,
@@ -1533,10 +1548,15 @@ function canDelegateAnotherSubstep(input: {
   delegationCount: number;
   delegationFailed: boolean;
   teamResults: readonly TeamResultEnvelopeV2[];
+  transactionCaptureContinuation?: TransactionCaptureContinuationV1;
 }): boolean {
   if (input.delegationFailed || input.delegationCount >= MAX_DELEGATIONS_PER_TURN) return false;
   return !input.teamResults.some((result) =>
     result.status === 'failed'
+    || result.status === 'partial'
+    || result.status === 'conflicted'
+    || (result.status === 'insufficient_evidence'
+      && input.transactionCaptureContinuation === undefined)
     || result.effect.state === 'awaiting_confirmation'
     || result.effect.state === 'persisted'
     || result.effect.state === 'unresolved');

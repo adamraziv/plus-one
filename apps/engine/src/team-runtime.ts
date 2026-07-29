@@ -207,7 +207,7 @@ export function createTeamRuntime(input: {
             attemptLimit: leadPolicy.maxAttempts,
             deadlineAt,
           });
-          const planCandidate = await planner.plan({
+          return planner.plan({
             householdId: runtimeInput.message.householdId,
             taskId: leadTaskId,
             team: runtimeInput.team,
@@ -216,13 +216,13 @@ export function createTeamRuntime(input: {
             policyLabels: ['personalized_finance'],
             ...(suggestedPlan === undefined ? {} : { suggestedPlan }),
             executionState,
+            validatePlan: (planCandidate) => accountingRequest?.success
+              ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
+              : budgetingRequest?.success
+                ? validateBudgetingLeadPlan(budgetingRequest.data, planCandidate)
+                : planCandidate,
             abortSignal: supervisionSignal,
           });
-          return accountingRequest?.success
-            ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
-            : budgetingRequest?.success
-              ? validateBudgetingLeadPlan(budgetingRequest.data, planCandidate)
-              : planCandidate;
         },
         execute: async (plan, executionOrdinal) => {
           const leadTaskId = leadTaskIds.get(executionOrdinal);

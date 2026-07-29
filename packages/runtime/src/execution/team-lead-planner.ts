@@ -44,6 +44,7 @@ export class TeamLeadPlanner {
     policyLabels: readonly string[];
     suggestedPlan?: TeamLeadPlanV1;
     executionState?: TeamLeadExecutionStateV1;
+    validatePlan?: (plan: TeamLeadPlanV1) => TeamLeadPlanV1;
     abortSignal: AbortSignal;
   }): Promise<TeamLeadPlanV1> {
     const executionState = TeamLeadExecutionStateSchemaV1.parse(input.executionState ?? {
@@ -67,6 +68,37 @@ export class TeamLeadPlanner {
       suggestedPlan: input.suggestedPlan ?? null,
       executionState,
     });
+    const resolvePlan = (draft: z.infer<typeof TeamLeadPlanDraftSchemaV1>): TeamLeadPlanV1 => {
+      const plan = TeamLeadPlanSchemaV1.parse({
+        ...draft,
+        recommendedStrategyName: normalizeLeadIdentifier(draft.recommendedStrategyName),
+        work: draft.work.map((item) => ({
+          ...item,
+          workCellId: normalizeLeadIdentifier(item.workCellId),
+        })),
+        stopCondition: {
+          ...draft.stopCondition,
+          code: normalizeLeadIdentifier(draft.stopCondition.code),
+        },
+      });
+      this.dependencies.strategies.assertAllowed(
+        plan.recommendedStrategyName,
+        input.team.allowedStrategyNames,
+        plan.work.length,
+      );
+      for (const work of plan.work) findWorkCell(input.team, work.workCellId);
+      return input.validatePlan?.(plan) ?? plan;
+    };
+    const outputSchema = TeamLeadPlanDraftSchemaV1.superRefine((draft, context) => {
+      try {
+        resolvePlan(draft);
+      } catch (error) {
+        context.addIssue({
+          code: 'custom',
+          message: `Lead plan rejected: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    });
     const draft = await this.dependencies.runner.run({
       householdId: input.householdId,
       taskId: input.taskId,
@@ -77,29 +109,10 @@ export class TeamLeadPlanner {
         selectedSkill: input.selectedSkill,
         invocation,
       }),
-      outputSchema: TeamLeadPlanDraftSchemaV1,
+      outputSchema,
       abortSignal: input.abortSignal,
     });
-    const plan = TeamLeadPlanSchemaV1.parse({
-      ...draft,
-      recommendedStrategyName: normalizeLeadIdentifier(draft.recommendedStrategyName),
-      work: draft.work.map((item) => ({
-        ...item,
-        workCellId: normalizeLeadIdentifier(item.workCellId),
-      })),
-      stopCondition: {
-        ...draft.stopCondition,
-        code: normalizeLeadIdentifier(draft.stopCondition.code),
-      },
-    });
-
-    this.dependencies.strategies.assertAllowed(
-      plan.recommendedStrategyName,
-      input.team.allowedStrategyNames,
-      plan.work.length,
-    );
-    for (const work of plan.work) findWorkCell(input.team, work.workCellId);
-    return plan;
+    return resolvePlan(draft);
   }
 }
 
