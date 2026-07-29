@@ -39,6 +39,7 @@ import {
   BudgetScenarioRequestSchemaV1,
   BudgetingDelegateRequestSchemaV1,
   BudgetingIntakeRequestSchemaV1,
+  CashFlowAnalysisRequestSchemaV1,
   CashFlowLeadRequestSchemaV1,
   MaterializedBudgetingLeadRequestSchemaV1,
   PlanningCommandHandlers,
@@ -54,8 +55,11 @@ import {
   type ReportingRelationMetadataReader,
 } from '@plus-one/query';
 import {
+  InvestmentEducationRequestSchemaV1,
   InvestmentsRetirementLeadRequestSchemaV1,
+  RecordsFactRequestSchemaV1,
   RecordsReportingLeadRequestSchemaV1,
+  RetirementEducationRequestSchemaV1,
   reportingSkills,
   validateInvestmentsRetirementLeadPlan,
   validateRecordsReportingLeadPlan,
@@ -85,7 +89,12 @@ import {
   MaterializedAccountingLeadRequestSchemaV1,
 } from './accounting/accounting-lead-contracts.js';
 import { materializeAccountingLeadRequest } from './accounting/accounting-request-materializers.js';
-import { QueryLeadRequestDraftSchemaV1 } from './tools/delegate-team-schemas.js';
+import {
+  CashFlowRequestDraftSchemaV1,
+  EducationRequestDraftSchemaV1,
+  QueryLeadRequestDraftSchemaV1,
+  RecordsFactRequestDraftSchemaV1,
+} from './tools/delegate-team-schemas.js';
 import { DefaultChartMutationRuntime } from './accounting/chart-mutation-runtime.js';
 import { withDefaultEvidenceHandle } from './query-tools.js';
 
@@ -195,6 +204,24 @@ export function createTeamRuntime(input: {
             )
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
+          : runtimeInput.team.team === 'cash-flow'
+            ? await materializeCashFlowLeadRequest(
+                input.pools,
+                runtimeInput.message,
+                runtimeInput.request,
+              )
+            : runtimeInput.team.team === 'investments-retirement'
+              ? await materializeInvestmentsRetirementLeadRequest(
+                  input.pools,
+                  runtimeInput.message,
+                  runtimeInput.request,
+                )
+              : runtimeInput.team.team === 'records-reporting'
+                ? await materializeRecordsReportingLeadRequest(
+                    input.pools,
+                    runtimeInput.message,
+                    runtimeInput.request,
+                  )
           : runtimeInput.request;
       const suggestedPlan = suggestedLeadPlanForRequest(runtimeInput.team, request);
       const accountingRequest = runtimeInput.team.team === 'accounting'
@@ -493,6 +520,150 @@ async function buildBudgetingEvidencePackage(
     schemaVersion: 1,
     relationNames: ['reporting.accounts'],
     sql: `SELECT account_id, name FROM reporting.accounts WHERE household_id = '${householdLiteral}' LIMIT 100`,
+    filters: request.filters,
+    limit: 100,
+  });
+  return withDefaultEvidenceHandle(pools, (handle) => handle.buildEvidencePackage({
+    request,
+    querySpecification,
+  }));
+}
+
+async function materializeCashFlowLeadRequest(
+  pools: DatabasePools,
+  message: InboundChannelMessageV1,
+  request: JsonValue,
+): Promise<JsonValue> {
+  const parsed = CashFlowLeadRequestSchemaV1.parse(request);
+  const draft = CashFlowRequestDraftSchemaV1.parse(parsed.request);
+  const evidencePackage = await buildRuntimeEvidencePackage(pools, message, {
+    relationName: 'reporting.budget_variance',
+    selectList: 'scope_key, category_key, period_start, period_end, planned_amount, planned_currency, actual_amount',
+    businessQuestion: draft.objective,
+    intendedUse: 'cash_flow_analysis',
+    coverage: 'budget variance',
+    ...(draft.timeframe === undefined ? {} : { timeframe: draft.timeframe }),
+  });
+  const materialized = CashFlowAnalysisRequestSchemaV1.parse({
+    schemaName: 'cash-flow-analysis-request',
+    schemaVersion: 1,
+    householdId: message.householdId,
+    evidencePackage,
+    objective: draft.objective,
+    analysisMode: draft.analysisMode,
+  });
+  const canonical = JSON.parse(JSON.stringify({
+    ...parsed,
+    request: materialized,
+  })) as JsonValue;
+  return JSON.parse(JSON.stringify(CashFlowLeadRequestSchemaV1.parse(canonical))) as JsonValue;
+}
+
+async function materializeInvestmentsRetirementLeadRequest(
+  pools: DatabasePools,
+  message: InboundChannelMessageV1,
+  request: JsonValue,
+): Promise<JsonValue> {
+  const parsed = InvestmentsRetirementLeadRequestSchemaV1.parse(request);
+  const draft = EducationRequestDraftSchemaV1.parse(parsed.request);
+  const evidencePackage = await buildRuntimeEvidencePackage(pools, message, {
+    relationName: 'reporting.accounts',
+    selectList: 'account_id, name',
+    businessQuestion: draft.question,
+    intendedUse: parsed.intent,
+    coverage: 'account list',
+  });
+  const materialized = parsed.intent === 'investment_education'
+    ? InvestmentEducationRequestSchemaV1.parse({
+        schemaName: 'investment-education-request',
+        schemaVersion: 1,
+        householdId: message.householdId,
+        evidencePackage,
+        question: draft.question,
+      })
+    : RetirementEducationRequestSchemaV1.parse({
+        schemaName: 'retirement-education-request',
+        schemaVersion: 1,
+        householdId: message.householdId,
+        evidencePackage,
+        question: draft.question,
+      });
+  const canonical = JSON.parse(JSON.stringify({
+    ...parsed,
+    request: materialized,
+  })) as JsonValue;
+  return JSON.parse(JSON.stringify(
+    InvestmentsRetirementLeadRequestSchemaV1.parse(canonical),
+  )) as JsonValue;
+}
+
+async function materializeRecordsReportingLeadRequest(
+  pools: DatabasePools,
+  message: InboundChannelMessageV1,
+  request: JsonValue,
+): Promise<JsonValue> {
+  const parsed = RecordsReportingLeadRequestSchemaV1.parse(request);
+  if (parsed.intent !== 'records_facts') return JSON.parse(JSON.stringify(parsed)) as JsonValue;
+  const draft = RecordsFactRequestDraftSchemaV1.parse(parsed.request);
+  const evidencePackage = await buildRuntimeEvidencePackage(pools, message, {
+    relationName: 'reporting.accounts',
+    selectList: 'account_id, name',
+    businessQuestion: draft.focus,
+    intendedUse: 'records_facts',
+    coverage: 'account list',
+  });
+  const materialized = RecordsFactRequestSchemaV1.parse({
+    schemaName: 'records-fact-request',
+    schemaVersion: 1,
+    householdId: message.householdId,
+    evidencePackage,
+    focus: draft.focus,
+  });
+  const canonical = JSON.parse(JSON.stringify({
+    ...parsed,
+    request: materialized,
+  })) as JsonValue;
+  return JSON.parse(JSON.stringify(RecordsReportingLeadRequestSchemaV1.parse(canonical))) as JsonValue;
+}
+
+async function buildRuntimeEvidencePackage(
+  pools: Pick<DatabasePools, 'query'>,
+  message: InboundChannelMessageV1,
+  input: {
+    relationName: 'reporting.accounts' | 'reporting.budget_variance';
+    selectList: string;
+    businessQuestion: string;
+    intendedUse: string;
+    coverage: string;
+    timeframe?: { start: string; end: string };
+  },
+) {
+  const date = message.receivedAt.slice(0, 10);
+  const timeframe = input.timeframe ?? { start: date, end: date };
+  const desiredGrain = await readReportingRelationGrain(
+    queryMetadataReader(pools),
+    input.relationName,
+  );
+  const request = EvidenceRequestSchemaV1.parse({
+    schemaName: 'evidence-request',
+    schemaVersion: 1,
+    householdId: message.householdId,
+    requestId: nextId('evidence'),
+    businessQuestion: input.businessQuestion,
+    intendedUse: input.intendedUse,
+    timeframe,
+    desiredGrain,
+    filters: [{ field: 'household_id', op: 'eq', value: message.householdId }],
+    requiredFreshness: 'latest available reporting projection',
+    requiredCalculations: [],
+    coverage: [input.coverage],
+  });
+  const householdLiteral = message.householdId.replaceAll("'", "''");
+  const querySpecification = QuerySpecificationSchemaV1.parse({
+    schemaName: 'query-specification',
+    schemaVersion: 1,
+    relationNames: [input.relationName],
+    sql: `SELECT ${input.selectList} FROM ${input.relationName} WHERE household_id = '${householdLiteral}' LIMIT 100`,
     filters: request.filters,
     limit: 100,
   });

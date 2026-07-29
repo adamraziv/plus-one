@@ -88,7 +88,10 @@ const orchestratorInstructions = [
   'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
   'For budgeting, call delegateTeam with exactly {"team":"budgeting","request":{"intent":"budget_plan","request":{"instruction":"preserve the complete user request","scopeKey":"monthly"}}}; for comparisons use intent budget_scenarios and nested request fields instruction and scenarioCount. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
   'Preserve the user’s budgeting instruction and user-visible scope, and never invent household identifiers or evidence packages; the budgeting runtime owns authenticated context and checked evidence requirements.',
-  'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
+  'For cash-flow analysis, call delegateTeam with exactly {"team":"cash-flow","request":{"intent":"analysis","request":{"objective":"preserve the complete user objective","analysisMode":"single","timeframe":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}}}}. Other exact cash-flow intents are obligation, savings_goal, and debt_plan. Never invent household ids or evidence packages.',
+  'For investment or retirement education, use team investments-retirement with exact intent investment_education or retirement_education and nested request {"question":"preserve the complete user question"}.',
+  'For checked records facts, use team records-reporting with exact intent records_facts and nested request {"focus":"preserve the complete requested scope"}.',
+  'For query, call delegateTeam with exactly {"team":"query","request":{"businessQuestion":"preserve the complete finance question","coverage":["one exact governed coverage label"],"desiredGrain":["household"]}} unless a full EvidenceRequestV1 is already available. Query request is flat: do not add intent or a nested request.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
   'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
   'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
@@ -99,7 +102,7 @@ const orchestratorInstructions = [
   'For categorized transaction query rows, direction is the ledger posting direction for that exact row and account; never invert or transfer it to another account.',
   'If the user did not ask about ledger debit or credit direction, omit debit and credit wording from the reply.',
   'Account creation and chart changes always require checked specialist work; call delegateTeam instead of answering directly or collecting fields yourself.',
-  'For account creation or chart changes, use the accounting team with intent chart_of_accounts and a nested chart-work-request-draft.',
+  'For account creation or chart changes, call delegateTeam with exactly {"team":"accounting","request":{"intent":"chart_of_accounts","request":{"action":"create_account","instruction":"preserve the complete user request","known":{"accountName":"visible name","accountingClass":"asset","normalBalance":"debit","nativeCurrency":"USD","purpose":"visible purpose"}}}}. Use the user-stated action and values; omit unknown known-fields.',
   'For a new account, set action to create_account, preserve user-stated details in known, and leave missing details unresolved for the accounting team to clarify.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
@@ -1565,7 +1568,6 @@ function canDelegateAnotherSubstep(input: {
   if (input.delegationFailed || input.delegationCount >= MAX_DELEGATIONS_PER_TURN) return false;
   return !input.teamResults.some((result) =>
     result.status === 'failed'
-    || result.status === 'partial'
     || result.status === 'conflicted'
     || (result.status === 'insufficient_evidence'
       && input.transactionCaptureContinuation === undefined)

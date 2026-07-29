@@ -41,7 +41,8 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     }
 
     const hasDomainTools = call.activeTools.length !== 0;
-    const requiredSteps = hasDomainTools ? 2 : 1;
+    const requiresDomainTool = hasDomainTools && call.roleKind === 'maker';
+    const requiredSteps = requiresDomainTool ? 2 : 1;
     if (call.maxSteps < requiredSteps) {
       throw new PlusOneError({
         category: 'validation_rejected',
@@ -103,7 +104,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     const initialStepLimit = call.maxSteps - repairStepLimit;
     const stopAtStepLimit = stopAfterSemanticModelSteps(initialStepLimit);
     const result = await agent.generate([...call.messages], {
-      instructions: contractualInstructions(call, hasDomainTools),
+      instructions: contractualInstructions(call, hasDomainTools, requiresDomainTool),
       activeTools: [...call.activeTools],
       stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
         submissions.length !== 0 || stopAtStepLimit({ steps }),
@@ -113,7 +114,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       toolChoice: 'auto',
       toolCallConcurrency: call.maxToolConcurrency,
       prepareStep: ({ stepNumber }: { stepNumber: number }) => {
-        if (hasDomainTools && stepNumber === 0) {
+        if (requiresDomainTool && stepNumber === 0) {
           return {
             activeTools: [...call.activeTools],
             toolChoice: 'auto' as const,
@@ -121,7 +122,9 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
         }
         return {
           tools: { [SubmitResultToolId]: submitResult },
-          activeTools: [SubmitResultToolId],
+          activeTools: requiresDomainTool
+            ? [SubmitResultToolId]
+            : [...call.activeTools, SubmitResultToolId],
           toolChoice: 'auto' as const,
         };
       },
@@ -133,7 +136,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     if (modelResultEndedOnRetry(result)) {
       throw new ModelTemporarilyUnavailableError(lastProviderError);
     }
-    assertExecutedActiveTool(call, result);
+    assertExecutedRequiredDomainTool(call, result, requiresDomainTool);
     const textSubmission = parseTextSubmission(result, call.outputSchema, call.roleKind);
     let parsed: Output;
     if (submissions.length !== 0) {
@@ -208,10 +211,13 @@ function assertIsolatedContext<Output>(call: StructuredAgentCall<Output>): void 
 function contractualInstructions<Output>(
   call: StructuredAgentCall<Output>,
   hasDomainTools: boolean,
+  requiresDomainTool: boolean,
 ): string {
-  const completion = hasDomainTools
+  const completion = requiresDomainTool
     ? 'First call one approved domain tool. After receiving its result, call submitResult exactly once with the complete contractual result.'
-    : 'Call submitResult exactly once with the complete contractual result.';
+    : hasDomainTools
+      ? 'Approved domain tools are optional. Use one only when it materially improves this task, then call submitResult exactly once; otherwise call submitResult directly.'
+      : 'Call submitResult exactly once with the complete contractual result.';
   return [
     call.systemPrompt,
     contractualOutputHint(call),
@@ -312,11 +318,12 @@ function structuredResultNotSubmitted<Output>(call: StructuredAgentCall<Output>)
   });
 }
 
-function assertExecutedActiveTool<Output>(
+function assertExecutedRequiredDomainTool<Output>(
   call: StructuredAgentCall<Output>,
   result: MastraGenerationResult,
+  required: boolean,
 ): void {
-  if (call.activeTools.length === 0) return;
+  if (!required) return;
   const activeTools = new Set(call.activeTools);
   if (collectToolResultNames(result).some((toolName) => activeTools.has(toolName))) return;
   throw new PlusOneError({

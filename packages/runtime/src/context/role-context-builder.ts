@@ -99,6 +99,7 @@ export class RoleContextBuilder {
         ...skill.makerInstructions,
         'The inner MakerArtifactV1.output must be a complete schema-valid V1 object with its own schemaName and schemaVersion; never return shorthand domain objects.',
         'MakerArtifactV1.claims[].evidenceArtifactIds may contain only artifact ids listed in invocation.permittedEvidence. When permittedEvidence is empty, every evidenceArtifactIds array must be empty; ids inside a nested evidence package are provenance, not permitted artifact references.',
+        'Never put raw household, account, artifact, task, command, book, or other internal identifiers in claim text or human-facing narrative fields. Use user-visible names; include identifiers only in domain fields whose schema explicitly requires them.',
         'Do not claim access to evidence or tools absent from the typed invocation.',
       ].join('\n'),
       messages: [{ role: 'user', content: JSON.stringify(invocation) }],
