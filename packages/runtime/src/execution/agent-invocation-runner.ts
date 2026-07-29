@@ -136,6 +136,7 @@ export class AgentInvocationRunner {
                 : recoverable ? 'retryable' : 'exhausted',
               durationMs: Date.now() - startedAt,
             },
+            ...(failure.category === 'model_failure' ? { error: cause } : {}),
           };
           if (recoverable) logger.warn('agent.failed', options);
           else logger.error('agent.failed', options);

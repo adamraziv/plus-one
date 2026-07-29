@@ -132,8 +132,12 @@ describe('AgentInvocationRunner', () => {
     const ledger = {
       startRun: vi.fn(), finishRun: vi.fn(), startAttempt: vi.fn(), finishAttempt: vi.fn(),
     };
+    const providerError = Object.assign(new Error('private provider failure'), {
+      responseBody: '{"error":{"message":"raw provider capacity failure"}}',
+      statusCode: 503,
+    });
     const runner = new AgentInvocationRunner({
-      agents: { generate: vi.fn().mockRejectedValue(new Error('private provider failure')) } as never,
+      agents: { generate: vi.fn().mockRejectedValue(providerError) } as never,
       policies: new RuntimePolicyRegistry({
         models: { 'provider/model-a': ['structured_output'], 'provider/model-b': ['structured_output'] },
         policies: [policy],
@@ -163,9 +167,11 @@ describe('AgentInvocationRunner', () => {
         attributes: expect.objectContaining({
           'failure.category': 'model_failure',
           'retry.classification': 'retryable',
+          'exception.response.body': providerError.responseBody,
+          'http.response.status_code': 503,
         }),
       }));
-      expect(JSON.stringify(records)).not.toContain('private provider failure');
+      expect(JSON.stringify(records)).toContain('private provider failure');
     } finally {
       await logging.close();
     }

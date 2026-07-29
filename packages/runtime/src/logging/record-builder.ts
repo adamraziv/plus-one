@@ -76,6 +76,8 @@ export function buildLogEnvelope(input: BuildLogEnvelopeInput): LogEnvelopeV1 {
       if (error.stack !== undefined) attributes['exception.stacktrace'] = error.stack;
       if (error.code !== undefined) attributes['error.code'] = error.code;
       if (error.category !== undefined) attributes['error.category'] = error.category;
+      if (error.responseBody !== undefined) attributes['exception.response.body'] = error.responseBody;
+      if (error.statusCode !== undefined) attributes['http.response.status_code'] = error.statusCode;
     }
 
     return freezeEnvelope({

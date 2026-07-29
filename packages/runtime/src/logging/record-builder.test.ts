@@ -119,7 +119,11 @@ describe('buildLogEnvelope', () => {
   });
 
   it('includes a bounded sanitized stack only for ERROR records', () => {
-    const error = new Error('password=secret-value');
+    const providerError = Object.assign(new Error('provider unavailable'), {
+      responseBody: '{"error":{"message":"capacity unavailable"}}',
+      statusCode: 503,
+    });
+    const error = new Error('password=secret-value', { cause: providerError });
     error.name = 'ProviderError';
     error.stack = `ProviderError: password=secret-value\n${'frame\n'.repeat(2_000)}`;
 
@@ -151,6 +155,8 @@ describe('buildLogEnvelope', () => {
     });
 
     expect(warning.attributes['exception.stacktrace']).toBeUndefined();
+    expect(warning.attributes['exception.response.body']).toBe(providerError.responseBody);
+    expect(warning.attributes['http.response.status_code']).toBe(503);
     expect(failure.attributes['exception.stacktrace']).toEqual(expect.any(String));
     expect(String(failure.attributes['exception.stacktrace']).length).toBeLessThanOrEqual(8_000);
     expect(JSON.stringify(failure)).not.toContain('secret-value');
