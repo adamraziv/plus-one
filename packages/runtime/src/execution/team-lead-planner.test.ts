@@ -85,13 +85,14 @@ const team = {
 
 describe('TeamLeadPlanner', () => {
   it('invokes a team lead through isolated context and validates the returned plan', async () => {
-    const generate = vi.fn(async () => TeamLeadPlanSchemaV1.parse({
+    const suggestedPlan = TeamLeadPlanSchemaV1.parse({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'query-evidence', makerInput: {} }],
       stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-    }));
+    });
+    const generate = vi.fn(async () => suggestedPlan);
     const runner = new AgentInvocationRunner({
       agents: { generate } as StructuredAgentPort,
       policies: new RuntimePolicyRegistry({
@@ -126,7 +127,7 @@ describe('TeamLeadPlanner', () => {
       strategies: ExecutionStrategyRegistry.withRequiredStrategies(),
     });
 
-    const plan = await planner.plan({
+    const statefulInput = {
       householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
       team,
@@ -134,7 +135,15 @@ describe('TeamLeadPlanner', () => {
       request: { businessQuestion: 'What are our balances?' },
       policyLabels: ['personalized_finance'],
       abortSignal: AbortSignal.timeout(1_000),
-    });
+      suggestedPlan,
+      executionState: {
+        schemaName: 'team-lead-execution-state',
+        schemaVersion: 1,
+        remainingAttempts: 1,
+        executions: [],
+      },
+    } as const;
+    const plan = await planner.plan(statefulInput);
 
     expect(plan.work[0]?.workCellId).toBe('query-evidence');
     expect(generate).toHaveBeenCalledWith(expect.objectContaining({
@@ -145,6 +154,12 @@ describe('TeamLeadPlanner', () => {
       memoryEnabled: false,
       outputSchema: expect.anything(),
     }));
+    const call = generate.mock.calls[0]?.[0];
+    const invocation = JSON.parse(call?.messages[0]?.content ?? '{}');
+    expect(invocation.suggestedPlan).toEqual(suggestedPlan);
+    expect(invocation.executionState).toEqual(statefulInput.executionState);
+    expect(call?.parentMessages).toEqual([]);
+    expect(call?.toolHistory).toEqual([]);
   });
 
   it('normalizes underscore-delimited lead identifiers before validating the final plan', async () => {

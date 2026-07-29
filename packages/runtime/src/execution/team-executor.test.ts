@@ -1,4 +1,4 @@
-import { QueryResultSchemaV1 } from '@plus-one/contracts';
+import { PlusOneError, QueryResultSchemaV1 } from '@plus-one/contracts';
 import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 import { TeamExecutor } from '../index.js';
@@ -560,6 +560,71 @@ describe('TeamExecutor', () => {
     expect(result.completionState).toBe('terminal');
     expect(result.makerArtifacts).toEqual([]);
     expect(runtime.fail).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the first retryable maker failure for lead supervision instead of retrying blindly', async () => {
+    const runtime = {
+      createTask: vi.fn(),
+      selectContract: vi.fn(),
+      beginMaker: vi.fn(),
+      validateMaker: vi.fn(),
+      beginChecker: vi.fn(),
+      validateChecker: vi.fn(),
+      requestRevision: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+    };
+    const failure = new PlusOneError({
+      category: 'validation_rejected',
+      code: 'structured_result_not_submitted',
+      message: 'The model did not submit the required contractual result.',
+      retry: 'safe',
+      receiptLookupRequired: false,
+      details: {},
+    });
+    const runner = { run: vi.fn().mockRejectedValue(failure) };
+    const executor = new TeamExecutor({
+      runtime: runtime as never,
+      runner: runner as never,
+      contexts: {
+        forMaker: vi.fn(() => ({
+          systemPrompt: 'maker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+        forChecker: vi.fn(() => ({
+          systemPrompt: 'checker',
+          messages: [],
+          parentMessages: [],
+          memoryEnabled: false,
+          activeTools: [],
+          toolHistory: [],
+        })),
+      } as never,
+      policies: { resolve: vi.fn(() => ({
+        maxAttempts: 2,
+        teamDeadlineMs: 5_000,
+        identity: { policyName: 'test', policyVersion: 1 },
+      })) } as never,
+      ids: { nextArtifactId: vi.fn() },
+    });
+
+    const result = await executor.executeWorkCell(makeExecutionInput());
+
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 'failed',
+      failure: {
+        phase: 'maker_generation',
+        role: { roleName: 'query-maker', roleVersion: 1 },
+        category: 'validation_rejected',
+        code: 'structured_result_not_submitted',
+        retry: 'safe',
+      },
+    });
   });
 });
 
