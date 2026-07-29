@@ -29,7 +29,15 @@ import {
   SerializableMutationRunner,
 } from '@plus-one/mutations';
 import { ingestionSkills } from '@plus-one/ingestion';
-import { planningSkills } from '@plus-one/planning';
+import {
+  BudgetPlanRequestDraftSchemaV1,
+  BudgetScenarioRequestDraftSchemaV1,
+  BudgetingDelegateRequestSchemaV1,
+  BudgetingIntakeRequestSchemaV1,
+  MaterializedBudgetingLeadRequestSchemaV1,
+  planningSkills,
+  validateBudgetingLeadPlan,
+} from '@plus-one/planning';
 import {
   queryRelationForCoverage,
   querySkills,
@@ -161,6 +169,8 @@ export function createTeamRuntime(input: {
           allocateAccountMappingId: () => AccountSourceMappingIdSchema.parse(nextId('accountmap')),
           allocatePeriodId: () => PeriodIdSchema.parse(nextId('period')),
         })
+        : runtimeInput.team.team === 'budgeting'
+          ? normalizeBudgetingLeadRequest(runtimeInput.message, runtimeInput.request)
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
           : runtimeInput.request;
@@ -184,8 +194,13 @@ export function createTeamRuntime(input: {
       const accountingRequest = runtimeInput.team.team === 'accounting'
         ? MaterializedAccountingLeadRequestSchemaV1.safeParse(request)
         : undefined;
+      const budgetingRequest = runtimeInput.team.team === 'budgeting'
+        ? MaterializedBudgetingLeadRequestSchemaV1.safeParse(request)
+        : undefined;
       const plan = accountingRequest?.success
         ? validateAccountingLeadPlan(accountingRequest.data, planCandidate)
+        : budgetingRequest?.success
+          ? validateBudgetingLeadPlan(budgetingRequest.data, planCandidate)
         : planCandidate;
       const work = plan.work.map((item) => workInputFor(runtimeInput.team, item.workCellId, {
         householdId: runtimeInput.message.householdId,
@@ -273,6 +288,41 @@ export async function normalizeAccountingLeadRequest(
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
 }
 
+export function normalizeBudgetingLeadRequest(
+  message: InboundChannelMessageV1,
+  request: JsonValue,
+): JsonValue {
+  const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
+  const materializedRequest = parsed.intent === 'budget_plan'
+    ? (() => {
+        const draft = BudgetPlanRequestDraftSchemaV1.parse(parsed.request);
+        return BudgetingIntakeRequestSchemaV1.parse({
+          schemaName: 'budgeting-intake-request',
+          schemaVersion: 1,
+          householdId: message.householdId,
+          intent: parsed.intent,
+          instruction: draft.instruction,
+          scopeKey: draft.scopeKey,
+        });
+      })()
+    : (() => {
+        const draft = BudgetScenarioRequestDraftSchemaV1.parse(parsed.request);
+        return BudgetingIntakeRequestSchemaV1.parse({
+          schemaName: 'budgeting-intake-request',
+          schemaVersion: 1,
+          householdId: message.householdId,
+          intent: parsed.intent,
+          instruction: draft.instruction,
+          scenarioCount: draft.scenarioCount,
+        });
+      })();
+
+  return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
+    ...parsed,
+    request: materializedRequest,
+  }))) as JsonValue;
+}
+
 export async function normalizeQueryLeadRequest(
   pools: Pick<DatabasePools, 'query'>,
   message: InboundChannelMessageV1,
@@ -357,6 +407,38 @@ export function deterministicLeadPlanForRequest(
       recommendedStrategyName: 'single-maker-checker',
       work: [{ workCellId: 'query-evidence', makerInput: request }],
       stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
+    });
+  }
+  if (team.team === 'budgeting') {
+    const parsed = MaterializedBudgetingLeadRequestSchemaV1.safeParse(request);
+    if (!parsed.success) return undefined;
+    const intake = BudgetingIntakeRequestSchemaV1.safeParse(parsed.data.request);
+    const plan = intake.success
+      ? {
+          workCellId: 'budgeting-intake',
+          stopCode: 'budgeting-intake',
+          stopDescription: 'Return one checked budgeting clarification.',
+        }
+      : parsed.data.intent === 'budget_plan'
+        ? {
+            workCellId: 'budget-plan',
+            stopCode: 'checked-budget-plan',
+            stopDescription: 'Return one checked budget plan.',
+          }
+        : {
+            workCellId: 'budget-scenarios',
+            stopCode: 'checked-budget-scenarios',
+            stopDescription: 'Return one checked budget scenario comparison.',
+          };
+    return TeamLeadPlanSchemaV1.parse({
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: plan.workCellId, makerInput: parsed.data.request }],
+      stopCondition: {
+        code: plan.stopCode,
+        description: plan.stopDescription,
+      },
     });
   }
   if (team.team === 'accounting') {
