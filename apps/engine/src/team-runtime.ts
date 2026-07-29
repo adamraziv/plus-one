@@ -190,7 +190,7 @@ export function createTeamRuntime(input: {
         selectedSkill: leadSkill.identity,
         request,
         policyLabels: ['personalized_finance'],
-        suggestedPlan,
+        ...(suggestedPlan === undefined ? {} : { suggestedPlan }),
         executionState: TeamLeadExecutionStateSchemaV1.parse({
           schemaName: 'team-lead-execution-state',
           schemaVersion: 1,

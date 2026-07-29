@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { RuntimePolicyV1 } from '@plus-one/contracts';
+import { PlusOneError, type RuntimePolicyV1 } from '@plus-one/contracts';
 import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentInvocationRunner, RuntimePolicyRegistry } from '../index.js';
@@ -175,5 +175,51 @@ describe('AgentInvocationRunner', () => {
     } finally {
       await logging.close();
     }
+  });
+
+  it('preserves contractual failure codes and retry directives for supervision', async () => {
+    const ledger = {
+      startRun: vi.fn(), finishRun: vi.fn(), startAttempt: vi.fn(), finishAttempt: vi.fn(),
+    };
+    const runner = new AgentInvocationRunner({
+      agents: {
+        generate: vi.fn().mockRejectedValue(new PlusOneError({
+          category: 'validation_rejected',
+          code: 'structured_result_not_submitted',
+          message: 'The model did not submit the required contractual result.',
+          retry: 'safe',
+          receiptLookupRequired: false,
+          details: { providerPayload: 'must-not-propagate' },
+        })),
+      } as never,
+      policies: new RuntimePolicyRegistry({
+        models: { 'provider/model-a': ['structured_output'], 'provider/model-b': ['structured_output'] },
+        policies: [policy],
+      }),
+      ledger: ledger as never,
+      ids: { nextRunId: () => 'run_01JNZQ4A9B8C7D6E5F4G3H2J1K' },
+    });
+
+    await expect(runner.run({
+      householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      taskId: 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      role: { identity: { roleName: 'query-maker', roleVersion: 1 }, kind: 'maker',
+        agentId: 'query-maker', runtimePolicy: policy.identity },
+      attemptOrdinal: 1,
+      context: { systemPrompt: 'maker', messages: [{ role: 'user', content: '{}' }],
+        parentMessages: [], memoryEnabled: false, activeTools: [], toolHistory: [] },
+      outputSchema: z.object({ answer: z.string() }),
+      abortSignal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      category: 'validation_rejected',
+      code: 'structured_result_not_submitted',
+      retry: 'safe',
+      message: 'Agent output failed contractual validation',
+      details: {
+        role: 'query-maker',
+        attemptOrdinal: 1,
+        modelId: 'provider/model-a',
+      },
+    });
   });
 });
