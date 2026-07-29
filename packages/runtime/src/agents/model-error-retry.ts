@@ -1,4 +1,9 @@
-import { StreamErrorRetryProcessor } from '@mastra/core/processors';
+import {
+  StreamErrorRetryProcessor,
+  type ProcessAPIErrorArgs,
+  type ProcessAPIErrorResult,
+  type StreamErrorRetryProcessorOptions,
+} from '@mastra/core/processors';
 
 const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const TRANSIENT_CODES = new Set([
@@ -15,8 +20,11 @@ export class ModelTemporarilyUnavailableError extends Error {
   readonly code = 'model_temporarily_unavailable';
   readonly isRetryable = true;
 
-  constructor() {
-    super('The model provider remained temporarily unavailable after bounded retries.');
+  constructor(cause?: unknown) {
+    super(
+      'The model provider remained temporarily unavailable after bounded retries.',
+      cause === undefined ? undefined : { cause },
+    );
     this.name = 'ModelTemporarilyUnavailableError';
   }
 }
@@ -58,8 +66,9 @@ export function createTransientModelRetryProcessor(input: {
   maxRetries: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
+  onError?: (error: unknown) => void;
 }): StreamErrorRetryProcessor {
-  return new StreamErrorRetryProcessor({
+  const options: StreamErrorRetryProcessorOptions = {
     maxRetries: input.maxRetries,
     matchers: [isTransientModelError],
     delayMs: ({ retryCount }) => {
@@ -69,7 +78,26 @@ export function createTransientModelRetryProcessor(input: {
       if (exponentialDelayMs <= 0) return 0;
       return exponentialDelayMs + Math.floor(Math.random() * Math.max(1, exponentialDelayMs / 4));
     },
-  });
+  };
+  return input.onError === undefined
+    ? new StreamErrorRetryProcessor(options)
+    : new CapturingStreamErrorRetryProcessor(options, input.onError);
+}
+
+class CapturingStreamErrorRetryProcessor extends StreamErrorRetryProcessor {
+  constructor(
+    options: StreamErrorRetryProcessorOptions,
+    private readonly onError: (error: unknown) => void,
+  ) {
+    super(options);
+  }
+
+  override async processAPIError(
+    args: ProcessAPIErrorArgs,
+  ): Promise<ProcessAPIErrorResult | void> {
+    this.onError(args.error);
+    return super.processAPIError(args);
+  }
 }
 
 function errorChain(error: unknown): unknown[] {

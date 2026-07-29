@@ -78,9 +78,15 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       },
     });
 
+    let lastProviderError: unknown;
     const errorProcessors = call.maxRetries === 0
       ? []
-      : [createTransientModelRetryProcessor({ maxRetries: call.maxRetries })];
+      : [createTransientModelRetryProcessor({
+          maxRetries: call.maxRetries,
+          onError: (error) => {
+            lastProviderError = error;
+          },
+        })];
     const agent = registration.agent as unknown as {
       generate: (
         messages: readonly { role: string; content: string }[],
@@ -114,7 +120,9 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       telemetry: { isEnabled: false },
     });
 
-    if (modelResultEndedOnRetry(result)) throw new ModelTemporarilyUnavailableError();
+    if (modelResultEndedOnRetry(result)) {
+      throw new ModelTemporarilyUnavailableError(lastProviderError);
+    }
     assertExecutedActiveTool(call, result);
     if (submissions.length === 0) {
       throw new PlusOneError({
