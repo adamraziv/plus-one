@@ -1132,6 +1132,10 @@ describe('budgetingIntakeForDraft', () => {
   });
 
   it('leaves a complete budget draft for authenticated evidence materialization', () => {
+    const completeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Create an August 2026 budget. Prioritize rent before discretionary spending. Total 10000 USD. Include Rent 3000 USD.',
+    });
     const request = {
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
@@ -1150,7 +1154,30 @@ describe('budgetingIntakeForDraft', () => {
       },
     } as const;
 
-    expect(budgetingIntakeForDraft(message, request)).toBeUndefined();
+    expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+  });
+
+  it('discards model-supplied budget facts that are absent from the user message', () => {
+    const request = {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Create a monthly budget.',
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['rent before discretionary spending'],
+          timeframe: { start: '2026-08-01', end: '2026-08-31' },
+          targetAmount: { amount: '10000.00', currency: 'USD' },
+          categories: [{ name: 'Rent', targetAmount: { amount: '3000.00', currency: 'USD' } }],
+        },
+      },
+    } as const;
+
+    expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(message, request)).known)
+      .toEqual({});
   });
 });
 

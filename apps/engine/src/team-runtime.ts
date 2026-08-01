@@ -39,6 +39,7 @@ import {
   BudgetScenarioRequestDraftSchemaV1,
   BudgetingDelegateRequestSchemaV1,
   BudgetingIntakeRequestSchemaV1,
+  BudgetingKnownInputsSchemaV1,
   CashFlowAnalysisRequestSchemaV1,
   CashFlowLeadRequestSchemaV1,
   missingBudgetPlanFields,
@@ -47,6 +48,7 @@ import {
   PlanningCommandHandlers,
   planningSkills,
   type BudgetingDelegateRequestV1,
+  type BudgetingKnownInputsV1,
   validateBudgetingLeadPlan,
   validateCashFlowLeadPlan,
 } from '@plus-one/planning';
@@ -426,6 +428,13 @@ export function budgetingIntakeForDraft(
   message: InboundChannelMessageV1,
   request: BudgetingDelegateRequestV1,
 ) {
+  return budgetingIntakeForCanonicalDraft(message, canonicalBudgetingDraft(message, request));
+}
+
+function budgetingIntakeForCanonicalDraft(
+  message: InboundChannelMessageV1,
+  request: BudgetingDelegateRequestV1,
+) {
   const missing = request.intent === 'budget_plan'
     ? missingBudgetPlanFields(request.request.known)
     : missingBudgetScenarioFields(request.request.known);
@@ -457,10 +466,11 @@ export async function materializeBudgetingLeadRequest(
   request: JsonValue,
 ): Promise<JsonValue> {
   const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
-  const intake = budgetingIntakeForDraft(message, parsed);
+  const canonical = canonicalBudgetingDraft(message, parsed);
+  const intake = budgetingIntakeForCanonicalDraft(message, canonical);
   if (intake !== undefined) {
     return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
-      ...parsed,
+      ...canonical,
       request: intake,
     }))) as JsonValue;
   }
@@ -469,7 +479,7 @@ export async function materializeBudgetingLeadRequest(
   const accountContext = await planningAccountContext(pools, message.householdId);
   const materializedRequest = parsed.intent === 'budget_plan'
     ? (() => {
-        const draft = BudgetPlanRequestDraftSchemaV1.parse(parsed.request);
+        const draft = BudgetPlanRequestDraftSchemaV1.parse(canonical.request);
         return BudgetPlanRequestSchemaV1.parse({
           schemaName: 'budget-plan-request',
           schemaVersion: 1,
@@ -481,7 +491,7 @@ export async function materializeBudgetingLeadRequest(
         });
       })()
     : (() => {
-        const draft = BudgetScenarioRequestDraftSchemaV1.parse(parsed.request);
+        const draft = BudgetScenarioRequestDraftSchemaV1.parse(canonical.request);
         return BudgetScenarioRequestSchemaV1.parse({
           schemaName: 'budget-scenario-request',
           schemaVersion: 1,
@@ -493,9 +503,103 @@ export async function materializeBudgetingLeadRequest(
         });
       })();
   return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
-    ...parsed,
+    ...canonical,
     request: materializedRequest,
   }))) as JsonValue;
+}
+
+function canonicalBudgetingDraft(
+  message: InboundChannelMessageV1,
+  request: BudgetingDelegateRequestV1,
+): BudgetingDelegateRequestV1 {
+  const known = request.request.known;
+  const source = message.body.trim().toLocaleLowerCase();
+  const continuation = /\b(?:create it|please create|set it up|go ahead|proceed|do it|confirm|yes)\b/.test(source);
+  const canonicalKnown = continuation
+    ? known
+    : BudgetingKnownInputsSchemaV1.parse({
+        ...(known.priorities !== undefined
+          && known.priorities.every((value) => explicitBudgetText(source, value))
+          ? { priorities: known.priorities }
+          : {}),
+        ...(known.timeframe !== undefined && explicitBudgetTimeframe(source, known.timeframe)
+          ? { timeframe: known.timeframe }
+          : {}),
+        ...(known.targetAmount !== undefined && explicitBudgetMoney(source, known.targetAmount)
+          ? { targetAmount: known.targetAmount }
+          : {}),
+        ...(known.categories !== undefined
+          && known.categories.every((category) => explicitBudgetCategory(source, category))
+          ? { categories: known.categories }
+          : {}),
+      });
+  return BudgetingDelegateRequestSchemaV1.parse({
+    ...request,
+    request: { ...request.request, known: canonicalKnown },
+  });
+}
+
+function explicitBudgetText(source: string, value: string): boolean {
+  const sourceWords = new Set(sourceWordsFor(source));
+  const valueWords = sourceWordsFor(value);
+  if (valueWords.length === 0) return false;
+  const overlap = valueWords.filter((word) => sourceWords.has(word)).length;
+  return overlap >= Math.max(1, Math.ceil(valueWords.length * 0.4));
+}
+
+function explicitBudgetTimeframe(
+  source: string,
+  timeframe: NonNullable<BudgetingKnownInputsV1['timeframe']>,
+): boolean {
+  const years = [timeframe.start.slice(0, 4), timeframe.end.slice(0, 4)];
+  if (years.some((year) => source.includes(year))) return true;
+  const months = [timeframe.start, timeframe.end].map((date) => monthName(date));
+  return months.some((month) => month !== undefined && source.includes(month));
+}
+
+function explicitBudgetMoney(
+  source: string,
+  money: NonNullable<BudgetingKnownInputsV1['targetAmount']>,
+): boolean {
+  const [whole, fraction = ''] = money.amount.split('.');
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+  const normalizedFraction = fraction.replace(/0+$/, '');
+  const amountForms = [
+    money.amount,
+    normalizedFraction.length === 0
+      ? normalizedWhole
+      : `${normalizedWhole}.${normalizedFraction}`,
+  ].map((value) => value.replaceAll(/[^0-9]/g, ''));
+  const sourceDigits = source.replaceAll(/[^0-9]/g, '');
+  const currencies = [
+    money.currency.toLocaleLowerCase(),
+    ...(money.currency === 'USD' ? ['dollar', 'dollars'] : []),
+    ...(money.currency === 'IDR' ? ['rupiah'] : []),
+  ];
+  return amountForms.some((amount) => amount.length > 0 && sourceDigits.includes(amount))
+    && currencies.some((currency) => source.includes(currency));
+}
+
+function explicitBudgetCategory(
+  source: string,
+  category: NonNullable<BudgetingKnownInputsV1['categories']>[number],
+): boolean {
+  if (!explicitBudgetText(source, category.name)) return false;
+  return category.targetAmount === undefined || explicitBudgetMoney(source, category.targetAmount);
+}
+
+function sourceWordsFor(value: string): string[] {
+  return value.toLocaleLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2);
+}
+
+function monthName(date: string): string | undefined {
+  const month = Number(date.slice(5, 7));
+  return Number.isInteger(month) && month >= 1 && month <= 12
+    ? [
+        'january', 'february', 'march', 'april', 'may', 'june',
+        'july', 'august', 'september', 'october', 'november', 'december',
+      ][month - 1]
+    : undefined;
 }
 
 async function buildBudgetingEvidencePackage(
