@@ -69,6 +69,7 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
+import { budgetingExplicitRequestForMessage } from '../budgeting/budgeting-request.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -737,6 +738,22 @@ export class OrchestratorAgent {
               messageCount: Array.isArray(prompt) ? prompt.length : 1,
             },
           });
+          const deterministicBudgetRequest = budgetingExplicitRequestForMessage(message);
+          if (deterministicBudgetRequest !== undefined) {
+            logger.info('orchestrator.budgeting.preflight', {
+              fields: { intent: deterministicBudgetRequest.intent },
+            });
+            try {
+              await this.agentTools.delegateTeam.execute({
+                team: 'budgeting',
+                request: deterministicBudgetRequest,
+              });
+            } catch (error) {
+              if (signal.aborted) throw error;
+              return delegationFailureTurn(message);
+            }
+            return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+          }
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');

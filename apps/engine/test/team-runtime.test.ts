@@ -31,6 +31,7 @@ import {
   normalizeQueryLeadRequest,
   suggestedLeadPlanForRequest,
 } from '../src/team-runtime.js';
+import { budgetingExplicitRequestForMessage } from '../src/budgeting/budgeting-request.js';
 import {
   accountingRequestMaterializers,
   materializeAccountingLeadRequest,
@@ -1199,6 +1200,36 @@ describe('budgetingIntakeForDraft', () => {
     } as const;
 
     expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+  });
+
+  it('recovers facts from a detailed continuation even when it says to prepare the budget', () => {
+    const continuationMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Monthly for September 2026, from 2026-09-01 through 2026-09-30; prioritize rent and groceries; the total budget is USD 1650. Include Rent USD 1000, Groceries USD 400, and Dining USD 250. Map them to Checking and prepare it.',
+    });
+    const request = {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: continuationMessage.body,
+        scopeKey: 'monthly',
+        known: {},
+      },
+    } as const;
+
+    expect(budgetingIntakeForDraft(continuationMessage, request)).toBeUndefined();
+    expect(budgetingExplicitRequestForMessage(continuationMessage)).toMatchObject({
+      intent: 'budget_plan',
+      request: {
+        known: {
+          timeframe: { start: '2026-09-01', end: '2026-09-30' },
+          targetAmount: { amount: '1650', currency: 'USD' },
+        },
+      },
+    });
   });
 });
 
