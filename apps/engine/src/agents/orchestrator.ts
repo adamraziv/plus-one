@@ -740,9 +740,6 @@ export class OrchestratorAgent {
           });
           const deterministicBudgetRequest = budgetingExplicitRequestForMessage(message);
           if (deterministicBudgetRequest !== undefined) {
-            logger.info('orchestrator.budgeting.preflight', {
-              fields: { intent: deterministicBudgetRequest.intent },
-            });
             try {
               await this.agentTools.delegateTeam.execute({
                 team: 'budgeting',
