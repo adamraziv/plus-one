@@ -19,6 +19,7 @@ import {
   accountingTeamDefinition,
 } from '@plus-one/accounting';
 import {
+  BudgetingDelegateRequestSchemaV1,
   BudgetingIntakeRequestSchemaV1,
   budgetingTeamDefinition,
 } from '@plus-one/planning';
@@ -1137,7 +1138,7 @@ describe('budgetingIntakeForDraft', () => {
       ...message,
       body: 'Create an August 2026 budget. Prioritize rent before discretionary spending. Total 10000 USD. Include Rent 3000 USD.',
     });
-    const request = {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
@@ -1153,13 +1154,13 @@ describe('budgetingIntakeForDraft', () => {
           categories: [{ name: 'Rent', targetAmount: { amount: '3000.00', currency: 'USD' } }],
         },
       },
-    } as const;
+    });
 
     expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
   });
 
   it('discards model-supplied budget facts that are absent from the user message', () => {
-    const request = {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
@@ -1175,7 +1176,7 @@ describe('budgetingIntakeForDraft', () => {
           categories: [{ name: 'Rent', targetAmount: { amount: '3000.00', currency: 'USD' } }],
         },
       },
-    } as const;
+    });
 
     expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(message, request)).known)
       .toEqual({});

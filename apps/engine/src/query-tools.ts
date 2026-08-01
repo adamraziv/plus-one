@@ -5,7 +5,6 @@ import {
   pgRunner,
   QueryToolRegistry,
   ReadOnlySqlValidator,
-  type EvidenceHandle,
   type QueryToolDefinition,
 } from '@plus-one/query';
 import { REQUIRED_REPORTING_RELATIONS } from '@plus-one/reporting';

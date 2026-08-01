@@ -4,6 +4,7 @@ import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
+import { noopObserve } from '@mastra/core/tools';
 import { ZodError } from 'zod';
 import {
   AccountingJournalMutationProposalSchemaV1,
@@ -741,9 +742,23 @@ export class OrchestratorAgent {
           const deterministicBudgetRequest = budgetingExplicitRequestForMessage(message);
           if (deterministicBudgetRequest !== undefined) {
             try {
-              await this.agentTools.delegateTeam.execute({
+              const executeDelegateTeam = this.agentTools.delegateTeam.execute;
+              if (executeDelegateTeam === undefined) {
+                throw new Error('The delegateTeam tool is not executable.');
+              }
+              const runtimeBudgetRequest = requestForRuntime(deterministicBudgetRequest);
+              if (runtimeBudgetRequest === null
+                || typeof runtimeBudgetRequest !== 'object'
+                || Array.isArray(runtimeBudgetRequest)) {
+                throw new Error('The deterministic budgeting request must be a JSON object.');
+              }
+              await executeDelegateTeam({
                 team: 'budgeting',
-                request: deterministicBudgetRequest,
+                request: runtimeBudgetRequest,
+              }, {
+                abortSignal: signal,
+                requestContext: new RequestContext(),
+                observe: noopObserve,
               });
             } catch (error) {
               if (signal.aborted) throw error;

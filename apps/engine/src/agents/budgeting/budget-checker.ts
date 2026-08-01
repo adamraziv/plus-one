@@ -70,6 +70,7 @@ function deterministicIntakeVerdict(
   const expected = request.data.intent === 'budget_plan'
     ? missingBudgetPlanFields(request.data.known)
     : missingBudgetScenarioFields(request.data.known);
+  const expectedFields = new Set<string>(expected);
   const findings: Array<{ code: string; message: string }> = [];
   if (!clarification.success) {
     findings.push({
@@ -78,7 +79,7 @@ function deterministicIntakeVerdict(
     });
   } else {
     if (clarification.data.missingFields.length !== expected.length
-      || clarification.data.missingFields.some((field) => !expected.includes(field))) {
+      || clarification.data.missingFields.some((field) => !expectedFields.has(field))) {
       findings.push({
         code: 'budgeting_clarification_fields_mismatch',
         message: 'Clarification fields do not match the missing typed budget facts.',

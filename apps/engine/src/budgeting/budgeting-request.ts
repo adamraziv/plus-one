@@ -102,7 +102,7 @@ function groundedBudgetKnown(
 }
 
 function inferredBudgetKnown(source: string): Partial<BudgetingKnownInputsV1> {
-  const inferred: Partial<BudgetingKnownInputsV1> = {};
+  const inferred: Record<string, unknown> = {};
   const priority = /\bpriorit(?:y|ize|ise|izing)\b([^.!?]*)/.exec(source)?.[1]?.trim();
   if (priority !== undefined && priority.length > 0) inferred.priorities = [priority];
 
@@ -125,7 +125,7 @@ function inferredBudgetKnown(source: string): Partial<BudgetingKnownInputsV1> {
     }
     if (categories.length > 0) inferred.categories = categories;
   }
-  return inferred;
+  return BudgetingKnownInputsSchemaV1.partial().parse(inferred);
 }
 
 function moneyFromParts(
@@ -170,7 +170,7 @@ function explicitBudgetMoney(
   source: string,
   money: NonNullable<BudgetingKnownInputsV1['targetAmount']>,
 ): boolean {
-  const [whole, fraction = ''] = money.amount.split('.');
+  const [whole = '', fraction = ''] = money.amount.split('.');
   const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
   const normalizedFraction = fraction.replace(/0+$/, '');
   const amountForms = [
