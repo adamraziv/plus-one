@@ -54,6 +54,7 @@ export const ATTRIBUTE_DEFINITIONS = {
   channel: stringAttribute('channel'),
   durationMs: numberAttribute('duration.ms'),
   failureCategory: stringAttribute('failure.category'),
+  failureCode: stringAttribute('failure.code'),
   role: stringAttribute('agent.role'),
   model: stringAttribute('agent.model'),
   attemptOrdinal: numberAttribute('agent.attempt.ordinal'),
@@ -226,7 +227,8 @@ export const EVENT_CATALOG = {
   'agent.failed': defineEvent({
     component: 'runtime.agent', eventName: 'agent.failed', severities: ['WARN', 'ERROR'],
     requiredAttributes: ['role', 'model', 'attemptOrdinal', 'failureCategory', 'durationMs'],
-    optionalAttributes: ['outcome', 'retryClassification'], allowException: true,
+    optionalAttributes: ['outcome', 'retryClassification', 'failureCode', 'retryDirective'],
+    allowException: true,
   }),
   'delivery.started': defineEvent({
     component: 'runtime.delivery', eventName: 'delivery.started', severities: ['INFO'],

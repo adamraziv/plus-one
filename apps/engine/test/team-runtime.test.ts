@@ -19,19 +19,20 @@ import {
   accountingTeamDefinition,
 } from '@plus-one/accounting';
 import {
+  BudgetingDelegateRequestSchemaV1,
   BudgetingIntakeRequestSchemaV1,
-  MaterializedBudgetingLeadRequestSchemaV1,
   budgetingTeamDefinition,
 } from '@plus-one/planning';
 import { ArtifactStore, createArtifactEnvelope } from '@plus-one/runtime';
 import { createChartMakerAgent } from '../src/agents/accounting/index.js';
 import {
   makerInputForLeadWorkItem,
+  budgetingIntakeForDraft,
   normalizeAccountingLeadRequest,
-  normalizeBudgetingLeadRequest,
   normalizeQueryLeadRequest,
   suggestedLeadPlanForRequest,
 } from '../src/team-runtime.js';
+import { budgetingExplicitRequestForMessage } from '../src/budgeting/budgeting-request.js';
 import {
   accountingRequestMaterializers,
   materializeAccountingLeadRequest,
@@ -1105,9 +1106,9 @@ describe('normalizeQueryLeadRequest', () => {
   });
 });
 
-describe('normalizeBudgetingLeadRequest', () => {
-  it('materializes a budget-plan draft with authenticated scope and no invented evidence', () => {
-    const normalized = normalizeBudgetingLeadRequest(message, {
+describe('budgetingIntakeForDraft', () => {
+  it('materializes an incomplete budget-plan draft with authenticated scope and no invented evidence', () => {
+    const request = {
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
@@ -1116,19 +1117,120 @@ describe('normalizeBudgetingLeadRequest', () => {
         schemaVersion: 1,
         instruction: 'Help me create a budget.',
         scopeKey: 'monthly',
+        known: {},
       },
-    });
+    } as const;
 
-    const parsed = MaterializedBudgetingLeadRequestSchemaV1.parse(normalized);
-    expect(BudgetingIntakeRequestSchemaV1.parse(parsed.request)).toEqual({
+    const intake = budgetingIntakeForDraft(message, request);
+    expect(BudgetingIntakeRequestSchemaV1.parse(intake)).toEqual({
       schemaName: 'budgeting-intake-request',
       schemaVersion: 1,
       householdId: message.householdId,
       intent: 'budget_plan',
       instruction: 'Help me create a budget.',
       scopeKey: 'monthly',
+      known: {},
     });
-    expect(parsed.request).not.toHaveProperty('evidencePackage');
+  });
+
+  it('leaves a complete budget draft for authenticated evidence materialization', () => {
+    const completeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Create an August 2026 budget. Prioritize rent before discretionary spending. Total 10000 USD. Include Rent 3000 USD.',
+    });
+    const request = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Create our August budget.',
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['rent before discretionary spending'],
+          timeframe: { start: '2026-08-01', end: '2026-08-31' },
+          targetAmount: { amount: '10000.00', currency: 'USD' },
+          categories: [{ name: 'Rent', targetAmount: { amount: '3000.00', currency: 'USD' } }],
+        },
+      },
+    });
+
+    expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+  });
+
+  it('discards model-supplied budget facts that are absent from the user message', () => {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Create a monthly budget.',
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['rent before discretionary spending'],
+          timeframe: { start: '2026-08-01', end: '2026-08-31' },
+          targetAmount: { amount: '10000.00', currency: 'USD' },
+          categories: [{ name: 'Rent', targetAmount: { amount: '3000.00', currency: 'USD' } }],
+        },
+      },
+    });
+
+    expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(message, request)).known)
+      .toEqual({});
+  });
+
+  it('recovers complete budget facts from an explicit user message when the lead omits known', () => {
+    const completeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Create a monthly budget for 2026-08-01 through 2026-08-31. Prioritize rent and groceries. The total budget is USD 1650. Include Rent USD 1000, Groceries USD 400, and Dining USD 250.',
+    });
+    const request = {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Create a monthly budget.',
+        scopeKey: 'monthly',
+        known: {},
+      },
+    } as const;
+
+    expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+  });
+
+  it('recovers facts from a detailed continuation even when it says to prepare the budget', () => {
+    const continuationMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Monthly for September 2026, from 2026-09-01 through 2026-09-30; prioritize rent and groceries; the total budget is USD 1650. Include Rent USD 1000, Groceries USD 400, and Dining USD 250. Map them to Checking and prepare it.',
+    });
+    const request = {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: continuationMessage.body,
+        scopeKey: 'monthly',
+        known: {},
+      },
+    } as const;
+
+    expect(budgetingIntakeForDraft(continuationMessage, request)).toBeUndefined();
+    expect(budgetingExplicitRequestForMessage(continuationMessage)).toMatchObject({
+      intent: 'budget_plan',
+      request: {
+        known: {
+          timeframe: { start: '2026-09-01', end: '2026-09-30' },
+          targetAmount: { amount: '1650', currency: 'USD' },
+        },
+      },
+    });
   });
 });
 
@@ -1182,17 +1284,20 @@ describe('makerInputForLeadWorkItem', () => {
 
 describe('suggestedLeadPlanForRequest', () => {
   it('routes a materialized budget draft to checked budgeting intake', () => {
-    const request = normalizeBudgetingLeadRequest(message, {
+    const request = {
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
       request: {
-        schemaName: 'budget-plan-request-draft',
+        schemaName: 'budgeting-intake-request',
         schemaVersion: 1,
+        householdId: message.householdId,
+        intent: 'budget_plan',
         instruction: 'Help me create a budget.',
         scopeKey: 'monthly',
+        known: {},
       },
-    });
+    } as const;
 
     expect(suggestedLeadPlanForRequest(budgetingTeamDefinition, request)).toEqual({
       schemaName: 'team-lead-plan',

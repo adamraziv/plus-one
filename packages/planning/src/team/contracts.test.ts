@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BudgetPlanRequestSchemaV1,
+  BudgetingIntakeRequestSchemaV1,
+  BudgetingKnownInputsSchemaV1,
   BudgetScenarioComparisonSchemaV1,
   BudgetingLeadRequestSchemaV1,
   CashFlowAnalysisOutputSchemaV1,
@@ -76,7 +78,43 @@ describe('planning team workflow contracts', () => {
       evidencePackage: evidence,
       instruction: 'Revise grocery allocation.',
       scopeKey: 'monthly',
+      known: {
+        priorities: ['housing before discretionary spending'],
+        timeframe: { start: '2026-07-01', end: '2026-07-31' },
+        targetAmount: { amount: '1000.00', currency: 'USD' },
+        categories: [{ name: 'Groceries', targetAmount: { amount: '600.00', currency: 'USD' } }],
+      },
     }).scopeKey).toBe('monthly');
+  });
+
+  it('keeps incomplete budgeting facts in the intake contract', () => {
+    expect(BudgetingIntakeRequestSchemaV1.parse({
+      schemaName: 'budgeting-intake-request',
+      schemaVersion: 1,
+      householdId: evidence.householdId,
+      intent: 'budget_plan',
+      instruction: 'Create a monthly budget.',
+      scopeKey: 'monthly',
+      known: {},
+    }).known).toEqual({});
+  });
+
+  it('keeps complete-plan facts typed while readiness remains a runtime decision', () => {
+    expect(BudgetPlanRequestSchemaV1.parse({
+      schemaName: 'budget-plan-request',
+      schemaVersion: 1,
+      householdId: evidence.householdId,
+      evidencePackage: evidence,
+      instruction: 'Create our August budget.',
+      scopeKey: 'monthly',
+      known: {},
+    }).known).toEqual({});
+    expect(BudgetingKnownInputsSchemaV1.parse({
+      priorities: ['rent before discretionary spending'],
+      timeframe: { start: '2026-08-01', end: '2026-08-31' },
+      targetAmount: { amount: '10000000.00', currency: 'IDR' },
+      categories: [{ name: 'Rent', targetAmount: { amount: '3000000.00', currency: 'IDR' } }],
+    }).categories?.[0]?.name).toBe('Rent');
   });
 
   it('separates clarification from executable or advisory outputs', () => {

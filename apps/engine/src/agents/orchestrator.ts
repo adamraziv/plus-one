@@ -4,6 +4,7 @@ import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
+import { noopObserve } from '@mastra/core/tools';
 import { ZodError } from 'zod';
 import {
   AccountingJournalMutationProposalSchemaV1,
@@ -28,6 +29,7 @@ import {
   createTransientModelRetryProcessor,
   getLogger,
   internalImplementationDetailMatchCategory,
+  isTransientModelError,
   modelResultEndedOnRetry,
   ModelTemporarilyUnavailableError,
   stopAfterSemanticModelSteps,
@@ -68,6 +70,7 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
+import { budgetingExplicitRequestForMessage } from '../budgeting/budgeting-request.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -85,9 +88,15 @@ const orchestratorInstructions = [
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
   'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
-  'For budgeting, use the budgeting team with a budgeting-lead-request and a nested budget-plan-request-draft or budget-scenario-request-draft.',
+  'For budgeting, call delegateTeam with exactly a budgeting-lead-request containing a nested budget-plan-request-draft or budget-scenario-request-draft; for a plan use intent budget_plan and request fields instruction, scopeKey, and known, while comparisons use intent budget_scenarios and request fields instruction, scenarioCount, and known. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
+  'For budgeting, copy only explicit user-owned facts into request.known: priorities, timeframe start/end, targetAmount amount/currency, and category names/target amounts. Use known:{} when the user did not provide a fact; never guess values.',
+  'A budgeting follow-up that supplies the requested details in phrases such as "monthly", "prepare it", "set it up", or "go ahead" is still an explicit budget request: preserve those facts and delegate immediately instead of answering directly or waiting for another confirmation.',
   'Preserve the user’s budgeting instruction and user-visible scope, and never invent household identifiers or evidence packages; the budgeting runtime owns authenticated context and checked evidence requirements.',
-  'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
+  'If budgeting returns a planning clarification, carry the user’s answers forward into known on the next delegation instead of repeating an empty draft.',
+  'For cash-flow analysis, call delegateTeam with exactly {"team":"cash-flow","request":{"intent":"analysis","request":{"objective":"preserve the complete user objective","analysisMode":"single","timeframe":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}}}}. Other exact cash-flow intents are obligation, savings_goal, and debt_plan. Never invent household ids or evidence packages.',
+  'For investment or retirement education, use team investments-retirement with exact intent investment_education or retirement_education and nested request {"question":"preserve the complete user question"}.',
+  'For checked records facts, use team records-reporting with exact intent records_facts and nested request {"focus":"preserve the complete requested scope"}.',
+  'For query, call delegateTeam with exactly {"team":"query","request":{"businessQuestion":"preserve the complete finance question","coverage":["one exact governed coverage label"],"desiredGrain":["household"]}} unless a full EvidenceRequestV1 is already available. Query request is flat: do not add intent or a nested request.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
   'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
   'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
@@ -98,7 +107,7 @@ const orchestratorInstructions = [
   'For categorized transaction query rows, direction is the ledger posting direction for that exact row and account; never invert or transfer it to another account.',
   'If the user did not ask about ledger debit or credit direction, omit debit and credit wording from the reply.',
   'Account creation and chart changes always require checked specialist work; call delegateTeam instead of answering directly or collecting fields yourself.',
-  'For account creation or chart changes, use the accounting team with intent chart_of_accounts and a nested chart-work-request-draft.',
+  'For account creation or chart changes, call delegateTeam with exactly {"team":"accounting","request":{"intent":"chart_of_accounts","request":{"action":"create_account","instruction":"preserve the complete user request","known":{"accountName":"visible name","accountingClass":"asset","normalBalance":"debit","nativeCurrency":"USD","purpose":"visible purpose"}}}}. Use the user-stated action and values; omit unknown known-fields.',
   'For a new account, set action to create_account, preserve user-stated details in known, and leave missing details unresolved for the accounting team to clarify.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
@@ -168,6 +177,7 @@ type OrchestratorInvocation = {
   memoryFailures: OrchestratorMemoryFailure[];
   delegationCount: number;
   delegationFailed: boolean;
+  delegationValidationFailed: boolean;
   transactionCaptureContinuation?: TransactionCaptureContinuationV1;
   workingMemoryInspection?: WorkingMemoryInspectionContext;
   pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
@@ -705,6 +715,7 @@ export class OrchestratorAgent {
       memoryFailures: memoryState.memoryFailures,
       delegationCount: 0,
       delegationFailed: false,
+      delegationValidationFailed: false,
       ...(input.transactionContinuation === undefined
         ? {}
         : { transactionCaptureContinuation: input.transactionContinuation }),
@@ -728,6 +739,33 @@ export class OrchestratorAgent {
               messageCount: Array.isArray(prompt) ? prompt.length : 1,
             },
           });
+          const deterministicBudgetRequest = budgetingExplicitRequestForMessage(message);
+          if (deterministicBudgetRequest !== undefined) {
+            try {
+              const executeDelegateTeam = this.agentTools.delegateTeam.execute;
+              if (executeDelegateTeam === undefined) {
+                throw new Error('The delegateTeam tool is not executable.');
+              }
+              const runtimeBudgetRequest = requestForRuntime(deterministicBudgetRequest);
+              if (runtimeBudgetRequest === null
+                || typeof runtimeBudgetRequest !== 'object'
+                || Array.isArray(runtimeBudgetRequest)) {
+                throw new Error('The deterministic budgeting request must be a JSON object.');
+              }
+              await executeDelegateTeam({
+                team: 'budgeting',
+                request: runtimeBudgetRequest,
+              }, {
+                abortSignal: signal,
+                requestContext: new RequestContext(),
+                observe: noopObserve,
+              });
+            } catch (error) {
+              if (signal.aborted) throw error;
+              return delegationFailureTurn(message);
+            }
+            return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+          }
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -757,29 +795,36 @@ export class OrchestratorAgent {
               }
             } else {
               if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
-              if (
-                !signal.aborted
+              if (!signal.aborted
                 && invocation.memoryFailures.length === 0
-                && !invocation.delegationFailed
-                && invocation.teamResults.length !== 0
-              ) {
+                && invocation.teamResults.length !== 0) {
                 return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+              }
+              if (!signal.aborted && invocation.delegationFailed) {
+                return delegationFailureTurn(message);
+              }
+              if (!signal.aborted && isTransientModelError(error)) {
+                return modelUnavailableTurn(message);
               }
               throw error;
             }
           }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
           if (modelResultEndedOnRetry(result)) {
-            if (!invocation.delegationFailed && invocation.teamResults.length !== 0) {
+            if (invocation.teamResults.length !== 0) {
               return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
             }
+            if (invocation.delegationFailed) return delegationFailureTurn(message);
             throw new ModelTemporarilyUnavailableError();
           }
           if (invocation.delegationFailed) {
-            throw new Error('Delegated team work failed before producing a checked result.');
+            if (invocation.teamResults.length !== 0) {
+              return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+            }
+            return delegationFailureTurn(message);
           }
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
-            throw new Error('Delegated team did not return a checked result.');
+            return delegationFailureTurn(message);
           }
           if (invocation.pendingWorkingMemoryMutation !== undefined) {
             const response = await this.synthesizeWorkingMemoryOutcome({
@@ -834,6 +879,7 @@ export class OrchestratorAgent {
             return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
           }
           if (body === undefined) {
+            if (invocation.delegationValidationFailed) return delegationFailureTurn(message);
             if (invocation.memoryFailures.length !== 0) {
               body = await this.ensureMemoryFailureResponse(message, undefined, invocation, signal);
             }
@@ -895,9 +941,12 @@ export class OrchestratorAgent {
       logger: CatalogLogger<'runtime.orchestrator'>;
     },
   ) {
+    const stopAtStepLimit = stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS);
     const generationOptions = {
       ...this.orchestratorGenerateOptions(message, invocation.requestContext),
-      stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
+      stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+        (invocation.delegationCount > 0 && !canDelegateAnotherSubstep(invocation))
+        || stopAtStepLimit({ steps }),
       errorProcessors: [createTransientModelRetryProcessor({
         maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
       })],
@@ -905,12 +954,7 @@ export class OrchestratorAgent {
       toolChoice: 'auto',
       prepareStep: async () => {
         const activeTools = this.orchestratorToolNames(invocation);
-        if (canDelegateAnotherSubstep(invocation)) {
-          return { activeTools, toolChoice: 'auto' as const };
-        }
-        return activeTools.length === 0
-          ? { activeTools: [], toolChoice: 'none' as const }
-          : { activeTools, toolChoice: 'auto' as const };
+        return { activeTools, toolChoice: 'auto' as const };
       },
       abortSignal: signal,
       onStepFinish: (step: {
@@ -1369,6 +1413,27 @@ function turnFromTeamResults(
   return { kind: 'final', response };
 }
 
+function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
+  return {
+    kind: 'final',
+    response: responseFromText(
+      message,
+      'I could not complete the specialist check, so I cannot give you a checked answer yet. '
+        + 'No changes were made. Please try again.',
+    ),
+  };
+}
+
+function modelUnavailableTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
+  return {
+    kind: 'final',
+    response: responseFromText(
+      message,
+      'The model service is temporarily busy. No changes were made. Please try again in a moment.',
+    ),
+  };
+}
+
 function responseFromText(
   message: InboundChannelMessageV1,
   body: string,
@@ -1481,6 +1546,10 @@ function responseBody(teamResult: TeamResultEnvelopeV2): string {
       : questions.join('\n\n');
   }
   if (teamResult.status === 'verified') {
+    if (teamResult.team === 'budgeting'
+      && teamResult.claims.some((claim) => claim.claimId === 'budgeting-scenario-evidence')) {
+      return 'The budgeting team completed a verified comparison of the requested scenarios.';
+    }
     const view = finalSynthesisTeamResultView(teamResult);
     if (view.effectState === 'persisted') {
       const change = view.proposedChange;
@@ -1533,10 +1602,14 @@ function canDelegateAnotherSubstep(input: {
   delegationCount: number;
   delegationFailed: boolean;
   teamResults: readonly TeamResultEnvelopeV2[];
+  transactionCaptureContinuation?: TransactionCaptureContinuationV1;
 }): boolean {
   if (input.delegationFailed || input.delegationCount >= MAX_DELEGATIONS_PER_TURN) return false;
   return !input.teamResults.some((result) =>
     result.status === 'failed'
+    || result.status === 'conflicted'
+    || (result.status === 'insufficient_evidence'
+      && input.transactionCaptureContinuation === undefined)
     || result.effect.state === 'awaiting_confirmation'
     || result.effect.state === 'persisted'
     || result.effect.state === 'unresolved');

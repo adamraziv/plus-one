@@ -1,5 +1,6 @@
 import { type DatabasePools } from '@plus-one/database';
 import {
+  type EvidenceHandle,
   EvidenceSession,
   pgRunner,
   QueryToolRegistry,
@@ -146,6 +147,27 @@ export function isUserFacingQueryField(relationName: string, fieldName: string):
 }
 
 export function createDefaultQueryTools(pools: DatabasePools) {
+  const { registry, validator } = createDefaultQueryRegistry();
+
+  return createQueryTools({
+    registry,
+    withEvidenceHandle: (work) => withEvidenceHandle(pools, registry, validator, work),
+    analystSandboxTool: createAnalystSandboxTool(),
+  });
+}
+
+export async function withDefaultEvidenceHandle<T>(
+  pools: Pick<DatabasePools, 'query'>,
+  work: (handle: EvidenceHandle) => Promise<T>,
+): Promise<T> {
+  const { registry, validator } = createDefaultQueryRegistry();
+  return withEvidenceHandle(pools, registry, validator, work);
+}
+
+function createDefaultQueryRegistry(): {
+  registry: QueryToolRegistry;
+  validator: ReadOnlySqlValidator;
+} {
   const validator = new ReadOnlySqlValidator();
   const registry = new QueryToolRegistry({
     allowedRelations: REQUIRED_REPORTING_RELATIONS,
@@ -162,24 +184,26 @@ export function createDefaultQueryTools(pools: DatabasePools) {
       description: definition.description,
     });
   }
+  return { registry, validator };
+}
 
-  return createQueryTools({
-    registry,
-    withEvidenceHandle: async (work) => {
-      const runner = pgRunner(pools.query);
-      const session = new EvidenceSession(runner, {
-        allowedRelations: REQUIRED_REPORTING_RELATIONS,
-        maxRows,
-        maxOutputBytes,
-        statementTimeoutMs,
-        validator,
-      }, registry);
-      try {
-        return await session.withSession(work);
-      } finally {
-        runner.release?.();
-      }
-    },
-    analystSandboxTool: createAnalystSandboxTool(),
-  });
+async function withEvidenceHandle<T>(
+  pools: Pick<DatabasePools, 'query'>,
+  registry: QueryToolRegistry,
+  validator: ReadOnlySqlValidator,
+  work: (handle: EvidenceHandle) => Promise<T>,
+): Promise<T> {
+  const runner = pgRunner(pools.query);
+  const session = new EvidenceSession(runner, {
+    allowedRelations: REQUIRED_REPORTING_RELATIONS,
+    maxRows,
+    maxOutputBytes,
+    statementTimeoutMs,
+    validator,
+  }, registry);
+  try {
+    return await session.withSession(work);
+  } finally {
+    runner.release?.();
+  }
 }

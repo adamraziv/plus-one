@@ -59,6 +59,7 @@ describe('createDelegateTeamTool', () => {
         schemaVersion: 1,
         instruction: 'Help me create a budget.',
         scopeKey: 'monthly',
+        known: {},
       },
     });
 

@@ -14,6 +14,11 @@ import {
   assertMakerOutputSchemaIdentity, type CheckedWorkCellResult, type WorkCellDefinition,
 } from '../teams/definitions.js';
 
+const CheckerDecisionSchemaV1 = CheckerVerdictSchemaV1.pick({
+  verdict: true,
+  findings: true,
+}).strip();
+
 export interface TeamExecutionIdGenerator {
   nextArtifactId(): string;
 }
@@ -107,7 +112,10 @@ export class TeamExecutor {
           outputSchema: makerArtifactSchema, abortSignal: teamAbortSignal,
         });
         makerFailurePhase = 'maker_validation';
-        makerOutput = synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName);
+        makerOutput = retainPermittedMakerClaimEvidence(
+          synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName),
+          input.permittedEvidence,
+        );
         assertMakerOutputSchemaIdentity(makerOutput.outputSchema,
           input.workCell.outputSchemaIdentity);
         input.workCell.makerOutputSchema.parse(makerOutput.output);
@@ -145,14 +153,19 @@ export class TeamExecutor {
           requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
         });
         try {
-          verdict = await this.dependencies.runner.run({
+          const decision = await this.dependencies.runner.run({
             householdId: input.householdId, taskId: input.taskId, role: input.workCell.checker,
             attemptOrdinal: checkerOrdinal,
             context: this.dependencies.contexts.forChecker({
               team: input.team, role: input.workCell.checker.identity,
               selectedSkill: input.selectedSkill, verificationTask,
             }),
-            outputSchema: CheckerVerdictSchemaV1, abortSignal: teamAbortSignal,
+            outputSchema: CheckerDecisionSchemaV1, abortSignal: teamAbortSignal,
+          });
+          verdict = CheckerVerdictSchemaV1.parse({
+            ...decision,
+            coveredArtifactId: makerArtifact.artifactId,
+            coveredArtifactHash: makerArtifact.artifactHash,
           });
         } catch (error) {
           if (error instanceof PlusOneError && error.code === 'agent_call_cancelled') {
@@ -360,4 +373,19 @@ function assertMakerClaimsUsePermittedEvidence(
     receiptLookupRequired: false,
     details: { taskId, artifactIds: [...new Set(invalid)].join(',') },
   });
+}
+
+function retainPermittedMakerClaimEvidence(
+  makerOutput: MakerArtifactV1,
+  permittedEvidence: readonly ArtifactEnvelopeV1[],
+): MakerArtifactV1 {
+  const permitted = new Set(permittedEvidence.map((artifact) => artifact.artifactId));
+  return {
+    ...makerOutput,
+    claims: makerOutput.claims.map((claim) => ({
+      ...claim,
+      evidenceArtifactIds: claim.evidenceArtifactIds.filter((artifactId) =>
+        permitted.has(artifactId)),
+    })),
+  };
 }
