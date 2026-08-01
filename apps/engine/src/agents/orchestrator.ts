@@ -1531,6 +1531,10 @@ function responseBody(teamResult: TeamResultEnvelopeV2): string {
       : questions.join('\n\n');
   }
   if (teamResult.status === 'verified') {
+    if (teamResult.team === 'budgeting'
+      && teamResult.claims.some((claim) => claim.claimId === 'budgeting-scenario-evidence')) {
+      return 'The budgeting team completed a verified comparison of the requested scenarios.';
+    }
     const view = finalSynthesisTeamResultView(teamResult);
     if (view.effectState === 'persisted') {
       const change = view.proposedChange;
