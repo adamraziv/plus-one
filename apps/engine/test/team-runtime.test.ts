@@ -1179,6 +1179,27 @@ describe('budgetingIntakeForDraft', () => {
     expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(message, request)).known)
       .toEqual({});
   });
+
+  it('recovers complete budget facts from an explicit user message when the lead omits known', () => {
+    const completeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Create a monthly budget for 2026-08-01 through 2026-08-31. Prioritize rent and groceries. The total budget is USD 1650. Include Rent USD 1000, Groceries USD 400, and Dining USD 250.',
+    });
+    const request = {
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Create a monthly budget.',
+        scopeKey: 'monthly',
+        known: {},
+      },
+    } as const;
+
+    expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+  });
 });
 
 describe('makerInputForLeadWorkItem', () => {

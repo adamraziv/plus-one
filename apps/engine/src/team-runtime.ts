@@ -518,6 +518,20 @@ function canonicalBudgetingDraft(
   const canonicalKnown = continuation
     ? known
     : BudgetingKnownInputsSchemaV1.parse({
+        ...groundedBudgetKnown(source, known),
+        ...inferredBudgetKnown(source),
+      });
+  return BudgetingDelegateRequestSchemaV1.parse({
+    ...request,
+    request: { ...request.request, known: canonicalKnown },
+  });
+}
+
+function groundedBudgetKnown(
+  source: string,
+  known: BudgetingKnownInputsV1,
+): BudgetingKnownInputsV1 {
+  return BudgetingKnownInputsSchemaV1.parse({
         ...(known.priorities !== undefined
           && known.priorities.every((value) => explicitBudgetText(source, value))
           ? { priorities: known.priorities }
@@ -533,10 +547,53 @@ function canonicalBudgetingDraft(
           ? { categories: known.categories }
           : {}),
       });
-  return BudgetingDelegateRequestSchemaV1.parse({
-    ...request,
-    request: { ...request.request, known: canonicalKnown },
-  });
+}
+
+function inferredBudgetKnown(source: string): Partial<BudgetingKnownInputsV1> {
+  const inferred: Partial<BudgetingKnownInputsV1> = {};
+  const priority = /\bpriorit(?:y|ize|ise|izing)\b([^.!?]*)/.exec(source)?.[1]?.trim();
+  if (priority !== undefined && priority.length > 0) inferred.priorities = [priority];
+
+  const dates = [...source.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)].map((match) => match[1]!);
+  if (dates.length >= 2) inferred.timeframe = { start: dates[0]!, end: dates[1]! };
+
+  const total = /\btotal(?:\s+(?:budget|amount))?\s*(?:is|of|:)?\s*(?:(usd|idr|eur|gbp|\$|€|£)\s*)?([0-9][0-9,]*(?:\.[0-9]+)?)\s*(usd|idr|eur|gbp|dollars?|euros?|pounds?)?\b/.exec(source);
+  const totalMoney = moneyFromParts(total?.[1], total?.[2], total?.[3]);
+  if (totalMoney !== undefined) inferred.targetAmount = totalMoney;
+
+  const categorySection = /\b(?:include|categories?(?:\s+include)?|allocate)\b([^.!?]*)/.exec(source)?.[1];
+  if (categorySection !== undefined) {
+    const categories: Array<{ name: string; targetAmount?: { amount: string; currency: string } }> = [];
+    const pattern = /(?:^|,|\band\b)\s*([a-z][a-z &'-]*?)\s*(usd|idr|eur|gbp|\$|€|£)\s*([0-9][0-9,]*(?:\.[0-9]+)?)/g;
+    for (const match of categorySection.matchAll(pattern)) {
+      const name = match[1]!.replace(/^(?:and|include)\s+/i, '').trim();
+      const money = moneyFromParts(match[2], match[3], undefined);
+      if (name.length === 0 || money === undefined || /\btotal\b/.test(name)) continue;
+      categories.push({ name, targetAmount: money });
+    }
+    if (categories.length > 0) inferred.categories = categories;
+  }
+  return inferred;
+}
+
+function moneyFromParts(
+  firstCurrency: string | undefined,
+  amount: string | undefined,
+  secondCurrency: string | undefined,
+): { amount: string; currency: string } | undefined {
+  if (amount === undefined) return undefined;
+  const currency = normalizeBudgetCurrency(firstCurrency ?? secondCurrency);
+  return currency === undefined ? undefined : { amount: amount.replaceAll(',', ''), currency };
+}
+
+function normalizeBudgetCurrency(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.toLocaleLowerCase();
+  if (normalized === '$' || normalized === 'usd' || normalized === 'dollar' || normalized === 'dollars') return 'USD';
+  if (normalized === 'idr' || normalized === 'rupiah') return 'IDR';
+  if (normalized === 'eur' || normalized === '€' || normalized === 'euro' || normalized === 'euros') return 'EUR';
+  if (normalized === 'gbp' || normalized === '£' || normalized === 'pound' || normalized === 'pounds') return 'GBP';
+  return undefined;
 }
 
 function explicitBudgetText(source: string, value: string): boolean {
