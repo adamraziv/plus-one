@@ -3,6 +3,8 @@ import {
   ActivateBudgetProposalSchemaV1,
   EvidencePackageSchemaV1,
   HouseholdIdSchema,
+  LocalDateSchema,
+  MoneySchemaV1,
   UpdateObligationProposalSchemaV1,
   UpsertDebtPlanProposalSchemaV1,
   UpsertSavingsGoalProposalSchemaV1,
@@ -25,6 +27,39 @@ export const PlanningClarificationSchemaV1 = z.object({
   reason: text,
 }).strict();
 
+const budgetText = z.string().min(1).max(400);
+
+export const BudgetingKnownInputsSchemaV1 = z.object({
+  priorities: z.array(budgetText).min(1).max(20).optional(),
+  timeframe: z.object({
+    start: LocalDateSchema,
+    end: LocalDateSchema,
+  }).strict().optional(),
+  targetAmount: MoneySchemaV1.optional(),
+  categories: z.array(z.object({
+    name: budgetText,
+    targetAmount: MoneySchemaV1.optional(),
+  }).strict()).min(1).max(100).optional(),
+}).strict();
+
+export type BudgetingKnownInputsV1 = z.infer<typeof BudgetingKnownInputsSchemaV1>;
+
+export function missingBudgetPlanFields(known: BudgetingKnownInputsV1) {
+  return [
+    ...(known.priorities === undefined ? ['priority' as const] : []),
+    ...(known.timeframe === undefined ? ['timeframe' as const] : []),
+    ...(known.targetAmount === undefined ? ['target_amount' as const] : []),
+    ...(known.categories === undefined ? ['category_mapping' as const] : []),
+  ];
+}
+
+export function missingBudgetScenarioFields(known: BudgetingKnownInputsV1) {
+  return [
+    ...(known.priorities === undefined ? ['priority' as const] : []),
+    ...(known.timeframe === undefined ? ['timeframe' as const] : []),
+  ];
+}
+
 export const BudgetPlanRequestSchemaV1 = z.object({
   schemaName: z.literal('budget-plan-request'),
   schemaVersion: z.literal(1),
@@ -32,6 +67,7 @@ export const BudgetPlanRequestSchemaV1 = z.object({
   evidencePackage: EvidencePackageSchemaV1,
   instruction: text,
   scopeKey: z.string().min(1).max(80),
+  known: BudgetingKnownInputsSchemaV1,
 }).strict();
 
 export const BudgetPlanRequestDraftSchemaV1 = z.object({
@@ -39,6 +75,7 @@ export const BudgetPlanRequestDraftSchemaV1 = z.object({
   schemaVersion: z.literal(1),
   instruction: text,
   scopeKey: z.string().min(1).max(80).default('monthly'),
+  known: BudgetingKnownInputsSchemaV1.default({}),
 }).strict();
 
 export const BudgetScenarioRequestSchemaV1 = z.object({
@@ -48,6 +85,7 @@ export const BudgetScenarioRequestSchemaV1 = z.object({
   evidencePackage: EvidencePackageSchemaV1,
   instruction: text,
   scenarioCount: z.number().int().min(2).max(3),
+  known: BudgetingKnownInputsSchemaV1,
 }).strict();
 
 export const BudgetScenarioRequestDraftSchemaV1 = z.object({
@@ -55,6 +93,7 @@ export const BudgetScenarioRequestDraftSchemaV1 = z.object({
   schemaVersion: z.literal(1),
   instruction: text,
   scenarioCount: z.number().int().min(2).max(3).default(2),
+  known: BudgetingKnownInputsSchemaV1.default({}),
 }).strict();
 
 const BudgetPlanIntakeRequestSchemaV1 = z.object({
@@ -64,6 +103,7 @@ const BudgetPlanIntakeRequestSchemaV1 = z.object({
   intent: z.literal('budget_plan'),
   instruction: text,
   scopeKey: z.string().min(1).max(80),
+  known: BudgetingKnownInputsSchemaV1,
 }).strict();
 
 const BudgetScenarioIntakeRequestSchemaV1 = z.object({
@@ -73,6 +113,7 @@ const BudgetScenarioIntakeRequestSchemaV1 = z.object({
   intent: z.literal('budget_scenarios'),
   instruction: text,
   scenarioCount: z.number().int().min(2).max(3),
+  known: BudgetingKnownInputsSchemaV1,
 }).strict();
 
 export const BudgetingIntakeRequestSchemaV1 = z.discriminatedUnion('intent', [
@@ -176,8 +217,8 @@ export const CashFlowWorkResultSchemaV1 = z.discriminatedUnion('schemaName', [
 export type PlanningClarificationV1 = z.infer<typeof PlanningClarificationSchemaV1>;
 export type BudgetPlanRequestV1 = z.infer<typeof BudgetPlanRequestSchemaV1>;
 export type BudgetPlanRequestDraftV1 = z.infer<typeof BudgetPlanRequestDraftSchemaV1>;
-export type BudgetScenarioRequestV1 = z.infer<typeof BudgetScenarioRequestSchemaV1>;
 export type BudgetScenarioRequestDraftV1 = z.infer<typeof BudgetScenarioRequestDraftSchemaV1>;
+export type BudgetScenarioRequestV1 = z.infer<typeof BudgetScenarioRequestSchemaV1>;
 export type BudgetingIntakeRequestV1 = z.infer<typeof BudgetingIntakeRequestSchemaV1>;
 export type BudgetScenarioComparisonV1 = z.infer<typeof BudgetScenarioComparisonSchemaV1>;
 export type CashFlowAnalysisRequestV1 = z.infer<typeof CashFlowAnalysisRequestSchemaV1>;

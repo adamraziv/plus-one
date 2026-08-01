@@ -95,6 +95,7 @@ describe('planning team registrations', () => {
         intent: 'budget_plan',
         instruction: 'Help me create a budget.',
         scopeKey: 'monthly',
+        known: {},
       },
     }, {
       schemaName: 'team-lead-plan',
@@ -109,6 +110,7 @@ describe('planning team registrations', () => {
           intent: 'budget_plan',
           instruction: 'Help me create a budget.',
           scopeKey: 'monthly',
+          known: {},
         },
       }],
       stopCondition: {

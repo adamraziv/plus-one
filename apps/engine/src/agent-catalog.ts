@@ -52,6 +52,10 @@ import {
   type AccountingRoleAgentFactory,
 } from './agents/accounting/index.js';
 import {
+  createBudgetingRoleAgents,
+  type BudgetingRoleAgentFactory,
+} from './agents/budgeting/index.js';
+import {
   createQueryRoleAgents,
   type QueryRoleAgentFactory,
 } from './agents/query/index.js';
@@ -80,6 +84,7 @@ export function createAgentSystem(input: {
   queryTools: RoleAgentTools;
   queryAgentFactory?: QueryRoleAgentFactory;
   accountingAgentFactory?: AccountingRoleAgentFactory;
+  budgetingAgentFactory?: BudgetingRoleAgentFactory;
   agentFactory?: (input: {
     agentId: string;
     roleName: string;
@@ -108,7 +113,22 @@ export function createAgentSystem(input: {
     ...(input.accountingAgentFactory === undefined ? {} : { agentFactory: input.accountingAgentFactory }),
   });
   const ingestionAgents = accountingAgents;
-  const planningAgents = makeAgents(planningRoles, input.models, {}, factory);
+  const budgetingAgents = createBudgetingRoleAgents({
+    models: {
+      lead: input.models.lead,
+      maker: input.models.maker,
+      checker: input.models.checker,
+    },
+    tools: {},
+    ...(input.budgetingAgentFactory === undefined
+      ? {}
+      : { agentFactory: input.budgetingAgentFactory }),
+  });
+  const cashFlowRoles = planningRoles.filter((role) => role.agentId.startsWith('cash-flow'));
+  const planningAgents = {
+    ...budgetingAgents,
+    ...makeAgents(cashFlowRoles, input.models, {}, factory),
+  };
   const reportingAgents = makeAgents(reportingRoles, input.models, {}, factory, {
     lead: input.models.research,
   });

@@ -65,10 +65,6 @@ const optionalIdentity = (schemaName: string) => ({
   schemaVersion: z.literal(1).optional(),
 });
 
-const QueryProviderDraftSchemaV1 = QueryLeadRequestDraftSchemaV1.extend(
-  optionalIdentity('query-lead-request-draft'),
-);
-
 const ProviderTimeframeSchemaV1 = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

@@ -1,5 +1,4 @@
 import {
-  JsonValueSchema,
   TeamLeadInvocationSchemaV1,
   TeamLeadExecutionStateSchemaV1,
   TeamLeadPlanSchemaV1,
