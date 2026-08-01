@@ -1468,7 +1468,7 @@ describe('OrchestratorAgent', () => {
       'Account creation and chart changes always require checked specialist work; call delegateTeam instead of answering directly or collecting fields yourself.',
     );
     expect(orchestratorInstructions).toContain(
-      'For account creation or chart changes, use the accounting team with intent chart_of_accounts and a nested chart-work-request-draft.',
+      'For account creation or chart changes, call delegateTeam with exactly {"team":"accounting","request":{"intent":"chart_of_accounts","request":{"action":"create_account","instruction":"preserve the complete user request","known":{"accountName":"visible name","accountingClass":"asset","normalBalance":"debit","nativeCurrency":"USD","purpose":"visible purpose"}}}}. Use the user-stated action and values; omit unknown known-fields.',
     );
     expect(orchestratorInstructions).toContain(
       'When the current user turn both updates a transaction draft and requests a resolvable prerequisite, you MUST execute those checked substeps in that turn without returning user-facing text between them.',
@@ -2080,26 +2080,20 @@ describe('OrchestratorAgent', () => {
     expect(serializedView.includes('account_secret')).toBe(false);
   });
 
-  it('maps a Mastra input-validation wrapper to a safe retry signal without consuming delegation', async () => {
+  it('rejects malformed delegate input without consuming delegation', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
-    let modelOutput: unknown;
     const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
       const options = rawOptions as {
         prepareStep(): Promise<{ activeTools: string[]; toolChoice: string }> | { activeTools: string[]; toolChoice: string };
       };
       const execute = orchestrator.agentTools.delegateTeam.execute as unknown as
         (input: unknown, options: unknown) => Promise<unknown>;
-      const invalidResult = await execute({ team: 'query', request: 'account_private_001' }, {});
-      expect(invalidResult).toMatchObject({ error: true });
+      await expect(execute({ team: 'query', request: 'account_private_001' }, {}))
+        .rejects.toThrow('Query request must contain businessQuestion');
       await expect(options.prepareStep()).resolves.toEqual({
         activeTools: ['delegateTeam'],
         toolChoice: 'auto',
       });
-      const toModelOutput = orchestrator.agentTools.delegateTeam.toModelOutput as
-        | ((output: unknown) => unknown)
-        | undefined;
-      if (toModelOutput === undefined) throw new Error('Expected delegateTeam to provide model output.');
-      modelOutput = toModelOutput(invalidResult);
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('List our accounts.', { coverage: ['account list'] }),
@@ -2116,20 +2110,6 @@ describe('OrchestratorAgent', () => {
       .resolves.toMatchObject({ body: 'The checked evidence includes one account row.' });
 
     expect(runTeamLead).toHaveBeenCalledOnce();
-    expect(modelOutput).toEqual({
-      type: 'json',
-      value: {
-        schemaName: 'delegate-team-retry-signal',
-        schemaVersion: 1,
-        status: 'retry_required',
-        instruction: 'Retry delegateTeam with an exact registered team id and a JSON-object request matching that team\'s declared schema.',
-      },
-    });
-    const serializedModelOutput = JSON.stringify(modelOutput);
-    expect(serializedModelOutput).not.toContain('account_private_001');
-    expect(serializedModelOutput).not.toContain('validationErrors');
-    expect(serializedModelOutput).not.toContain('Tool input validation failed');
-    expect(serializedModelOutput).not.toContain('Provided arguments');
   });
 
   it('uses a real Mastra step sequence to retry invalid delegation before final synthesis', async () => {
@@ -2629,12 +2609,12 @@ describe('OrchestratorAgent', () => {
         },
       },
       response: {
-        body: expect.stringContaining('dated yesterday'),
+        body: 'I could not complete that request safely. Please try again.',
       },
     });
   });
 
-  it('does not accept a direct draft after delegated work fails', async () => {
+  it('returns a safe response after delegated work fails', async () => {
     const runTeamLead = vi.fn(async () => { throw new Error('team unavailable'); });
     const generate = vi.fn(async () => {
       try {
@@ -2650,10 +2630,12 @@ describe('OrchestratorAgent', () => {
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('List our accounts.') }))
-      .rejects.toThrow('Delegated team');
+      .resolves.toMatchObject({
+        body: 'I could not complete the specialist check, so I cannot give you a checked answer yet. No changes were made. Please try again.',
+      });
   });
 
-  it('does not recover to a direct draft after the bounded delegation limit is exceeded', async () => {
+  it('returns checked fallback after the bounded delegation limit is exceeded', async () => {
     const runTeamLead = vi.fn(async () => teamResult());
     const generate = vi.fn(async () => {
       try {
@@ -2671,7 +2653,9 @@ describe('OrchestratorAgent', () => {
     const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
 
     await expect(orchestrator.run({ message: message('List our accounts.') }))
-      .rejects.toThrow('Delegated team work failed');
+      .resolves.toMatchObject({
+        body: 'I found the requested information, but I could not safely summarize it. Please try again.',
+      });
   });
 
   it('does not fall back to a checked result after the orchestrator signal aborts', async () => {
@@ -3101,7 +3085,7 @@ describe('OrchestratorAgent', () => {
       .rejects.toMatchObject({ code: 'model_temporarily_unavailable', isRetryable: true });
   });
 
-  it('rejects non-canonical delegate tool input before team execution', async () => {
+  it('handles delegate tool calls outside an active invocation', async () => {
     const runTeamLead = vi.fn();
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -3111,8 +3095,10 @@ describe('OrchestratorAgent', () => {
     });
 
     const execute = orchestrator.agentTools.delegateTeam.execute as unknown as (input: unknown, options: unknown) => Promise<unknown>;
-    await expect(execute({ team: 'Query Team', request: 'test' }, {})).resolves.toMatchObject({ error: true });
-    await expect(execute({ team: 'query', request: '"test"' }, {})).resolves.toMatchObject({ error: true });
+    await expect(execute({ team: 'Query Team', request: 'test' }, {}))
+      .resolves.toMatchObject({ error: true });
+    await expect(execute({ team: 'query', request: '"test"' }, {}))
+      .rejects.toThrow('No active orchestrator invocation.');
     expect(runTeamLead).not.toHaveBeenCalled();
   });
 
