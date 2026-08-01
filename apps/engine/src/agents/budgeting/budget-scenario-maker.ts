@@ -103,10 +103,12 @@ function deterministicScenarioArtifact(
     schemaVersion: 1,
     outputSchema: invocation.outputSchema,
     output,
-    claims: invocation.permittedEvidence.length === 0 ? [] : [{
+    claims: [{
       claimId: 'budgeting-scenario-evidence',
-      text: 'The scenario comparison uses the checked evidence supplied for this request.',
-      evidenceArtifactIds: [invocation.permittedEvidence[0]!.artifactId],
+      text: 'The comparison presents the requested budget scenarios and their tradeoffs.',
+      evidenceArtifactIds: invocation.permittedEvidence.length === 0
+        ? []
+        : [invocation.permittedEvidence[0]!.artifactId],
     }],
     assumptions: [],
     uncertainty: [],
