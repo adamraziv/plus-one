@@ -14,6 +14,7 @@ describe('engine agent catalog', () => {
     const genericCreated: string[] = [];
     const queryCreated: string[] = [];
     const accountingCreated: string[] = [];
+    const budgetingCreated: string[] = [];
     const system = createAgentSystem({
       models,
       agentFactory: ({ agentId }) => {
@@ -28,6 +29,10 @@ describe('engine agent catalog', () => {
         accountingCreated.push(String(config.id));
         return { generate: vi.fn() } as unknown as Agent;
       },
+      budgetingAgentFactory: (config) => {
+        budgetingCreated.push(String(config.id));
+        return { generate: vi.fn() } as unknown as Agent;
+      },
       queryTools: {},
     });
 
@@ -35,7 +40,7 @@ describe('engine agent catalog', () => {
       team.lead,
       ...team.workCells.flatMap((cell) => [cell.maker, cell.checker]),
     ]).map((role) => role.agentId));
-    expect(new Set([...genericCreated, ...queryCreated, ...accountingCreated]).size).toBe(uniqueRoleIds.size);
+    expect(new Set([...genericCreated, ...queryCreated, ...accountingCreated, ...budgetingCreated]).size).toBe(uniqueRoleIds.size);
     expect(queryCreated.sort()).toEqual([
       'analyst-checker',
       'analyst-maker',
@@ -56,7 +61,15 @@ describe('engine agent catalog', () => {
       'transaction-capture-checker',
       'transaction-capture-maker',
     ]);
+    expect(budgetingCreated.sort()).toEqual([
+      'budget-checker',
+      'budget-maker',
+      'budget-scenario-checker',
+      'budget-scenario-maker',
+      'budgeting-lead',
+    ]);
     expect(genericCreated).not.toEqual(expect.arrayContaining(accountingCreated));
+    expect(genericCreated).not.toEqual(expect.arrayContaining(budgetingCreated));
     expect(system.teams.map((team) => team.team).sort()).toEqual([
       'accounting',
       'budgeting',

@@ -69,6 +69,7 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
+import { budgetingExplicitRequestForMessage } from '../budgeting/budgeting-request.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -86,8 +87,11 @@ const orchestratorInstructions = [
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
   'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
-  'For budgeting, call delegateTeam with exactly {"team":"budgeting","request":{"intent":"budget_plan","request":{"instruction":"preserve the complete user request","scopeKey":"monthly"}}}; for comparisons use intent budget_scenarios and nested request fields instruction and scenarioCount. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
+  'For budgeting, call delegateTeam with exactly a budgeting-lead-request containing a nested budget-plan-request-draft or budget-scenario-request-draft; for a plan use intent budget_plan and request fields instruction, scopeKey, and known, while comparisons use intent budget_scenarios and request fields instruction, scenarioCount, and known. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
+  'For budgeting, copy only explicit user-owned facts into request.known: priorities, timeframe start/end, targetAmount amount/currency, and category names/target amounts. Use known:{} when the user did not provide a fact; never guess values.',
+  'A budgeting follow-up that supplies the requested details in phrases such as "monthly", "prepare it", "set it up", or "go ahead" is still an explicit budget request: preserve those facts and delegate immediately instead of answering directly or waiting for another confirmation.',
   'Preserve the user’s budgeting instruction and user-visible scope, and never invent household identifiers or evidence packages; the budgeting runtime owns authenticated context and checked evidence requirements.',
+  'If budgeting returns a planning clarification, carry the user’s answers forward into known on the next delegation instead of repeating an empty draft.',
   'For cash-flow analysis, call delegateTeam with exactly {"team":"cash-flow","request":{"intent":"analysis","request":{"objective":"preserve the complete user objective","analysisMode":"single","timeframe":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}}}}. Other exact cash-flow intents are obligation, savings_goal, and debt_plan. Never invent household ids or evidence packages.',
   'For investment or retirement education, use team investments-retirement with exact intent investment_education or retirement_education and nested request {"question":"preserve the complete user question"}.',
   'For checked records facts, use team records-reporting with exact intent records_facts and nested request {"focus":"preserve the complete requested scope"}.',
@@ -734,6 +738,19 @@ export class OrchestratorAgent {
               messageCount: Array.isArray(prompt) ? prompt.length : 1,
             },
           });
+          const deterministicBudgetRequest = budgetingExplicitRequestForMessage(message);
+          if (deterministicBudgetRequest !== undefined) {
+            try {
+              await this.agentTools.delegateTeam.execute({
+                team: 'budgeting',
+                request: deterministicBudgetRequest,
+              });
+            } catch (error) {
+              if (signal.aborted) throw error;
+              return delegationFailureTurn(message);
+            }
+            return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+          }
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -1514,6 +1531,10 @@ function responseBody(teamResult: TeamResultEnvelopeV2): string {
       : questions.join('\n\n');
   }
   if (teamResult.status === 'verified') {
+    if (teamResult.team === 'budgeting'
+      && teamResult.claims.some((claim) => claim.claimId === 'budgeting-scenario-evidence')) {
+      return 'The budgeting team completed a verified comparison of the requested scenarios.';
+    }
     const view = finalSynthesisTeamResultView(teamResult);
     if (view.effectState === 'persisted') {
       const change = view.proposedChange;

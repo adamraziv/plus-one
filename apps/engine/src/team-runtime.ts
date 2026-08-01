@@ -35,15 +35,18 @@ import {
   ActivateBudgetCommandAdapter,
   BudgetPlanRequestDraftSchemaV1,
   BudgetPlanRequestSchemaV1,
-  BudgetScenarioRequestDraftSchemaV1,
   BudgetScenarioRequestSchemaV1,
+  BudgetScenarioRequestDraftSchemaV1,
   BudgetingDelegateRequestSchemaV1,
   BudgetingIntakeRequestSchemaV1,
   CashFlowAnalysisRequestSchemaV1,
   CashFlowLeadRequestSchemaV1,
+  missingBudgetPlanFields,
+  missingBudgetScenarioFields,
   MaterializedBudgetingLeadRequestSchemaV1,
   PlanningCommandHandlers,
   planningSkills,
+  type BudgetingDelegateRequestV1,
   validateBudgetingLeadPlan,
   validateCashFlowLeadPlan,
 } from '@plus-one/planning';
@@ -97,6 +100,7 @@ import {
 } from './tools/delegate-team-schemas.js';
 import { DefaultChartMutationRuntime } from './accounting/chart-mutation-runtime.js';
 import { withDefaultEvidenceHandle } from './query-tools.js';
+import { canonicalBudgetingDraft } from './budgeting/budgeting-request.js';
 
 const skills = [
   ...querySkills,
@@ -419,52 +423,62 @@ export async function normalizeAccountingLeadRequest(
   return JSON.parse(JSON.stringify(normalized)) as JsonValue;
 }
 
-export function normalizeBudgetingLeadRequest(
+export function budgetingIntakeForDraft(
   message: InboundChannelMessageV1,
-  request: JsonValue,
-): JsonValue {
-  const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
-  const materializedRequest = parsed.intent === 'budget_plan'
-    ? (() => {
-        const draft = BudgetPlanRequestDraftSchemaV1.parse(parsed.request);
-        return BudgetingIntakeRequestSchemaV1.parse({
-          schemaName: 'budgeting-intake-request',
-          schemaVersion: 1,
-          householdId: message.householdId,
-          intent: parsed.intent,
-          instruction: draft.instruction,
-          scopeKey: draft.scopeKey,
-        });
-      })()
-    : (() => {
-        const draft = BudgetScenarioRequestDraftSchemaV1.parse(parsed.request);
-        return BudgetingIntakeRequestSchemaV1.parse({
-          schemaName: 'budgeting-intake-request',
-          schemaVersion: 1,
-          householdId: message.householdId,
-          intent: parsed.intent,
-          instruction: draft.instruction,
-          scenarioCount: draft.scenarioCount,
-        });
-      })();
-
-  return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
-    ...parsed,
-    request: materializedRequest,
-  }))) as JsonValue;
+  request: BudgetingDelegateRequestV1,
+) {
+  return budgetingIntakeForCanonicalDraft(message, canonicalBudgetingDraft(message, request));
 }
 
-async function materializeBudgetingLeadRequest(
+function budgetingIntakeForCanonicalDraft(
+  message: InboundChannelMessageV1,
+  request: BudgetingDelegateRequestV1,
+) {
+  const missing = request.intent === 'budget_plan'
+    ? missingBudgetPlanFields(request.request.known)
+    : missingBudgetScenarioFields(request.request.known);
+  if (missing.length === 0) return undefined;
+  return request.intent === 'budget_plan'
+    ? BudgetingIntakeRequestSchemaV1.parse({
+        schemaName: 'budgeting-intake-request',
+        schemaVersion: 1,
+        householdId: message.householdId,
+        intent: request.intent,
+        instruction: request.request.instruction,
+        scopeKey: request.request.scopeKey,
+        known: request.request.known,
+      })
+    : BudgetingIntakeRequestSchemaV1.parse({
+        schemaName: 'budgeting-intake-request',
+        schemaVersion: 1,
+        householdId: message.householdId,
+        intent: request.intent,
+        instruction: request.request.instruction,
+        scenarioCount: request.request.scenarioCount,
+        known: request.request.known,
+      });
+}
+
+export async function materializeBudgetingLeadRequest(
   pools: DatabasePools,
   message: InboundChannelMessageV1,
   request: JsonValue,
 ): Promise<JsonValue> {
   const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
+  const canonical = canonicalBudgetingDraft(message, parsed);
+  const intake = budgetingIntakeForCanonicalDraft(message, canonical);
+  if (intake !== undefined) {
+    return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
+      ...canonical,
+      request: intake,
+    }))) as JsonValue;
+  }
+
   const evidencePackage = await buildBudgetingEvidencePackage(pools, message);
   const accountContext = await planningAccountContext(pools, message.householdId);
   const materializedRequest = parsed.intent === 'budget_plan'
     ? (() => {
-        const draft = BudgetPlanRequestDraftSchemaV1.parse(parsed.request);
+        const draft = BudgetPlanRequestDraftSchemaV1.parse(canonical.request);
         return BudgetPlanRequestSchemaV1.parse({
           schemaName: 'budget-plan-request',
           schemaVersion: 1,
@@ -472,10 +486,11 @@ async function materializeBudgetingLeadRequest(
           evidencePackage,
           instruction: appendRuntimeContext(draft.instruction, accountContext),
           scopeKey: draft.scopeKey,
+          known: draft.known,
         });
       })()
     : (() => {
-        const draft = BudgetScenarioRequestDraftSchemaV1.parse(parsed.request);
+        const draft = BudgetScenarioRequestDraftSchemaV1.parse(canonical.request);
         return BudgetScenarioRequestSchemaV1.parse({
           schemaName: 'budget-scenario-request',
           schemaVersion: 1,
@@ -483,10 +498,11 @@ async function materializeBudgetingLeadRequest(
           evidencePackage,
           instruction: appendRuntimeContext(draft.instruction, accountContext),
           scenarioCount: draft.scenarioCount,
+          known: draft.known,
         });
       })();
   return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
-    ...parsed,
+    ...canonical,
     request: materializedRequest,
   }))) as JsonValue;
 }
