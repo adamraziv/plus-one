@@ -108,7 +108,7 @@ describe('transaction category live flow', () => {
         }));
         return submitOrchestratorFinalResponse(options, result.outstanding.join('\n\n'));
       }
-      const result = await executeDelegate(orchestrator, { team: 'accounting', request: chartDraft() });
+      await executeDelegate(orchestrator, { team: 'accounting', request: chartDraft() });
       return submitOrchestratorFinalResponse(options, 'I’ll add Eating Out as a new expense category with a normal debit balance in IDR, then record IDR 50000 from Bank ABC dated yesterday under Eating Out. Would you like me to proceed?');
     });
     const orchestrator = new OrchestratorAgent({

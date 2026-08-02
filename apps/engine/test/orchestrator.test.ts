@@ -2669,7 +2669,7 @@ describe('OrchestratorAgent', () => {
     let entered!: () => void;
     const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
     const runTeamLead = vi.fn(async () => teamResult());
-    const generate = vi.fn(async (_prompt: unknown, options: unknown) => {
+    const generate = vi.fn(async () => {
       await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
         request: queryDraft('List our accounts.'),

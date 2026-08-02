@@ -17,7 +17,7 @@ afterEach(async () => {
 describe('orchestrator final response acceptance', () => {
   it('retries XML-like raw output and returns only the native final response body', async () => {
     let modelCalls = 0;
-    modelServer = await startOpenAiCompatibleTestServer({
+    const server = await startOpenAiCompatibleTestServer({
       responder: () => {
         modelCalls += 1;
         if (modelCalls === 1) {
@@ -46,12 +46,13 @@ describe('orchestrator final response acceptance', () => {
         };
       },
     });
+    modelServer = server;
 
     const orchestrator = new OrchestratorAgent({
       model: {
-        id: modelServer.environment.ORCHESTRATOR_MODEL!,
-        endpoint: modelServer.environment.LLM_ENDPOINT!,
-        apiKey: modelServer.environment.LLM_API_KEY!,
+        id: server.environment.ORCHESTRATOR_MODEL!,
+        endpoint: server.environment.LLM_ENDPOINT!,
+        apiKey: server.environment.LLM_API_KEY!,
       },
       teams: [],
       teamRuntime: {
@@ -68,11 +69,11 @@ describe('orchestrator final response acceptance', () => {
         turnDeadlineMs: 60_000,
         database: { poolUrls: {} },
         models: {
-          orchestrator: orchestratorModel(modelServer),
-          lead: orchestratorModel(modelServer),
-          maker: orchestratorModel(modelServer),
-          checker: orchestratorModel(modelServer),
-          research: orchestratorModel(modelServer),
+          orchestrator: orchestratorModel(server),
+          lead: orchestratorModel(server),
+          maker: orchestratorModel(server),
+          checker: orchestratorModel(server),
+          research: orchestratorModel(server),
         },
       } as never,
       agentSystem: { teams: [] } as never,
@@ -113,7 +114,7 @@ describe('orchestrator final response acceptance', () => {
 
   it('preserves the typed protocol error when repair attempts are exhausted', async () => {
     let modelCalls = 0;
-    modelServer = await startOpenAiCompatibleTestServer({
+    const server = await startOpenAiCompatibleTestServer({
       responder: () => {
         modelCalls += 1;
         return {
@@ -125,9 +126,10 @@ describe('orchestrator final response acceptance', () => {
         };
       },
     });
+    modelServer = server;
     const channelEvents: unknown[] = [];
     const orchestrator = new OrchestratorAgent({
-      model: orchestratorModel(modelServer),
+      model: orchestratorModel(server),
       teams: [],
       teamRuntime: {
         runTeamLead: async () => { throw new Error('Unexpected team delegation.'); },
@@ -146,7 +148,7 @@ describe('orchestrator final response acceptance', () => {
         turnDeadlineMs: 60_000,
         database: { poolUrls: {} },
         models: Object.fromEntries(['orchestrator', 'lead', 'maker', 'checker', 'research']
-          .map((name) => [name, orchestratorModel(modelServer)])),
+          .map((name) => [name, orchestratorModel(server)])),
       } as never,
       agentSystem: { teams: [] } as never,
       teamRuntime: {
