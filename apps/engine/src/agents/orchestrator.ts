@@ -994,7 +994,10 @@ export class OrchestratorAgent {
       prepareStep: async () => {
         const activeTools = this.orchestratorToolNames(invocation);
         return {
-          tools: { [SubmitFinalResponseToolId]: responseSession.tool },
+          tools: {
+            ...Object.fromEntries(Object.entries(this.agentTools).filter(([, tool]) => tool !== undefined)),
+            [SubmitFinalResponseToolId]: responseSession.tool,
+          },
           activeTools: [...activeTools, SubmitFinalResponseToolId],
           toolChoice: 'auto' as const,
         };
