@@ -46,7 +46,11 @@ export default defineWorkspace([
     plugins: [preferTypeScriptSource],
     test: {
       name: 'unit',
-      include: ['apps/**/{src,test}/**/*.test.ts', 'packages/**/src/**/*.test.ts'],
+      include: [
+        'apps/**/{src,test}/**/*.test.ts',
+        'packages/**/src/**/*.test.ts',
+        'test/helpers/**/*.test.ts',
+      ],
       environment: 'node',
     },
   },
