@@ -829,7 +829,7 @@ describe('OrchestratorAgent', () => {
 
   it('always synthesizes persisted mutations from checked facts', async () => {
     const persisted = persistedChartTeamResult();
-    const generate = vi.fn(async () => {
+    const generate = vi.fn(async (_prompt: unknown, options: unknown) => {
       if (generate.mock.calls.length === 1) {
         await executeDelegate(orchestrator.agentTools.delegateTeam, {
           team: 'accounting',

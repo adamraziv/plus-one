@@ -53,6 +53,9 @@ describe('orchestrator reasoning-safe live output', () => {
       expect(parsed.conversationId).toBe(message.conversationId);
       expect(parsed.body.length).toBeGreaterThan(0);
       expect(parsed.body).not.toContain('```json');
+      expect(parsed.body).not.toContain('<invoke');
+      expect(parsed.body).not.toContain('<parameter');
+      expect(parsed.body).not.toContain('mutateWorkingMemory');
       expect(parsed.citations.length).toBeGreaterThan(0);
       expect(runTeamLead).toHaveBeenCalledWith(expect.objectContaining({
         message: expect.objectContaining({ body: 'add $10 of buying a burger' }),
