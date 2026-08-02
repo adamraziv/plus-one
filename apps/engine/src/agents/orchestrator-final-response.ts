@@ -91,7 +91,7 @@ export function createFinalResponseSubmissionSession(input: {
     outputProcessor,
     hasSubmission: () => submission !== undefined,
     requireSubmission: () => {
-      if (submission === undefined) throw responseNotSubmittedError();
+      if (submission === undefined) throw orchestratorResponseNotSubmittedError();
       return submission;
     },
     protocolViolationObserved: () => protocolViolation,
@@ -118,7 +118,7 @@ function safeSubmissionRepairFeedback(error: unknown): string {
   return GENERIC_REPAIR_FEEDBACK;
 }
 
-function responseNotSubmittedError(): PlusOneError {
+export function orchestratorResponseNotSubmittedError(): PlusOneError {
   return new PlusOneError({
     category: 'runtime_failure',
     code: 'orchestrator_response_not_submitted',
