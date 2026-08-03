@@ -1949,13 +1949,13 @@ describe('OrchestratorAgent', () => {
     expect(result.response.body).not.toContain('revision');
   });
 
-  it('synthesizes approval, rejection, expiry, stale approval, and unclear feedback through the same agent', async () => {
+  it('returns typed Working Memory resolution statuses for approval, rejection, expiry, stale approval, and unclear feedback', async () => {
     const scenarios = [
-      { name: 'approval', body: 'yes', text: 'The goal is now in place.', expectedKind: 'final', applyCode: undefined, expired: false },
-      { name: 'rejection', body: 'no', text: 'No changes were made.', expectedKind: 'final', applyCode: undefined, expired: false },
-      { name: 'expiry', body: 'yes', text: 'That approval expired, so the change was not completed.', expectedKind: 'final', applyCode: undefined, expired: true },
-      { name: 'stale approval', body: 'yes', text: 'The change was not completed because the context changed. Please ask me to review it again.', expectedKind: 'final', applyCode: 'working_memory_revision_stale', expired: false },
-      { name: 'unclear', body: 'maybe', text: 'I am ready to make that change. Would you like me to approve it?', expectedKind: 'ask-user', applyCode: undefined, expired: false },
+      { name: 'approval', body: 'yes', decision: 'approve' as const, text: 'The goal is now in place.', expectedStatus: 'applied', applyCode: undefined, expired: false },
+      { name: 'rejection', body: 'no', decision: 'reject' as const, text: 'No changes were made.', expectedStatus: 'rejected', applyCode: undefined, expired: false },
+      { name: 'expiry', body: 'yes', decision: 'approve' as const, text: 'That approval expired, so the change was not completed.', expectedStatus: 'expired', applyCode: undefined, expired: true },
+      { name: 'stale approval', body: 'yes', decision: 'approve' as const, text: 'The change was not completed because the context changed. Please ask me to review it again.', expectedStatus: 'stale', applyCode: 'working_memory_revision_stale', expired: false },
+      { name: 'unclear', body: 'maybe', decision: 'ambiguous' as const, text: 'I am ready to make that change. Would you like me to approve it?', expectedStatus: 'pending', applyCode: undefined, expired: false },
     ] as const;
 
     for (const scenario of scenarios) {
@@ -1995,19 +1995,34 @@ describe('OrchestratorAgent', () => {
       const result = await orchestrator.resolvePendingWorkingMemoryMutation({
         message: message(scenario.body),
         pending,
+        decision: scenario.decision,
       });
 
-      expect(result.kind, scenario.name).toBe(scenario.expectedKind);
+      expect(result.status, scenario.name).toBe(scenario.expectedStatus);
       expect(result.response.body, scenario.name).toBe(scenario.text);
-      if (scenario.name === 'unclear') {
-        expect(result).toMatchObject({ pendingWorkingMemoryMutation: pending });
-      }
       if (scenario.name === 'approval' || scenario.name === 'stale approval') {
         expect(applyWorkingMemoryMutation).toHaveBeenCalledOnce();
       } else {
         expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
       }
     }
+
+    const unavailableOrchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({
+        ...config,
+        generate: vi.fn(async (_prompt: unknown, options: unknown) => submitFinalResponse(options, 'The change could not be stored.')),
+      }) as never,
+      teams: [queryTeam],
+      teamRuntime: testTeamRuntime(vi.fn()),
+    });
+    const unavailable = await unavailableOrchestrator.resolvePendingWorkingMemoryMutation({
+      message: message('yes'),
+      pending: pendingWorkingMemory(),
+      decision: 'approve',
+    });
+    expect(unavailable).toMatchObject({ status: 'failed', code: 'working_memory_storage_unavailable' });
+    expect(unavailable.response.body).toBe('The change could not be stored.');
   });
 
   it('raises a typed error when Working Memory synthesis never submits a response', async () => {
@@ -2030,6 +2045,7 @@ describe('OrchestratorAgent', () => {
     await expect(orchestrator.resolvePendingWorkingMemoryMutation({
       message: message('yes'),
       pending: pendingWorkingMemory(),
+      decision: 'approve',
     })).rejects.toMatchObject({ code: 'orchestrator_response_not_submitted' });
   });
 

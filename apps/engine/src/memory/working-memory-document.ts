@@ -369,6 +369,22 @@ export function verifyWorkingMemoryReadback(input: {
   return Object.keys(after).length === 0 && Object.keys(before).length > 0;
 }
 
+export function workingMemoryMutationEffectIsPresent(input: {
+  document: FlexibleWorkingMemory;
+  mutation: ResolvedWorkingMemoryMutation;
+}): boolean {
+  const entries = input.document.entries;
+  if (input.mutation.operation === 'create' || input.mutation.operation === 'replace') {
+    const actual = entries[input.mutation.entryId];
+    return actual !== undefined
+      && comparableWorkingMemoryEntry(actual) === comparableWorkingMemoryEntry(input.mutation.entry);
+  }
+  if (input.mutation.operation === 'delete') {
+    return entries[input.mutation.entryId] === undefined;
+  }
+  return Object.keys(entries).length === 0;
+}
+
 export function proposalExpired(expiresAt: string, now: Date): boolean {
   return Date.parse(expiresAt) <= now.getTime();
 }

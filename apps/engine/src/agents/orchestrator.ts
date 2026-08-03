@@ -12,6 +12,7 @@ import {
   OrchestratorFinalResponseSchemaV1,
   PendingWorkingMemoryMutationSchema,
   TeamResultEnvelopeSchemaV2,
+  type WorkingMemoryResolutionStatusV1,
   PlusOneError,
   type ChannelKindV1,
   type ErrorCategoryV1,
@@ -209,6 +210,12 @@ export type OrchestratorTurnResult =
       pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
       transactionContinuation?: TransactionCaptureContinuationV1;
     };
+
+export interface WorkingMemoryResolutionResult {
+  status: WorkingMemoryResolutionStatusV1;
+  code: string;
+  response: OrchestratorFinalResponseV1;
+}
 
 export type ConfirmationDecision = 'approve' | 'reject' | 'unclear';
 
@@ -601,9 +608,10 @@ export class OrchestratorAgent {
   async resolvePendingWorkingMemoryMutation(input: {
     message: InboundChannelMessageV1;
     pending: PendingWorkingMemoryMutation;
+    decision: 'approve' | 'reject' | 'ambiguous';
     transactionContinuation?: TransactionCaptureContinuationV1;
     signal?: AbortSignal;
-  }): Promise<OrchestratorTurnResult> {
+  }): Promise<WorkingMemoryResolutionResult> {
     void input.transactionContinuation;
     const pending = PendingWorkingMemoryMutationSchema.parse(input.pending);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
@@ -627,57 +635,74 @@ export class OrchestratorAgent {
           event: workingMemoryEvent(pending, 'failed', 'The proposal expired before it was approved.'),
           signal,
         });
-        return { kind: 'final', response };
+        return { status: 'expired', code: 'working_memory_proposal_expired', response };
       }
 
-      const decision = confirmationDecision(input.message.body);
-      if (decision === 'reject') {
+      if (input.decision === 'reject') {
         const response = await this.synthesizeWorkingMemoryOutcome({
           message: input.message,
           event: workingMemoryEvent(pending, 'rejected', 'Do not make this change.'),
           signal,
         });
-        return { kind: 'final', response };
+        return { status: 'rejected', code: 'working_memory_mutation_rejected', response };
       }
-      if (decision === 'unclear') {
+      if (input.decision === 'ambiguous') {
         const response = await this.synthesizeWorkingMemoryOutcome({
           message: input.message,
           event: workingMemoryConfirmationEvent(pending),
           signal,
         });
-        return {
-          kind: 'ask-user',
-          response,
-          pendingWorkingMemoryMutation: pending,
-        };
+        return { status: 'pending', code: 'working_memory_confirmation_required', response };
       }
 
       const memory = this.dependencies.sessionMemory;
       if (memory === undefined) {
-        const response = await this.synthesizeWorkingMemoryOutcome({
+        return this.failedWorkingMemoryResolution({
           message: input.message,
-          event: workingMemoryEvent(pending, 'failed', 'The change could not be stored.'),
+          pending,
           signal,
+          code: 'working_memory_storage_unavailable',
+          directive: 'The change could not be stored. Do not say it was completed.',
         });
-        return { kind: 'final', response };
       }
-      const applied = await memory.applyWorkingMemoryMutation({
-        threadId: input.message.conversationId,
-        resourceId: input.message.householdId,
-        principalRef: input.message.speaker.principalRef,
-        basedOnRevision: pending.basedOnRevision,
-        mutation: pending.mutation,
-      });
-      if (applied.status === 'failed') {
-        const directive = applied.code === 'working_memory_revision_stale'
-          ? 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.'
-          : 'Do not say the change was completed because storage did not verify it.';
-        const response = await this.synthesizeWorkingMemoryOutcome({
-          message: input.message,
-          event: workingMemoryEvent(pending, 'failed', directive),
-          signal,
+
+      let applied: Awaited<ReturnType<typeof memory.applyWorkingMemoryMutation>>;
+      try {
+        applied = await memory.applyWorkingMemoryMutation({
+          threadId: input.message.conversationId,
+          resourceId: input.message.householdId,
+          principalRef: input.message.speaker.principalRef,
+          basedOnRevision: pending.basedOnRevision,
+          mutation: pending.mutation,
         });
-        return { kind: 'final', response };
+      } catch (error) {
+        const code = error instanceof PlusOneError ? error.code : 'working_memory_mutation_failed';
+        return this.failedWorkingMemoryResolution({
+          message: input.message,
+          pending,
+          signal,
+          code,
+          directive: 'The change could not be verified. Do not say it was completed.',
+        });
+      }
+      if (applied.status === 'failed') {
+        if (applied.code === 'working_memory_revision_stale') {
+          return this.failedWorkingMemoryResolution({
+            message: input.message,
+            pending,
+            signal,
+            status: 'stale',
+            code: 'working_memory_revision_stale',
+            directive: 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.',
+          });
+        }
+        return this.failedWorkingMemoryResolution({
+          message: input.message,
+          pending,
+          signal,
+          code: applied.code,
+          directive: 'Do not say the change was completed because storage did not verify it.',
+        });
       }
       const reviewDue = memory.noteWorkingMemoryMutationSuccess({ resourceId: input.message.householdId }).reviewDue;
       if (reviewDue) {
@@ -694,10 +719,73 @@ export class OrchestratorAgent {
         event: workingMemoryEvent(pending, 'applied', 'Confirm that the change was verified and completed.'),
         signal,
       });
-      return { kind: 'final', response };
+      return { status: 'applied', code: 'working_memory_mutation_succeeded', response };
     } finally {
       timeoutSignal?.clear();
     }
+  }
+
+  async finalizePendingWorkingMemoryResolution(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    status: Exclude<WorkingMemoryResolutionStatusV1, 'pending'>;
+    code: string;
+    directive: string;
+    signal?: AbortSignal;
+  }): Promise<WorkingMemoryResolutionResult> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      const eventKind = input.status === 'applied'
+        ? 'applied' as const
+        : input.status === 'rejected'
+          ? 'rejected' as const
+          : 'failed' as const;
+      const response = await this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryEvent(input.pending, eventKind, input.directive),
+        signal,
+      });
+      return { status: input.status, code: input.code, response };
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  async synthesizePendingWorkingMemoryConfirmation(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal?: AbortSignal;
+  }): Promise<OrchestratorFinalResponseV1> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      return this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryConfirmationEvent(input.pending),
+        signal,
+      });
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  private async failedWorkingMemoryResolution(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal: AbortSignal;
+    status?: 'stale' | 'failed';
+    code: string;
+    directive: string;
+  }): Promise<WorkingMemoryResolutionResult> {
+    return this.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: input.pending,
+      status: input.status ?? 'failed',
+      code: input.code,
+      directive: input.directive,
+      signal: input.signal,
+    });
   }
 
   private async synthesizeWorkingMemoryOutcome(input: {
