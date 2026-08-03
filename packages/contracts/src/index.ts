@@ -28,3 +28,4 @@ export * from './runtime.js';
 export * from './team-results.js';
 export * from './time.js';
 export * from './working-memory.js';
+export * from './working-memory-response.js';

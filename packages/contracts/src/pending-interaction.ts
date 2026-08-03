@@ -24,16 +24,23 @@ export const PendingInteractionStatusSchemaV1 = z.enum([
   'failed',
 ]);
 
-export const PendingInteractionSemanticDispositionSchemaV1 = z.enum([
-  'new_intent',
-  'ambiguous',
-]);
+const PendingInteractionResolutionSchemaV1 = z.object({
+  kind: z.literal('resolve'),
+  decision: z.enum(['approve', 'reject']),
+}).strict();
 
-export const PendingInteractionDispositionSchemaV1 = z.enum([
-  'approve',
-  'reject',
-  'new_intent',
-  'ambiguous',
+const PendingInteractionNewIntentSchemaV1 = z.object({
+  kind: z.literal('new_intent'),
+}).strict();
+
+const PendingInteractionAmbiguousSchemaV1 = z.object({
+  kind: z.literal('ambiguous'),
+}).strict();
+
+export const PendingInteractionDispositionSchemaV1 = z.discriminatedUnion('kind', [
+  PendingInteractionResolutionSchemaV1,
+  PendingInteractionNewIntentSchemaV1,
+  PendingInteractionAmbiguousSchemaV1,
 ]);
 
 export const WorkingMemoryResolutionStatusSchemaV1 = z.enum([
@@ -117,7 +124,6 @@ export const PendingInteractionSchemaV1 = z.object({
 
 export type PendingInteractionV1 = z.infer<typeof PendingInteractionSchemaV1>;
 export type PendingInteractionStatusV1 = z.infer<typeof PendingInteractionStatusSchemaV1>;
-export type PendingInteractionSemanticDispositionV1 = z.infer<typeof PendingInteractionSemanticDispositionSchemaV1>;
 export type PendingInteractionDispositionV1 = z.infer<typeof PendingInteractionDispositionSchemaV1>;
 export type WorkingMemoryResolutionStatusV1 = z.infer<typeof WorkingMemoryResolutionStatusSchemaV1>;
 export type PendingInteractionProposalV1 = PendingWorkingMemoryMutation;

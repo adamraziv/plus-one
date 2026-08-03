@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   PendingInteractionDispositionSchemaV1,
   PendingInteractionSchemaV1,
-  PendingInteractionSemanticDispositionSchemaV1,
 } from './pending-interaction.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -114,18 +113,20 @@ describe('pending interaction contracts', () => {
     expect(() => PendingInteractionSchemaV1.parse(withoutResolvedAt)).toThrow();
   });
 
-  it('keeps semantic disposition separate from mutation authorization', () => {
-    expect(PendingInteractionSemanticDispositionSchemaV1.options).toEqual([
-      'new_intent',
-      'ambiguous',
-    ]);
-    expect(PendingInteractionSemanticDispositionSchemaV1.safeParse('approve').success).toBe(false);
-    expect(PendingInteractionSemanticDispositionSchemaV1.safeParse('reject').success).toBe(false);
-    expect(PendingInteractionDispositionSchemaV1.options).toEqual([
-      'approve',
-      'reject',
-      'new_intent',
-      'ambiguous',
-    ]);
+  it('uses one strict disposition contract for resolution and context switching', () => {
+    expect(PendingInteractionDispositionSchemaV1.parse({
+      kind: 'resolve',
+      decision: 'approve',
+    })).toEqual({ kind: 'resolve', decision: 'approve' });
+    expect(PendingInteractionDispositionSchemaV1.parse({ kind: 'new_intent' }))
+      .toEqual({ kind: 'new_intent' });
+    expect(PendingInteractionDispositionSchemaV1.parse({ kind: 'ambiguous' }))
+      .toEqual({ kind: 'ambiguous' });
+    expect(PendingInteractionDispositionSchemaV1.safeParse('approve').success).toBe(false);
+    expect(PendingInteractionDispositionSchemaV1.safeParse({
+      kind: 'resolve',
+      decision: 'approve',
+      extra: true,
+    }).success).toBe(false);
   });
 });
