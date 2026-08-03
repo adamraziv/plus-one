@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  PendingInteractionSchemaV1,
   PendingWorkingMemoryMutationSchema,
+  type PendingInteractionV1,
 } from '@plus-one/contracts';
 import { pendingChartResultFixture as pendingTeamResult } from '../helpers/pending-chart-result.js';
 import {
@@ -130,8 +132,9 @@ describe('orchestrator workflow loop', () => {
     }));
   });
 
-  it('stores a Working Memory proposal in the durable suspend payload and resolves that proposal', async () => {
+  it('persists a Working Memory proposal without suspending the workflow', async () => {
     const suspend = vi.fn();
+    const pendingInteractions = pendingInteractionRepository();
     const orchestrator = {
       runTurn: vi.fn().mockResolvedValue({
         kind: 'ask-user',
@@ -140,19 +143,41 @@ describe('orchestrator workflow loop', () => {
       }),
       resolvePendingMutation: vi.fn(),
       resolvePendingWorkingMemoryMutation: vi.fn().mockResolvedValue({
-        kind: 'final',
+        status: 'applied',
+        code: 'working_memory_mutation_succeeded',
         response: persistedResponse,
       }),
+      classifyPendingWorkingMemoryInput: vi.fn(),
+      finalizePendingWorkingMemoryResolution: vi.fn(),
     };
-    const workflow = createOrchestratorLoopWorkflow(orchestrator as never);
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
     const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
 
     await step.execute({ inputData: message, suspend, abortSignal } as never);
-    expect(suspend).toHaveBeenCalledWith({
-      kind: 'working_memory_confirmation',
-      response: expect.objectContaining({ body: 'I can save that goal. Would you like me to proceed?' }),
+    expect(suspend).not.toHaveBeenCalled();
+    expect(pendingInteractions.create).toHaveBeenCalledWith(expect.objectContaining({
+      interactionId: pendingWorkingMemoryMutation.proposalId,
+      status: 'pending',
       pendingWorkingMemoryMutation,
-    });
+    }));
+  });
+
+  it('imports a legacy Working Memory suspension and resolves it through the typed router', async () => {
+    const suspend = vi.fn();
+    const pendingInteractions = pendingInteractionRepository();
+    const orchestrator = {
+      runTurn: vi.fn(),
+      resolvePendingMutation: vi.fn(),
+      classifyPendingWorkingMemoryInput: vi.fn().mockResolvedValue('approve'),
+      resolvePendingWorkingMemoryMutation: vi.fn().mockResolvedValue({
+        status: 'applied',
+        code: 'working_memory_mutation_succeeded',
+        response: persistedResponse,
+      }),
+      finalizePendingWorkingMemoryResolution: vi.fn(),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+    const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
 
     const confirmationMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
@@ -162,15 +187,26 @@ describe('orchestrator workflow loop', () => {
     await step.execute({
       inputData: message,
       resumeData: confirmationMessage,
-      suspendData: suspend.mock.calls[0]![0],
+      suspendData: {
+        kind: 'working_memory_confirmation',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      },
       suspend,
       abortSignal,
     } as never);
     expect(orchestrator.resolvePendingWorkingMemoryMutation).toHaveBeenCalledWith({
       message: confirmationMessage,
       pending: pendingWorkingMemoryMutation,
+      decision: 'approve',
       signal: abortSignal,
     });
+    expect(suspend).not.toHaveBeenCalled();
+    expect((await pendingInteractions.findOpen({
+      householdId: message.householdId,
+      conversationId: message.conversationId,
+      speakerPrincipalRef: message.speaker.principalRef,
+    }))).toBeUndefined();
   });
 
   it('persists transaction continuation through clarification suspension and resume', async () => {
@@ -262,4 +298,47 @@ function workflowWithRun(run: {
     listWorkflowRuns: vi.fn(async () => ({ runs: [] })),
     createRun: vi.fn(async () => run),
   } as never;
+}
+
+function pendingInteractionRepository() {
+  let stored: PendingInteractionV1 | undefined;
+  const repository = {
+    create: vi.fn(async (candidate: PendingInteractionV1) => {
+      stored = PendingInteractionSchemaV1.parse(candidate);
+      return stored;
+    }),
+    findOpen: vi.fn(async (_input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) =>
+      stored?.status === 'pending' || stored?.status === 'resolving' ? stored : undefined),
+    findById: vi.fn(async () => stored),
+    findByResolutionMessage: vi.fn(async ({ externalMessageId }: { externalMessageId: string }) =>
+      stored?.resolutionExternalMessageId === externalMessageId ? stored : undefined),
+    claim: vi.fn(async ({ externalMessageId }: { externalMessageId: string }) => {
+      if (stored === undefined) throw new Error('missing interaction');
+      stored = PendingInteractionSchemaV1.parse({
+        ...stored,
+        status: 'resolving',
+        version: stored.version + 1,
+        resolutionExternalMessageId: externalMessageId,
+      });
+      return { kind: 'claimed' as const, interaction: stored };
+    }),
+    complete: vi.fn(async (input: {
+      status: 'applied' | 'rejected' | 'expired' | 'stale' | 'failed';
+      resolutionCode: string;
+      resolutionResponse: ReturnType<typeof response>;
+      resolvedAt: string;
+    }) => {
+      if (stored === undefined) throw new Error('missing interaction');
+      stored = PendingInteractionSchemaV1.parse({
+        ...stored,
+        status: input.status,
+        version: stored.version + 1,
+        resolutionCode: input.resolutionCode,
+        resolutionResponse: input.resolutionResponse,
+        resolvedAt: input.resolvedAt,
+      });
+      return stored;
+    }),
+  };
+  return repository;
 }

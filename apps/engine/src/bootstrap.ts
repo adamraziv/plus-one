@@ -3,6 +3,7 @@ import {
   createDatabasePools,
   PostgresChannelPairingRepository,
   PostgresDeliveryRepository,
+  PostgresPendingInteractionRepository,
   verifyDatabasePools,
   type DatabasePools,
 } from '@plus-one/database';
@@ -101,12 +102,13 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
   });
   registerOrchestratorAgent(agentSystem, orchestrator.agent as never);
   const deliveryRepository = new PostgresDeliveryRepository(pools.operations);
+  const pendingInteractions = new PostgresPendingInteractionRepository(pools.operations);
   const channelCommands = new ChannelCommandHandler({
     repository: deliveryRepository,
     ids: defaultConversationIdGenerator,
   });
   const workflows = {
-    'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator),
+    'orchestrator-loop': createOrchestratorLoopWorkflow(orchestrator, pendingInteractions, sessionMemory),
   };
   let telegramApi: TelegramBotApi | undefined;
   let telegramGateway: ChannelGateway | undefined;
@@ -117,6 +119,7 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
     teamRuntime,
     orchestrator,
     sessionMemory,
+    pendingInteractions,
     commands: channelCommands,
     getMastra: () => mastra,
   });
@@ -150,7 +153,14 @@ export async function bootstrap(dependencies: BootstrapDependencies = {}) {
           orchestrator: {
             run: async ({ message, signal }) => {
               const workflow = mastra.getWorkflow('orchestrator-loop');
-              return runOrchestratorLoop({ workflow, message, signal });
+              return runOrchestratorLoop({
+                workflow,
+                message,
+                signal,
+                pendingInteractions,
+                orchestrator,
+                sessionMemory,
+              });
             },
           },
           delivery: telegramDelivery,
