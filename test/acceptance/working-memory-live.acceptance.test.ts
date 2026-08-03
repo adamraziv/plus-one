@@ -3,10 +3,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import {
   InboundChannelMessageSchemaV1,
+  PendingWorkingMemoryMutationSchema,
   WorkingMemoryEntryIdSchema,
   type FlexibleWorkingMemory,
   type WorkingMemoryEntry,
 } from '@plus-one/contracts';
+import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
+import { createOrchestratorSessionMemory } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
+import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
 import {
   readLiveWorkingMemory,
   reviewLiveWorkingMemory,
@@ -42,6 +46,69 @@ afterAll(async () => {
 }, 120_000);
 
 describe('Working Memory through the real gateway and configured provider', () => {
+  it('working-memory-model-compatibility: issue #33 classifier reaches the configured provider with thread-scoped memory identity', async () => {
+    const liveHarness = live();
+    const target = ids();
+    const createdAt = new Date().toISOString();
+    const message = InboundChannelMessageSchemaV1.parse({
+      schemaName: 'inbound-channel-message',
+      schemaVersion: 1,
+      conversationId: target.conversationId,
+      householdId: target.householdId,
+      channel: 'telegram',
+      externalMessageId: 'telegram:live-pending-classifier:1',
+      receivedAt: createdAt,
+      speaker: { principalRef },
+      body: 'Buat budget bulanan: total 10 juta IDR, prioritaskan makanan 2 juta IDR dan transportasi 1 juta IDR.',
+      attachments: [],
+      metadata: { destination: { chatId: 'live-chat' } },
+    });
+    const pending = PendingWorkingMemoryMutationSchema.parse({
+      proposalId: 'wmproposal_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      householdId: target.householdId,
+      conversationId: target.conversationId,
+      speakerPrincipalRef: principalRef,
+      mutation: {
+        operation: 'create',
+        entryId: WorkingMemoryEntryIdSchema.parse('wme_01JNZQ4A9B8C7D6E5F4G3H2J1K'),
+        entry: {
+          kind: 'communication_preference',
+          summary: 'Use concise household summaries.',
+          scope: 'household',
+          value: { detail: 'concise' },
+        },
+      },
+      basedOnRevision: 'a'.repeat(64),
+      createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + 15 * 60_000).toISOString(),
+    });
+    const memory = createOrchestratorSessionMemory({
+      connectionString: liveHarness.context.roleUrls.memory,
+      model: liveHarness.model,
+    });
+    const unexpectedTeamCall = async () => {
+      throw new Error('The pending classifier must not invoke a specialist team.');
+    };
+    const teamRuntime: OrchestratorTeamRuntime = {
+      runTeamLead: unexpectedTeamCall,
+      resumePendingMutation: unexpectedTeamCall,
+      cancelPendingMutation: unexpectedTeamCall,
+    };
+    const orchestrator = new OrchestratorAgent({
+      model: liveHarness.model,
+      teams: [],
+      teamRuntime,
+      sessionMemory: memory,
+    });
+
+    try {
+      await expect(orchestrator.classifyPendingWorkingMemoryInput({ message, pending }))
+        .resolves.toBe('new_intent');
+    } finally {
+      await memory.close();
+    }
+  }, 120_000);
+
   it('working-memory-model-compatibility: issue #33 keeps the exact confirmation pending across an Indonesian budget request', async () => {
     const target = ids();
     const proposal = await sendMessage({

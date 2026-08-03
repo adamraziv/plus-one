@@ -451,19 +451,25 @@ export class OrchestratorAgent {
     const session = createPendingInteractionDispositionSession();
     const signal = input.signal ?? AbortSignal.timeout(60_000);
     await this.agent.generate(pendingInteractionDispositionPrompt(input), {
+      memory: {
+        thread: input.message.conversationId,
+        resource: input.message.householdId,
+        options: {
+          readOnly: true,
+          lastMessages: false,
+          semanticRecall: false,
+          observationalMemory: false,
+          workingMemory: { enabled: false },
+        },
+      },
       tools: { [SubmitPendingInteractionDispositionToolId]: session.tool },
       activeTools: [SubmitPendingInteractionDispositionToolId],
-      toolChoice: {
-        type: 'tool' as const,
-        toolName: SubmitPendingInteractionDispositionToolId,
-      },
+      maxSteps: 1,
+      toolChoice: 'auto',
       prepareStep: async () => ({
         tools: { [SubmitPendingInteractionDispositionToolId]: session.tool },
         activeTools: [SubmitPendingInteractionDispositionToolId],
-        toolChoice: {
-          type: 'tool' as const,
-          toolName: SubmitPendingInteractionDispositionToolId,
-        },
+        toolChoice: 'auto' as const,
       }),
       abortSignal: signal,
     } as never);

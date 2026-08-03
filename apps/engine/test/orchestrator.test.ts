@@ -829,16 +829,30 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledTimes(2);
     const options = generate.mock.calls[0]?.[1] as {
       activeTools: string[];
+      maxSteps: number;
+      memory: unknown;
       toolChoice: unknown;
       tools: Record<string, unknown>;
       prepareStep: () => Promise<{ tools: Record<string, unknown>; activeTools: string[]; toolChoice: unknown }>;
     };
+    expect(options.memory).toEqual({
+      thread: conversationId,
+      resource: householdId,
+      options: {
+        readOnly: true,
+        lastMessages: false,
+        semanticRecall: false,
+        observationalMemory: false,
+        workingMemory: { enabled: false },
+      },
+    });
     expect(Object.keys(options.tools)).toEqual([SubmitPendingInteractionDispositionToolId]);
     expect(options.activeTools).toEqual([SubmitPendingInteractionDispositionToolId]);
-    expect(options.toolChoice).toEqual({ type: 'tool', toolName: SubmitPendingInteractionDispositionToolId });
+    expect(options.maxSteps).toBe(1);
+    expect(options.toolChoice).toBe('auto');
     await expect(options.prepareStep()).resolves.toMatchObject({
       activeTools: [SubmitPendingInteractionDispositionToolId],
-      toolChoice: { type: 'tool', toolName: SubmitPendingInteractionDispositionToolId },
+      toolChoice: 'auto',
     });
   });
 
