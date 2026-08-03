@@ -76,10 +76,20 @@ describe('transaction category live flow', () => {
     const teamRuntime = createTeamRuntime({ pools, agentSystem });
     const generate = vi.fn(async (prompt: unknown, rawOptions: unknown) => {
       const options = rawOptions as Record<string, unknown>;
-      if (typeof options.toolChoice === 'object') {
-        const text = JSON.stringify(prompt).includes('Eating Out')
+      if (Array.isArray(options.activeTools) && options.activeTools.length === 0) {
+        const prepareStep = options.prepareStep as ((input: { stepNumber: number }) => Promise<{
+          tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
+        }>);
+        const prepared = await prepareStep({ stepNumber: 0 });
+        const submitResult = prepared.tools.submitResult;
+        if (submitResult?.execute === undefined) throw new Error('Expected the structured semantic result tool.');
+        await submitResult.execute({ result: { kind: 'resolve', decision: 'approve' } }, {});
+        return { steps: [{ finishReason: 'stop' }] };
+      }
+      if (typeof prompt === 'string' && prompt.endsWith('\nReturn only the user-facing reply text.')) {
+        const text = prompt.includes('"effectState":"persisted"')
           ? 'I added Eating Out as a new spending category and recorded IDR 50000 from Bank ABC on 2026-07-16 under Eating Out.'
-          : 'I have a checked result ready.';
+          : 'I’ll add Eating Out as a new expense category with a normal debit balance in IDR, then record IDR 50000 from Bank ABC dated yesterday under Eating Out. Would you like me to proceed?';
         return submitOrchestratorFinalResponse(options, text);
       }
       const body = JSON.stringify(prompt).toLowerCase();
