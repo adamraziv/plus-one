@@ -6,13 +6,9 @@ import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
 import { noopObserve } from '@mastra/core/tools';
 import { ZodError } from 'zod';
-import {
-  AccountingJournalMutationProposalSchemaV1,
-  ChartOfAccountsProposalSchemaV1,
-} from '@plus-one/accounting';
+import { ChartOfAccountsProposalSchemaV1 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
-  MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
   PendingWorkingMemoryMutationSchema,
   TeamResultEnvelopeSchemaV2,
@@ -56,8 +52,6 @@ import {
   createDelegateTeamTool,
   finalSynthesisTeamResultView,
   MAX_DELEGATIONS_PER_TURN,
-  userFacingText,
-  type FinalSynthesisTeamResultView,
   type OrchestratorTeamRuntime,
 } from '../tools/delegate-team.js';
 import { requestForRuntime } from '../tools/delegate-team-schemas.js';
@@ -71,6 +65,13 @@ import {
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
 import { budgetingExplicitRequestForMessage } from '../budgeting/budgeting-request.js';
+import {
+  createFinalResponseSubmissionSession,
+  finalResponseRepairError,
+  orchestratorResponseNotSubmittedError,
+  SubmitFinalResponseToolId,
+  type FinalResponseSubmission,
+} from './orchestrator-final-response.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -134,7 +135,10 @@ const orchestratorInstructions = [
   'Never describe a Working Memory change as proposed, pending, or ready for approval unless a Working Memory tool returned confirmation_required in this turn.',
   'Treat authenticated principal context as internal authorization context. Never expose or ask for principal, household, thread, or other system identifiers.',
   'When an internal memory-operation event says Working Memory failed, explain the failure naturally, do not claim the information was saved or cleared, and continue with only information that remains verified.',
-  'Return only the user-facing reply text when you are not calling a tool.',
+  'Finish every user-facing turn by calling submitFinalResponse exactly once with the complete reply body.',
+  'Never return the reply as ordinary assistant text, JSON text, XML tool markup, or a fenced block.',
+  'Do not call submitFinalResponse until all required domain-tool work for the turn is complete.',
+  'If a submitFinalResponse call is rejected, use the rejection feedback to repair the reply and call it again.',
 ].join('\n');
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
@@ -432,7 +436,7 @@ export class OrchestratorAgent {
     message: InboundChannelMessageV1;
   }): Promise<OrchestratorFinalResponseV1> {
     const memory = this.dependencies.sessionMemory;
-    if (memory === undefined) return responseFromText(input.message, 'I could not review saved context right now.');
+    if (memory === undefined) return responseFromTrustedBody(input.message, 'I could not review saved context right now.');
     const result = await memory.reviewWorkingMemory({
       threadId: input.message.conversationId,
       resourceId: input.message.householdId,
@@ -440,11 +444,11 @@ export class OrchestratorAgent {
       requestedBy: 'scheduled_review',
       now: new Date(),
     });
-    if (result.status === 'failed') return responseFromText(input.message, 'I could not complete the saved-context review right now.');
+    if (result.status === 'failed') return responseFromTrustedBody(input.message, 'I could not complete the saved-context review right now.');
     const body = result.report.findings.length === 0
       ? 'I checked the household’s saved context and found nothing that needs attention. No changes were made.'
       : `I found ${result.report.findings.length} saved-context item${result.report.findings.length === 1 ? '' : 's'} that may need your review. Nothing was changed.`;
-    return responseFromText(input.message, body);
+    return responseFromTrustedBody(input.message, body);
   }
 
   async resolvePendingMutation(input: {
@@ -465,7 +469,18 @@ export class OrchestratorAgent {
         });
         if (input.transactionContinuation !== undefined && isCreateTransactionCategoryProposal(input.pending)) {
           if (result.status !== 'verified' || result.effect.state !== 'persisted') {
-            return turnFromTeamResults(input.message, [result], undefined, input.transactionContinuation);
+            const body = await this.synthesizeTeamResults(
+              input.message,
+              [result],
+              signal,
+              (submittedBody) => this.assertTeamResultResponse(
+                input.message,
+                [result],
+                submittedBody,
+                input.transactionContinuation,
+              ),
+            );
+            return turnFromTeamResults(input.message, [result], body, input.transactionContinuation);
           }
           const transaction = await this.continueTransactionCapture({
             message: input.message,
@@ -474,16 +489,34 @@ export class OrchestratorAgent {
             signal,
           });
           if (transaction.status !== 'verified' || transaction.effect.state === 'unresolved') {
-            return turnFromTeamResults(input.message, [result, transaction], undefined, input.transactionContinuation);
+            const body = await this.synthesizeTeamResults(
+              input.message,
+              [result, transaction],
+              signal,
+              (submittedBody) => this.assertTeamResultResponse(
+                input.message,
+                [result, transaction],
+                submittedBody,
+                input.transactionContinuation,
+              ),
+            );
+            return turnFromTeamResults(input.message, [result, transaction], body, input.transactionContinuation);
           }
-          const body = categoryTransactionCompletionBody(
-            input.pending,
-            transaction,
-            input.transactionContinuation,
-          ) ?? await this.synthesizeTeamResults(input.message, [result, transaction], signal);
+          const body = await this.synthesizeTeamResults(
+            input.message,
+            [result, transaction],
+            signal,
+            (submittedBody) => this.assertTeamResultResponse(
+              input.message,
+              [result, transaction],
+              submittedBody,
+              input.transactionContinuation,
+            ),
+          );
           return turnFromTeamResults(input.message, [result, transaction], body, input.transactionContinuation);
         }
-        return turnFromTeamResults(input.message, [result]);
+        const body = await this.synthesizeTeamResults(input.message, [result], signal);
+        return turnFromTeamResults(input.message, [result], body);
       }
       if (decision === 'reject') {
         await this.dependencies.teamRuntime.cancelPendingMutation({
@@ -492,23 +525,36 @@ export class OrchestratorAgent {
         });
         return {
           kind: 'final',
-          response: responseFromText(input.message, "Okay, I won’t make that change."),
+          response: responseFromTrustedBody(input.message, "Okay, I won’t make that change."),
         };
       }
-      let body = await this.synthesizeTeamResults(input.message, [input.pending], signal);
-      if (!confirmationResponseIsSafe(body, input.pending, input.transactionContinuation)) {
-        body = confirmationFallback(input.pending, input.transactionContinuation);
-      }
+      const body = await this.synthesizeTeamResults(
+        input.message,
+        [input.pending],
+        signal,
+        (submittedBody) => this.assertTeamResultResponse(
+          input.message,
+          [input.pending],
+          submittedBody,
+          input.transactionContinuation,
+        ),
+      );
       return turnFromTeamResults(input.message, [input.pending], body, input.transactionContinuation);
     } catch (error) {
       if (signal.aborted) throw error;
       if (input.transactionContinuation !== undefined && isCreateTransactionCategoryProposal(input.pending)) {
-        return turnFromTeamResults(
+        const body = await this.synthesizeTeamResults(
           input.message,
           [input.pending],
-          'I couldn’t complete that safely yet. The category confirmation is still pending. Would you like me to retry?',
-          input.transactionContinuation,
+          signal,
+          (submittedBody) => this.assertTeamResultResponse(
+            input.message,
+            [input.pending],
+            submittedBody,
+            input.transactionContinuation,
+          ),
         );
+        return turnFromTeamResults(input.message, [input.pending], body, input.transactionContinuation);
       }
       throw error;
     } finally {
@@ -623,31 +669,20 @@ export class OrchestratorAgent {
     event: WorkingMemorySynthesisEvent;
     signal: AbortSignal;
   }): Promise<OrchestratorFinalResponseV1> {
-    let candidate: string | undefined;
-    try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const result = await abortable(this.agent.generate(
-          workingMemorySynthesisPrompt(input.message, input.event, candidate),
-          {
-            ...this.orchestratorGenerateOptions(input.message),
-            stopWhen: stopAfterSemanticModelSteps(1),
-            toolChoice: 'none',
-            prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-            abortSignal: input.signal,
-          },
-        ), input.signal);
-        candidate = finalStepResponseText(result);
-        if (candidate === undefined && isRecord(result)) {
-          candidate = nonEmptyResponseText(result.text);
+    const active = this.activeInvocation.getStore();
+    const body = await this.generateSubmittedResponse({
+      prompt: workingMemorySynthesisPrompt(input.message, input.event, undefined),
+      message: input.message,
+      signal: input.signal,
+      ...(active?.requestContext === undefined ? {} : { requestContext: active.requestContext }),
+      validateBody: (submittedBody) => {
+        assertUserSafeResponseBody(submittedBody);
+        if (!workingMemorySynthesisResponseIsSafe(submittedBody, input.event)) {
+          throw rejectedResponseError('Follow the Working Memory outcome: do not claim success for a failed or declined change, and ask for approval when required.');
         }
-        if (workingMemorySynthesisResponseIsSafe(candidate, input.event)) {
-          return responseFromText(input.message, candidate);
-        }
-      }
-    } catch (error) {
-      if (input.signal.aborted) throw error;
-    }
-    return responseFromText(input.message, workingMemoryOutcomeFallback(input.event));
+      },
+    });
+    return responseFromTrustedBody(input.message, body);
   }
 
   private async continueTransactionCapture(input: {
@@ -764,14 +799,20 @@ export class OrchestratorAgent {
               if (signal.aborted) throw error;
               return delegationFailureTurn(message);
             }
-            return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+            const body = await this.synthesizeTeamResults(
+              message,
+              invocation.teamResults,
+              signal,
+              (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
+            );
+            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
           }
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          let result: Awaited<ReturnType<typeof this.agent.generate>>;
+          let generated: Awaited<ReturnType<typeof this.generateOrchestratorTurn>>;
           try {
-            result = await abortable(this.generateOrchestratorTurn(prompt, message, invocation, signal, {
+            generated = await abortable(this.generateOrchestratorTurn(prompt, message, invocation, signal, {
               nextStep: () => ++stepOrdinal,
               getStepStartedAt: () => stepStartedAt,
               setStepStartedAt: (value) => { stepStartedAt = value; },
@@ -783,7 +824,7 @@ export class OrchestratorAgent {
               this.recordMemoryOutcome(memoryOutcomeFromError(error));
               const retryPrompt = await abortable(this.orchestratorInput(message, invocation), signal);
               try {
-                result = await abortable(this.generateOrchestratorTurn(retryPrompt, message, invocation, signal, {
+                generated = await abortable(this.generateOrchestratorTurn(retryPrompt, message, invocation, signal, {
                   nextStep: () => ++stepOrdinal,
                   getStepStartedAt: () => stepStartedAt,
                   setStepStartedAt: (value) => { stepStartedAt = value; },
@@ -795,32 +836,32 @@ export class OrchestratorAgent {
               }
             } else {
               if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
-              if (!signal.aborted
-                && invocation.memoryFailures.length === 0
-                && invocation.teamResults.length !== 0) {
-                return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+              if (error instanceof PlusOneError && error.code === 'orchestrator_response_not_submitted') {
+                throw error;
+              }
+              if (!signal.aborted && isTransientModelError(error)) {
+                throw error;
+              }
+              if (!signal.aborted && invocation.teamResults.length !== 0) {
+                const body = await this.synthesizeTeamResults(
+                  message,
+                  invocation.teamResults,
+                  signal,
+                  (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
+                );
+                return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
               }
               if (!signal.aborted && invocation.delegationFailed) {
                 return delegationFailureTurn(message);
-              }
-              if (!signal.aborted && isTransientModelError(error)) {
-                return modelUnavailableTurn(message);
               }
               throw error;
             }
           }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          if (modelResultEndedOnRetry(result)) {
-            if (invocation.teamResults.length !== 0) {
-              return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
-            }
-            if (invocation.delegationFailed) return delegationFailureTurn(message);
+          if (modelResultEndedOnRetry(generated.result)) {
             throw new ModelTemporarilyUnavailableError();
           }
-          if (invocation.delegationFailed) {
-            if (invocation.teamResults.length !== 0) {
-              return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
-            }
+          if (invocation.delegationFailed && invocation.teamResults.length === 0) {
             return delegationFailureTurn(message);
           }
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
@@ -838,66 +879,20 @@ export class OrchestratorAgent {
               pendingWorkingMemoryMutation: invocation.pendingWorkingMemoryMutation,
             };
           }
-          let body = finalStepResponseText(result);
+          const body = generated.submission.body;
           if (invocation.teamResults.length !== 0) {
-            const selected = selectTeamResult(invocation.teamResults);
-            const canUseInitialBody = selected?.status !== 'insufficient_evidence'
-              && body !== undefined
-              && userFacingSafetyMatchCategory(body) === undefined
-              && selected?.effect.state === 'none'
-              && selected.status === 'verified';
-            if (selected?.status === 'insufficient_evidence'
-              || selected?.status === 'failed'
-              || selected?.status === 'conflicted') {
-              body = responseBody(selected);
-            } else if (!canUseInitialBody) {
-              body = await this.synthesizeTeamResults(message, invocation.teamResults, signal);
-            }
-            if (selected?.effect.state === 'awaiting_confirmation'
-              && !confirmationResponseIsSafe(body, selected, invocation.transactionCaptureContinuation)) {
-              body = confirmationFallback(selected, invocation.transactionCaptureContinuation);
-            }
-            const safeMatchCategory = body === undefined ? undefined : userFacingSafetyMatchCategory(body);
-            const checkedMismatchCategory = body === undefined || selected === undefined
-              ? undefined
-              : checkedResponseMismatchCategory(message, body, selected);
-            if (checkedMismatchCategory !== undefined) {
-              logger.warn('orchestrator.checked_response.withheld', {
-                fields: { matchCategory: checkedMismatchCategory },
-              });
-            }
-            const safeBody = body !== undefined
-              && safeMatchCategory === undefined
-              && checkedMismatchCategory === undefined
-              ? body
-              : selected === undefined
-                ? undefined
-                : checkedResultFallback(selected);
-            const memorySafeBody = invocation.memoryFailures.length === 0
-              ? safeBody
-              : await this.ensureMemoryFailureResponse(message, safeBody, invocation, signal);
-            return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
-          }
-          if (body === undefined) {
-            if (invocation.delegationValidationFailed) return delegationFailureTurn(message);
-            if (invocation.memoryFailures.length !== 0) {
-              body = await this.ensureMemoryFailureResponse(message, undefined, invocation, signal);
-            }
-            if (body === undefined) throw new Error('Orchestrator returned an empty response.');
-          }
-          const unsafeMatchCategory = userFacingSafetyMatchCategory(body);
-          if (unsafeMatchCategory !== undefined) {
-            logger.warn('orchestrator.response.withheld', {
-              fields: { matchCategory: unsafeMatchCategory },
-            });
-            body = 'I could not prepare a safe response. Please try again.';
+            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
           }
           if (invocation.memoryFailures.length !== 0) {
-            body = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+            const memorySafeBody = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+            return {
+              kind: 'final',
+              response: responseFromTrustedBody(message, memorySafeBody, invocation.teamResults),
+            };
           }
           return {
             kind: 'final',
-            response: responseFromText(message, body, invocation.teamResults),
+            response: responseFromTrustedBody(message, body, invocation.teamResults),
           };
         });
         if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -929,6 +924,43 @@ export class OrchestratorAgent {
     active.memoryState.memoryDegraded = true;
   }
 
+  private assertSubmittedResponse(
+    message: InboundChannelMessageV1,
+    invocation: OrchestratorInvocation,
+    body: string,
+  ): void {
+    this.assertTeamResultResponse(
+      message,
+      invocation.teamResults,
+      body,
+      invocation.transactionCaptureContinuation,
+    );
+    if (invocation.memoryFailures.length !== 0 && !memoryFailureResponseIsSafe(body)) {
+      throw rejectedResponseError('Explain that the Working Memory operation failed and do not claim that it succeeded.');
+    }
+  }
+
+  private assertTeamResultResponse(
+    message: InboundChannelMessageV1,
+    teamResults: readonly TeamResultEnvelopeV2[],
+    body: string,
+    transactionContinuation?: TransactionCaptureContinuationV1,
+  ): void {
+    if (userFacingSafetyMatchCategory(body) !== undefined) {
+      throw rejectedResponseError('Do not expose internal implementation details or identifiers in the reply.');
+    }
+    assertUserSafeResponseBody(body);
+    const selected = selectTeamResult(teamResults);
+    if (selected === undefined) return;
+    if (checkedResponseMismatchCategory(message, body, selected) !== undefined) {
+      throw rejectedResponseError('Keep the reply consistent with the checked result and the user request.');
+    }
+    if (selected.effect.state === 'awaiting_confirmation'
+      && !confirmationResponseIsSafe(body, selected, transactionContinuation)) {
+      throw rejectedResponseError('Describe the proposed change accurately and ask whether the user wants to proceed; do not claim it already happened.');
+    }
+  }
+
   private async generateOrchestratorTurn(
     prompt: string | MastraDBMessage[],
     message: InboundChannelMessageV1,
@@ -940,12 +972,19 @@ export class OrchestratorAgent {
       setStepStartedAt(value: number): void;
       logger: CatalogLogger<'runtime.orchestrator'>;
     },
-  ) {
+  ): Promise<{
+    result: Awaited<ReturnType<OrchestratorAgentInstance['generate']>>;
+    submission: FinalResponseSubmission;
+  }> {
+    const responseSession = createFinalResponseSubmissionSession({
+      validateBody: (body) => this.assertSubmittedResponse(message, invocation, body),
+    });
     const stopAtStepLimit = stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS);
     const generationOptions = {
       ...this.orchestratorGenerateOptions(message, invocation.requestContext),
+      outputProcessors: [responseSession.outputProcessor],
       stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
-        (invocation.delegationCount > 0 && !canDelegateAnotherSubstep(invocation))
+        responseSession.hasSubmission()
         || stopAtStepLimit({ steps }),
       errorProcessors: [createTransientModelRetryProcessor({
         maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
@@ -954,7 +993,14 @@ export class OrchestratorAgent {
       toolChoice: 'auto',
       prepareStep: async () => {
         const activeTools = this.orchestratorToolNames(invocation);
-        return { activeTools, toolChoice: 'auto' as const };
+        return {
+          tools: {
+            ...Object.fromEntries(Object.entries(this.agentTools).filter(([, tool]) => tool !== undefined)),
+            [SubmitFinalResponseToolId]: responseSession.tool,
+          },
+          activeTools: [...activeTools, SubmitFinalResponseToolId],
+          toolChoice: 'auto' as const,
+        };
       },
       abortSignal: signal,
       onStepFinish: (step: {
@@ -974,7 +1020,18 @@ export class OrchestratorAgent {
         input.setStepStartedAt(Date.now());
       },
     };
-    return this.agent.generate(prompt, generationOptions as never);
+    try {
+      const result = await this.agent.generate(prompt, {
+        ...generationOptions,
+        abortSignal: signal,
+      } as never);
+      return { result, submission: responseSession.requireSubmission() };
+    } catch (error) {
+      if (responseSession.protocolViolationObserved() && isResponseProtocolTripWire(error)) {
+        throw orchestratorResponseNotSubmittedError();
+      }
+      throw error;
+    }
   }
 
   private orchestratorToolNames(invocation: OrchestratorInvocation): string[] {
@@ -990,6 +1047,41 @@ export class OrchestratorAgent {
     return names;
   }
 
+  private async generateSubmittedResponse(input: {
+    prompt: string | MastraDBMessage[];
+    message: InboundChannelMessageV1;
+    signal: AbortSignal;
+    requestContext?: OrchestratorRequestContext;
+    validateBody(body: string): void;
+  }): Promise<string> {
+    const responseSession = createFinalResponseSubmissionSession({
+      validateBody: input.validateBody,
+    });
+    const stopAtResponseLimit = stopAfterSemanticModelSteps(2);
+    try {
+      await abortable(this.agent.generate(input.prompt, {
+        ...this.orchestratorGenerateOptions(input.message, input.requestContext),
+        outputProcessors: [responseSession.outputProcessor],
+        stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+          responseSession.hasSubmission() || stopAtResponseLimit({ steps }),
+        maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+        prepareStep: async () => ({
+          tools: { [SubmitFinalResponseToolId]: responseSession.tool },
+          activeTools: [SubmitFinalResponseToolId],
+          toolChoice: { type: 'tool' as const, toolName: SubmitFinalResponseToolId },
+        }),
+        toolChoice: { type: 'tool' as const, toolName: SubmitFinalResponseToolId },
+        abortSignal: input.signal,
+      } as never), input.signal);
+      return responseSession.requireSubmission().body;
+    } catch (error) {
+      if (responseSession.protocolViolationObserved() && isResponseProtocolTripWire(error)) {
+        throw orchestratorResponseNotSubmittedError();
+      }
+      throw error;
+    }
+  }
+
   private async ensureMemoryFailureResponse(
     message: InboundChannelMessageV1,
     candidate: string | undefined,
@@ -997,27 +1089,17 @@ export class OrchestratorAgent {
     signal: AbortSignal,
   ): Promise<string> {
     if (memoryFailureResponseIsSafe(candidate)) return candidate!;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await abortable(this.agent.generate(
-        memoryFailureSynthesisPrompt(message, invocation.memoryFailures, candidate),
-        {
-          ...this.orchestratorGenerateOptions(message, invocation.requestContext),
-          stopWhen: stopAfterSemanticModelSteps(1),
-          toolChoice: 'none',
-          prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-          abortSignal: signal,
-        },
-      ), signal);
-      const synthesized = finalStepResponseText(result);
-      if (memoryFailureResponseIsSafe(synthesized)) return synthesized;
-      candidate = synthesized;
-    }
-    throw new PlusOneError({
-      category: 'runtime_failure',
-      code: 'working_memory_response_failed',
-      message: 'Working Memory failure response could not be synthesized.',
-      retry: 'after_backoff',
-      receiptLookupRequired: false,
+    return this.generateSubmittedResponse({
+      prompt: memoryFailureSynthesisPrompt(message, invocation.memoryFailures, undefined),
+      message,
+      signal,
+      requestContext: invocation.requestContext,
+      validateBody: (body) => {
+        assertUserSafeResponseBody(body);
+        if (!memoryFailureResponseIsSafe(body)) {
+          throw rejectedResponseError('Explain that the Working Memory operation failed and do not claim that it succeeded.');
+        }
+      },
     });
   }
 
@@ -1075,21 +1157,16 @@ export class OrchestratorAgent {
     message: InboundChannelMessageV1,
     teamResults: readonly TeamResultEnvelopeV2[],
     signal: AbortSignal,
-  ): Promise<string | undefined> {
-    try {
-      const active = this.activeInvocation.getStore();
-      const result = await abortable(this.agent.generate(finalSynthesisPrompt(message, teamResults), {
-        ...this.orchestratorGenerateOptions(message, active?.requestContext),
-        stopWhen: stopAfterSemanticModelSteps(1),
-        toolChoice: 'none',
-        prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-        abortSignal: signal,
-      }), signal);
-      return finalStepResponseText(result);
-    } catch (error) {
-      if (signal.aborted) throw error;
-      return undefined;
-    }
+    validateBody?: (body: string) => void,
+  ): Promise<string> {
+    const active = this.activeInvocation.getStore();
+    return this.generateSubmittedResponse({
+      prompt: finalSynthesisPrompt(message, teamResults),
+      message,
+      signal,
+      ...(active?.requestContext === undefined ? {} : { requestContext: active.requestContext }),
+      validateBody: validateBody ?? ((body) => this.assertTeamResultResponse(message, teamResults, body)),
+    });
   }
 }
 
@@ -1295,13 +1372,6 @@ function workingMemorySynthesisResponseIsSafe(
   return workingMemoryClaimsFailure(value) && !workingMemoryClaimsSuccess(value);
 }
 
-function workingMemoryOutcomeFallback(event: WorkingMemorySynthesisEvent): string {
-  if (event.kind === 'confirmation') return `I can make that change to ${event.summary}. Would you like me to proceed?`;
-  if (event.kind === 'applied') return `Done — I verified that ${event.summary} is in place.`;
-  if (event.kind === 'rejected') return `Okay — I left ${event.summary} unchanged.`;
-  return `I couldn't complete the change to ${event.summary}, so nothing was updated.`;
-}
-
 function workingMemoryClaimsFailure(value: string): boolean {
   return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|expired|stale|changed|no changes?|nothing changed|changes? were not made|left .* unchanged|kept .* unchanged|not completed|not complete|didn['’]t|did not|didn['’]t go through|did not go through|cannot|can['’]t|won['’]t|will not|not make|not applied|not stored|not saved|not updated)\b/i.test(value);
 }
@@ -1379,19 +1449,18 @@ function memoryFailureFromOutcome(outcome: WorkingMemoryOperationOutcome): Orche
 function responseFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV2[],
-  synthesizedBody?: string,
+  synthesizedBody: string,
   transactionContinuation?: TransactionCaptureContinuationV1,
 ): OrchestratorFinalResponseV1 {
   const teamResult = selectTurnTeamResult(teamResults, transactionContinuation);
-  if (teamResult === undefined) throw new Error('Missing team result for fallback response');
-  const body = synthesizedBody ?? responseBody(teamResult);
-  return responseFromText(message, body, [teamResult]);
+  if (teamResult === undefined) throw new Error('Missing team result for response envelope.');
+  return responseFromTrustedBody(message, synthesizedBody, [teamResult]);
 }
 
 function turnFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV2[],
-  synthesizedBody?: string,
+  synthesizedBody: string,
   transactionContinuation?: TransactionCaptureContinuationV1,
 ): OrchestratorTurnResult {
   const response = responseFromTeamResults(message, teamResults, synthesizedBody, transactionContinuation);
@@ -1416,7 +1485,7 @@ function turnFromTeamResults(
 function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
   return {
     kind: 'final',
-    response: responseFromText(
+    response: responseFromTrustedBody(
       message,
       'I could not complete the specialist check, so I cannot give you a checked answer yet. '
         + 'No changes were made. Please try again.',
@@ -1424,17 +1493,7 @@ function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTu
   };
 }
 
-function modelUnavailableTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
-  return {
-    kind: 'final',
-    response: responseFromText(
-      message,
-      'The model service is temporarily busy. No changes were made. Please try again in a moment.',
-    ),
-  };
-}
-
-function responseFromText(
+function responseFromTrustedBody(
   message: InboundChannelMessageV1,
   body: string,
   teamResults: readonly TeamResultEnvelopeV2[] = [],
@@ -1469,32 +1528,13 @@ function responseFromText(
   });
 }
 
-function nonEmptyResponseText(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const body = value.trim();
-  return body.length === 0 ? undefined : body;
+function rejectedResponseError(message: string): PlusOneError {
+  return finalResponseRepairError(message);
 }
 
-function finalStepResponseText(result: unknown): string | undefined {
-  if (!isRecord(result)) return undefined;
-  if (!Array.isArray(result.steps) || result.steps.length === 0) {
-    return nonEmptyResponseText(result.text);
-  }
-  let lastToolStep = -1;
-  for (let index = 0; index < result.steps.length; index += 1) {
-    if (hasToolCalls(result.steps[index])) lastToolStep = index;
-  }
-  for (let index = result.steps.length - 1; index > lastToolStep; index -= 1) {
-    const step = result.steps[index];
-    if (hasToolCalls(step) || !isRecord(step)) continue;
-    const body = nonEmptyResponseText(step.text);
-    if (body !== undefined) return body;
-  }
-  return lastToolStep === -1 ? nonEmptyResponseText(result.text) : undefined;
-}
-
-function hasToolCalls(step: unknown): boolean {
-  return isRecord(step) && Array.isArray(step.toolCalls) && step.toolCalls.length > 0;
+function isResponseProtocolTripWire(error: unknown): boolean {
+  if (!isRecord(error) || error.processorId !== 'orchestrator-final-response-protocol') return false;
+  return isRecord(error.options) && error.options.retry === true;
 }
 
 function delegationCommentary(team: string, request: unknown): string {
@@ -1536,35 +1576,6 @@ function statusRank(status: TeamResultEnvelopeV2['status']): number {
   if (status === 'insufficient_evidence') return 2;
   if (status === 'conflicted') return 3;
   return 4;
-}
-
-function responseBody(teamResult: TeamResultEnvelopeV2): string {
-  if (teamResult.status === 'insufficient_evidence') {
-    const questions = clarificationQuestions(teamResult);
-    return questions.length === 0
-      ? 'What additional details can you provide?'
-      : questions.join('\n\n');
-  }
-  if (teamResult.status === 'verified') {
-    if (teamResult.team === 'budgeting'
-      && teamResult.claims.some((claim) => claim.claimId === 'budgeting-scenario-evidence')) {
-      return 'The budgeting team completed a verified comparison of the requested scenarios.';
-    }
-    const view = finalSynthesisTeamResultView(teamResult);
-    if (view.effectState === 'persisted') {
-      const change = view.proposedChange;
-      if (change?.action === 'create_account'
-        && change.accountName !== undefined
-        && change.accountingClass !== undefined
-        && change.normalBalance !== undefined
-        && change.nativeCurrency !== undefined) {
-        return `I added ${change.accountName} as an ${change.nativeCurrency} ${change.accountingClass} account with a normal ${change.normalBalance} balance.`;
-      }
-      return 'I completed the requested change and verified it.';
-    }
-    return 'I found the requested information, but I could not safely summarize it. Please try again.';
-  }
-  return 'I could not complete that request safely. Please try again.';
 }
 
 function confirmationResponseIsSafe(
@@ -1615,37 +1626,6 @@ function canDelegateAnotherSubstep(input: {
     || result.effect.state === 'unresolved');
 }
 
-function confirmationFallback(
-  teamResult: TeamResultEnvelopeV2,
-  transactionContinuation?: TransactionCaptureContinuationV1,
-): string {
-  const proposedChange = finalSynthesisTeamResultView(teamResult).proposedChange;
-  if (proposedChange?.action === 'create_account'
-    && proposedChange.accountName !== undefined
-    && proposedChange.accountingClass !== undefined
-    && proposedChange.normalBalance !== undefined
-    && proposedChange.nativeCurrency !== undefined) {
-    if (transactionContinuation !== undefined) {
-      const known = transactionContinuation.request.known;
-      const transactionDetails = [
-        known.amount === undefined || known.currency === undefined ? undefined : `${known.currency} ${known.amount}`,
-        known.paymentAccountName === undefined
-          ? undefined
-          : `${proposedChange.accountingClass === 'income' ? 'into' : 'from'} ${known.paymentAccountName}`,
-        known.occurredOn === undefined ? undefined : `dated ${known.occurredOn}`,
-      ].filter((detail): detail is string => detail !== undefined).join(' ');
-      const categoryKind = proposedChange.accountingClass === 'income'
-        ? 'income category'
-        : proposedChange.accountingClass === 'expense'
-          ? 'spending category'
-          : `${proposedChange.accountingClass} account`;
-      return `I’ll add ${proposedChange.accountName} as a new ${categoryKind} in ${proposedChange.nativeCurrency}, then record ${transactionDetails} under ${proposedChange.accountName}. Would you like me to proceed?`;
-    }
-    return `I’ll add ${proposedChange.accountName} as an ${proposedChange.nativeCurrency} ${proposedChange.accountingClass} account with a normal ${proposedChange.normalBalance} balance. Would you like me to proceed?`;
-  }
-  return 'I have a checked proposal ready. Would you like me to proceed?';
-}
-
 function isCreateTransactionCategoryProposal(
   result: TeamResultEnvelopeV2,
 ): result is TeamResultEnvelopeV2 & {
@@ -1655,33 +1635,6 @@ function isCreateTransactionCategoryProposal(
   const proposal = ChartOfAccountsProposalSchemaV1.safeParse(result.effect.command.payload);
   return proposal.success && proposal.data.action === 'create_account'
     && (proposal.data.accountingClass === 'expense' || proposal.data.accountingClass === 'income');
-}
-
-function categoryTransactionCompletionBody(
-  pending: TeamResultEnvelopeV2,
-  transaction: TeamResultEnvelopeV2,
-  continuation: TransactionCaptureContinuationV1,
-): string | undefined {
-  if (!isCreateTransactionCategoryProposal(pending)
-    || transaction.status !== 'verified'
-    || transaction.effect.state !== 'persisted') return undefined;
-  const category = ChartOfAccountsProposalSchemaV1.safeParse(pending.effect.command.payload);
-  if (!category.success || category.data.action !== 'create_account') return undefined;
-  const proposalArtifactId = transaction.effect.proposal.artifactId;
-  const artifact = transaction.makerArtifacts.find((candidate) =>
-    candidate.artifactId === proposalArtifactId);
-  if (artifact === undefined) return undefined;
-  const maker = MakerArtifactSchemaV1.safeParse(artifact.payload);
-  if (!maker.success) return undefined;
-  const proposal = AccountingJournalMutationProposalSchemaV1.safeParse(maker.data.output);
-  if (!proposal.success || proposal.data.operation !== 'post') return undefined;
-  const journal = proposal.data.draft.journal;
-  const amount = journal.postings[0]?.transactionAmount;
-  const paymentAccountName = continuation.request.known.paymentAccountName;
-  if (amount === undefined || paymentAccountName === undefined) return undefined;
-  const categoryKind = category.data.accountingClass === 'income' ? 'income category' : 'spending category';
-  const accountPreposition = category.data.accountingClass === 'income' ? 'into' : 'from';
-  return `I added ${category.data.name} as a new ${categoryKind} and recorded ${journal.transactionCurrency} ${amount} ${accountPreposition} ${paymentAccountName} on ${journal.occurredOn} under ${category.data.name}.`;
 }
 
 class InternalIdentifierResponseError extends Error {
@@ -1725,70 +1678,6 @@ function checkedResponseMismatchCategory(
   return !directionRequested && directionClaimed
     ? 'query_unrequested_posting_direction'
     : undefined;
-}
-
-function checkedResultFallback(result: TeamResultEnvelopeV2): string | undefined {
-  if (result.team !== 'query' || result.status !== 'verified' || result.effect.state !== 'none') {
-    return undefined;
-  }
-  return categorizedTransactionFallback(finalSynthesisTeamResultView(result));
-}
-
-function categorizedTransactionFallback(view: FinalSynthesisTeamResultView): string | undefined {
-  const rows = view.checkedData.flatMap((data) => data.rows);
-  const categories = rows.filter((row) => {
-    const accountingClass = queryRowText(row, 'accounting class');
-    return accountingClass === 'expense' || accountingClass === 'income';
-  });
-  const descriptions = categories.flatMap((category) => {
-    const amount = queryRowText(category, 'account native amount');
-    const currency = queryRowText(category, 'account native currency');
-    const date = queryRowText(category, 'effective on');
-    const categoryName = queryRowText(category, 'account name');
-    if (amount === undefined || currency === undefined || date === undefined || categoryName === undefined) return [];
-    const payment = rows.find((candidate) => {
-      const accountingClass = queryRowText(candidate, 'accounting class');
-      return (accountingClass === 'asset' || accountingClass === 'liability')
-        && queryRowText(candidate, 'effective on') === date
-        && queryRowText(candidate, 'account native amount') === amount
-        && queryRowText(candidate, 'account native currency') === currency
-        && queryRowText(candidate, 'description') === queryRowText(category, 'description');
-    });
-    const paymentName = payment === undefined ? undefined : queryRowText(payment, 'account name');
-    return [`${currency} ${displayDecimalAmount(amount)} transaction on ${date} under ${categoryName}${paymentName === undefined ? '' : `, using ${paymentName}`}`];
-  });
-  if (descriptions.length === 0) return undefined;
-  if (descriptions.length === 1) return `I found a ${descriptions[0]}.`;
-  return `I found these transactions:\n${descriptions.map((description) => `- ${description}`).join('\n')}`;
-}
-
-function queryRowText(
-  row: Record<string, string | number | boolean | null>,
-  key: string,
-): string | undefined {
-  const value = row[key];
-  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
-}
-
-function displayDecimalAmount(value: string): string {
-  if (!/^-?\d+(?:\.\d+)?$/.test(value)) return value;
-  return value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
-}
-
-function clarificationQuestions(teamResult: TeamResultEnvelopeV2): string[] {
-  const acceptedArtifactIds = new Set(teamResult.checkerVerdicts.flatMap((verdict) =>
-    verdict.verdict === 'accepted' ? [verdict.coveredArtifactId] : []));
-  return teamResult.makerArtifacts.flatMap((artifact) => {
-    if (!acceptedArtifactIds.has(artifact.artifactId)) return [];
-    const maker = isRecord(artifact.payload) ? artifact.payload : undefined;
-    const output = maker !== undefined && isRecord(maker.output) ? maker.output : undefined;
-    if (output === undefined || !Array.isArray(output.questions)) return [];
-    return output.questions.flatMap((question) => {
-      if (typeof question !== 'string') return [];
-      const safeQuestion = userFacingText(question);
-      return safeQuestion === undefined ? [] : [safeQuestion];
-    });
-  });
 }
 
 function finalSynthesisPrompt(

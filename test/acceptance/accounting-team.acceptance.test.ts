@@ -46,7 +46,8 @@ import {
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
+import { submitOrchestratorFinalResponse } from '../helpers/orchestrator-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const bookId = 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -226,7 +227,7 @@ async function runAccountingScenario(input: {
     generate: vi.fn(async (messages: readonly { content: string }[], options: unknown) => {
       calls.push(agentId);
       if (agentId === 'accounting-lead') {
-        return submitContractResult(options, TeamLeadPlanSchemaV1.parse({
+        return submitContractResult(options, teamLeadPlanDraft(TeamLeadPlanSchemaV1.parse({
           schemaName: 'team-lead-plan',
           schemaVersion: 1,
           recommendedStrategyName: 'single-maker-checker',
@@ -234,7 +235,7 @@ async function runAccountingScenario(input: {
             missingPaymentAccount: input.missingPaymentAccount === true,
           }) }],
           stopCondition: { code: 'accounting-result', description: 'Return one checked accounting result.' },
-        }));
+        })));
       }
       if (agentId.endsWith('-maker')) return submitContractResult(options, makerOutputs.shift()!);
       const verificationTask = JSON.parse(messages[0]!.content) as {
@@ -368,7 +369,8 @@ async function runAccountingScenario(input: {
     cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
   };
   let teamResult: TeamResultEnvelopeV2 | undefined;
-  const generate = vi.fn(async () => {
+  const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+    const options = rawOptions as Record<string, unknown>;
     if (teamResult === undefined) {
       teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'accounting',
@@ -381,16 +383,16 @@ async function runAccountingScenario(input: {
       });
     }
     if (teamResult.status === 'verified') {
-      return {
-        text: 'The accounting request is ready.'
-          + (input.workCellId === 'chart-of-accounts' ? ' External confirmation is required before it is saved.' : ''),
-      };
+      const body = input.workCellId === 'chart-of-accounts'
+        ? 'I’ll add Groceries as a new expense account with a normal debit balance in USD. Would you like me to proceed?'
+        : 'The accounting request is ready.';
+      return submitOrchestratorFinalResponse(options, body);
     }
     if (teamResult.status === 'insufficient_evidence') {
       const question = teamResult.outstanding.find((value) => value.includes('?'));
-      return { text: question ?? 'What additional details can you provide?' };
+      return submitOrchestratorFinalResponse(options, question ?? 'What additional details can you provide?');
     }
-    return { text: 'I could not complete that request safely. Please try again.' };
+    return submitOrchestratorFinalResponse(options, 'I could not complete that request safely. Please try again.');
   });
   const orchestrator = new OrchestratorAgent({
     model: models.orchestrator,

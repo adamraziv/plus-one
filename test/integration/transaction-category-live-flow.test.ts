@@ -15,7 +15,8 @@ import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js'
 import { createMastra } from '../../apps/engine/src/mastra.js';
 import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from '../../apps/engine/src/workflows/orchestrator-loop.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
+import { submitOrchestratorFinalResponse } from '../helpers/orchestrator-agent-test-double.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const ids = {
@@ -55,7 +56,7 @@ describe('transaction category live flow', () => {
       const invocation = TeamLeadInvocationSchemaV1.parse(
         JSON.parse(messages[0]?.content ?? '{}'),
       );
-      return submitContractResult(options, invocation.suggestedPlan);
+      return submitContractResult(options, teamLeadPlanDraft(invocation.suggestedPlan));
     });
     const agentSystem = createAgentSystem({
       models: {
@@ -73,26 +74,27 @@ describe('transaction category live flow', () => {
       agentFactory: () => ({ generate: vi.fn() } as never),
     });
     const teamRuntime = createTeamRuntime({ pools, agentSystem });
-    const generate = vi.fn(async (prompt: unknown, options?: { toolChoice?: unknown }) => {
-      if (options?.toolChoice === 'none') {
-        const text = typeof prompt === 'string' && prompt.includes('Eating Out')
-          ? 'I recorded IDR 50000 from Bank ABC on 2026-07-16 under Eating Out.'
+    const generate = vi.fn(async (prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as Record<string, unknown>;
+      if (typeof options.toolChoice === 'object') {
+        const text = JSON.stringify(prompt).includes('Eating Out')
+          ? 'I added Eating Out as a new spending category and recorded IDR 50000 from Bank ABC on 2026-07-16 under Eating Out.'
           : 'I have a checked result ready.';
-        return { text };
+        return submitOrchestratorFinalResponse(options, text);
       }
-      const body = typeof prompt === 'string' ? prompt.toLowerCase() : '';
+      const body = JSON.stringify(prompt).toLowerCase();
       if (body.includes('add a transaction to bank abc')) {
-        await executeDelegate(orchestrator, {
+        const result = TeamResultEnvelopeSchemaV2.parse(await executeDelegate(orchestrator, {
           team: 'accounting',
           request: transactionDraft(
             'Add a transaction to Bank ABC.',
             { paymentAccountName: 'Bank ABC' },
           ),
-        });
-        return { text: 'I need the transaction details.' };
+        }));
+        return submitOrchestratorFinalResponse(options, result.outstanding.join('\n\n'));
       }
       if (body.includes('50k idr')) {
-        await executeDelegate(orchestrator, {
+        const result = TeamResultEnvelopeSchemaV2.parse(await executeDelegate(orchestrator, {
           team: 'accounting',
           request: transactionDraft(
             'Record IDR 50000 from Bank ABC under eating out yesterday.',
@@ -103,11 +105,11 @@ describe('transaction category live flow', () => {
               categoryName: 'eating out',
             },
           ),
-        });
-        return { text: 'I found the transaction details.' };
+        }));
+        return submitOrchestratorFinalResponse(options, result.outstanding.join('\n\n'));
       }
       await executeDelegate(orchestrator, { team: 'accounting', request: chartDraft() });
-      return { text: 'I have a category change ready.' };
+      return submitOrchestratorFinalResponse(options, 'I’ll add Eating Out as a new expense category with a normal debit balance in IDR, then record IDR 50000 from Bank ABC dated yesterday under Eating Out. Would you like me to proceed?');
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },

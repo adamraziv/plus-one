@@ -22,6 +22,19 @@ export async function submitContractResult(
   return { text: '', toolResults };
 }
 
+export function teamLeadPlanDraft(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const plan = value as Record<string, unknown>;
+  if (!Array.isArray(plan.work)) return value;
+  return {
+    ...plan,
+    work: plan.work.map((work) => {
+      if (work === null || typeof work !== 'object' || Array.isArray(work)) return work;
+      return { workCellId: (work as Record<string, unknown>).workCellId };
+    }),
+  };
+}
+
 export function captureContractSubmission(extraOptions: Record<string, unknown> = {}): {
   options: Record<string, unknown>;
   submitted(): unknown;

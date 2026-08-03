@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { teamLeadPlanDraft } from './contract-agent-test-double.js';
 
 const Provider = 'openai';
 const Model = 'plus-one-test-model';
@@ -129,7 +130,7 @@ function suggestedTeamLeadPlan(body: Record<string, unknown>): unknown | undefin
       if (invocation.schemaName === 'team-lead-invocation'
         && invocation.suggestedPlan !== null
         && invocation.suggestedPlan !== undefined) {
-        return invocation.suggestedPlan;
+        return teamLeadPlanDraft(invocation.suggestedPlan);
       }
     } catch {
       continue;

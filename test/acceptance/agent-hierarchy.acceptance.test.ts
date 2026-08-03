@@ -26,9 +26,10 @@ import {
   type VerificationTaskSnapshot,
 } from '@plus-one/runtime';
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
+import { submitOrchestratorFinalResponse } from '../helpers/orchestrator-agent-test-double.js';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const taskId = 'task_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -141,13 +142,13 @@ describe('agent hierarchy acceptance', () => {
       generate: vi.fn(async (messages: readonly { content: string }[], options: unknown) => {
         calls.push(agentId);
         if (agentId === 'query-lead') {
-          return submitContractResult(options, TeamLeadPlanSchemaV1.parse({
+          return submitContractResult(options, teamLeadPlanDraft(TeamLeadPlanSchemaV1.parse({
             schemaName: 'team-lead-plan',
             schemaVersion: 1,
             recommendedStrategyName: 'single-maker-checker',
             work: [{ workCellId: 'query-evidence', makerInput: evidenceRequest() }],
             stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
-          }));
+          })));
         }
         if (agentId === 'query-maker') {
           return submitContractResult(
@@ -269,7 +270,7 @@ describe('agent hierarchy acceptance', () => {
       resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
       cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
     };
-    const generate = vi.fn(async (messages) => {
+    const generate = vi.fn(async (messages: unknown, options: unknown) => {
       expect(messages).toContain('List accounts.');
       const result = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'query',
@@ -281,7 +282,7 @@ describe('agent hierarchy acceptance', () => {
           coverage: ['reporting.accounts'],
         },
       });
-      return { text: result.claims[0]!.text };
+      return submitOrchestratorFinalResponse(options as Record<string, unknown>, result.claims[0]!.text);
     });
     const orchestrator = new OrchestratorAgent({
       model: models.orchestrator,

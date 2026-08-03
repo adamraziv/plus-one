@@ -27,7 +27,7 @@ import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 import { seedAccountingProposal } from '../helpers/accounting-team.js';
 import { createExecutor } from '../helpers/checked-mutation.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
 
 const ids = {
   householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -224,7 +224,7 @@ describe('accounting chart confirmation flow', () => {
         throw new Error('Only the accounting lead should be called for the deterministic chart path.');
       }
       leadInvocation = invocation;
-      return submitContractResult(options, invocation.suggestedPlan);
+      return submitContractResult(options, teamLeadPlanDraft(invocation.suggestedPlan));
     });
     const pools = createDatabasePools(context.roleUrls);
     close = () => closeDatabasePools(pools);

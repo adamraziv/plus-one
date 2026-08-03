@@ -2017,8 +2017,8 @@ async function runMissingCategoryPrerequisiteScenario(
     expect(await prerequisiteEffectCounts(owner)).toEqual(before);
 
     const sequentialLoopRequests = server.modelRequests().filter(({ body }) =>
-      latestUserText(body) === scenario.prerequisiteMessage
-      && lastMessageRole(body) === 'tool'
+      bodyUserTexts(body).includes(scenario.prerequisiteMessage)
+      && latestToolResultText(body).includes('"effectState":"none"')
       && hasFunctionTool(body, 'delegateTeam'));
     expect(sequentialLoopRequests.length).toBeGreaterThanOrEqual(1);
 
@@ -2053,10 +2053,13 @@ async function runMissingCategoryPrerequisiteScenario(
 }
 
 function createScenarioResponder(scenario: DirectTransactionScenario): OpenAiCompatibleTestResponder {
+  const trackInbound = createInboundTurnTracker([scenario.mutationMessage, scenario.queryMessage]);
   return ({ body }) => {
     if (hasFunctionTool(body, 'submitResult')) return undefined;
-    const userText = latestUserText(body);
-    if (hasFunctionTool(body, 'delegateTeam') && lastMessageRole(body) === 'user') {
+    const modelUserText = latestUserText(body);
+    const tracked = trackInbound(modelUserText, bodyUserTexts(body));
+    const userText = tracked.fresh ? tracked.text : currentSynthesisUserText(body) ?? tracked.text;
+    if (hasFunctionTool(body, 'delegateTeam') && tracked.fresh) {
       const isQuery = userText === scenario.queryMessage;
       return {
         finishReason: 'tool_calls',
@@ -2081,41 +2084,46 @@ function createScenarioResponder(scenario: DirectTransactionScenario): OpenAiCom
     }
     const safeContext = userText;
     if (safeContext.includes('Safe checked context:') && containsMaterialFacts(safeContext, scenario)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
-        },
-      };
+      return finalResponseCompletion(
+        `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
     }
     const checkedContext = latestToolResultText(body);
-    if (containsMaterialFacts(checkedContext, scenario)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `The household has a ${scenario.currency} ${scenario.amount} transaction from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
-        },
-      };
+    if (userText === scenario.mutationMessage) {
+      return finalResponseCompletion(
+        `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
     }
-    return {
-      finishReason: 'stop',
-      message: { role: 'assistant', content: 'I could not verify the requested accounting facts.' },
-    };
+    if (userText === scenario.queryMessage) {
+      return finalResponseCompletion(
+        `The household has a ${scenario.currency} ${scenario.amount} transaction from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
+    }
+    if (containsMaterialFacts(checkedContext, scenario)) {
+      return finalResponseCompletion(
+        userText === scenario.mutationMessage
+          ? `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`
+          : `The household has a ${scenario.currency} ${scenario.amount} transaction from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
+    }
+    return finalResponseCompletion('I could not verify the requested accounting facts.');
   };
 }
 
 function createAccountScenarioResponder(scenario: AccountCreationScenario): OpenAiCompatibleTestResponder {
+  const trackInbound = createInboundTurnTracker([
+    scenario.mutationMessage,
+    scenario.confirmationMessage,
+    scenario.queryMessage,
+  ]);
   return ({ body }) => {
     if (hasFunctionTool(body, 'submitResult')) return undefined;
-    const userText = latestUserText(body);
-    if (hasFunctionTool(body, 'delegateTeam') && lastMessageRole(body) === 'user') {
+    const modelUserText = latestUserText(body);
+    const tracked = trackInbound(modelUserText, bodyUserTexts(body));
+    const userText = tracked.fresh ? tracked.text : currentSynthesisUserText(body) ?? tracked.text;
+    if (hasFunctionTool(body, 'delegateTeam') && tracked.fresh) {
       if (userText !== scenario.mutationMessage && userText !== scenario.queryMessage) {
-        return {
-          finishReason: 'stop',
-          message: { role: 'assistant', content: 'There is no pending account change to confirm.' },
-        };
+        return finalResponseCompletion('There is no pending account change to confirm.');
       }
       const isQuery = userText === scenario.queryMessage;
       return {
@@ -2139,38 +2147,34 @@ function createAccountScenarioResponder(scenario: AccountCreationScenario): Open
     }
     if (userText.includes('Safe checked context:') && containsAccountFacts(userText, scenario)) {
       const awaiting = userText.includes('"effectState":"awaiting_confirmation"');
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: awaiting
-            ? `I'll create ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance. Would you like me to proceed?`
-            : `I created ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance.`,
-        },
-      };
+      return finalResponseCompletion(awaiting
+        ? `I'll create ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance. Would you like me to proceed?`
+        : `I created ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance.`);
     }
     const checkedContext = latestToolResultText(body);
     if (checkedContext.includes(scenario.accountName)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `${scenario.accountName} is listed in the household accounts.`,
-        },
-      };
+      return finalResponseCompletion(userText === scenario.mutationMessage
+        ? `I'll create ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance. Would you like me to proceed?`
+        : `${scenario.accountName} is listed in the household accounts.`);
     }
-    return {
-      finishReason: 'stop',
-      message: { role: 'assistant', content: 'I could not verify the requested account facts.' },
-    };
+    return finalResponseCompletion('I could not verify the requested account facts.');
   };
 }
 
 function createAccountDecisionResponder(scenario: AccountDecisionScenario): OpenAiCompatibleTestResponder {
+  const trackInbound = createInboundTurnTracker([
+    scenario.mutationMessage,
+    scenario.decisionMessage,
+    scenario.queryMessage,
+  ]);
   return ({ body }) => {
     if (hasFunctionTool(body, 'submitResult')) return undefined;
-    const userText = latestUserText(body);
-    if (hasFunctionTool(body, 'delegateTeam') && lastMessageRole(body) === 'user') {
+    const modelUserText = latestUserText(body);
+    const tracked = trackInbound(modelUserText, bodyUserTexts(body));
+    const userText = tracked.text === scenario.queryMessage
+      ? tracked.text
+      : tracked.fresh ? tracked.text : currentSynthesisUserText(body) ?? tracked.text;
+    if (hasFunctionTool(body, 'delegateTeam') && tracked.fresh) {
       if (userText === scenario.mutationMessage || userText === scenario.queryMessage) {
         const isQuery = userText === scenario.queryMessage;
         return {
@@ -2192,44 +2196,37 @@ function createAccountDecisionResponder(scenario: AccountDecisionScenario): Open
           },
         };
       }
-      return {
-        finishReason: 'stop',
-        message: { role: 'assistant', content: 'There is no new account request.' },
-      };
+      return finalResponseCompletion('There is no new account request.');
     }
     if (userText.includes('Safe checked context:') && containsAccountFacts(userText, scenario)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `I'll create ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance. Would you like me to proceed?`,
-        },
-      };
+      return finalResponseCompletion(
+        `I'll create ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance. Would you like me to proceed?`,
+      );
     }
     const checkedContext = latestToolResultText(body);
-    if (userText === scenario.queryMessage && !checkedContext.includes(scenario.accountName)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `${scenario.accountName} is not listed in the household accounts.`,
-        },
-      };
+    if (userText === scenario.mutationMessage
+      && checkedContext.includes('"effectState":"awaiting_confirmation"')) {
+      return finalResponseCompletion(
+        `I'll create ${scenario.accountName} as a ${scenario.currency} ${scenario.accountingClass} account with a normal ${scenario.normalBalance} balance. Would you like me to proceed?`,
+      );
     }
-    return {
-      finishReason: 'stop',
-      message: { role: 'assistant', content: 'I could not verify the requested account facts.' },
-    };
+    if (userText === scenario.queryMessage && !checkedContext.includes(scenario.accountName)) {
+      return finalResponseCompletion(`${scenario.accountName} is not listed in the household accounts.`);
+    }
+    return finalResponseCompletion('I could not verify the requested account facts.');
   };
 }
 
 function createInvalidTransactionResponder(
   scenario: InvalidTransactionScenario,
 ): OpenAiCompatibleTestResponder {
+  const trackInbound = createInboundTurnTracker([scenario.mutationMessage, scenario.queryMessage]);
   return ({ body }) => {
     if (hasFunctionTool(body, 'submitResult')) return undefined;
-    const userText = latestUserText(body);
-    if (hasFunctionTool(body, 'delegateTeam') && lastMessageRole(body) === 'user') {
+    const modelUserText = latestUserText(body);
+    const tracked = trackInbound(modelUserText, bodyUserTexts(body));
+    const userText = tracked.fresh ? tracked.text : currentSynthesisUserText(body) ?? tracked.text;
+    if (hasFunctionTool(body, 'delegateTeam') && tracked.fresh) {
       const isQuery = userText === scenario.queryMessage;
       return {
         finishReason: 'tool_calls',
@@ -2252,96 +2249,86 @@ function createInvalidTransactionResponder(
     }
     const checkedContext = latestToolResultText(body);
     if (userText === scenario.queryMessage && checkedContext.length > 0) {
-      return {
-        finishReason: 'stop',
-        message: { role: 'assistant', content: 'No household transactions were found.' },
-      };
+      return finalResponseCompletion('No household transactions were found.');
     }
     const safeContext = `${userText} ${checkedContext}`.toLowerCase();
     if (scenario.invalidKind === 'date'
       && (safeContext.includes('date') || safeContext.includes('occurred_on'))) {
-      return {
-        finishReason: 'stop',
-        message: { role: 'assistant', content: 'Please provide a valid transaction date.' },
-      };
+      return finalResponseCompletion('Please provide a valid date for the transaction.');
     }
     if (scenario.invalidKind === 'amount' && safeContext.includes('amount')) {
-      return {
-        finishReason: 'stop',
-        message: { role: 'assistant', content: 'Please provide a valid positive amount greater than zero.' },
-      };
+      return finalResponseCompletion('Please provide a valid positive amount greater than zero.');
     }
-    return {
-      finishReason: 'stop',
-      message: { role: 'assistant', content: 'I could not verify this transaction request.' },
-    };
+    return finalResponseCompletion('I could not verify this transaction request.');
   };
 }
 
 function createMultiTurnTransactionResponder(
   scenario: MultiTurnTransactionScenario,
 ): OpenAiCompatibleTestResponder {
+  const trackInbound = createInboundTurnTracker([
+    ...scenario.turns.map((turn) => turn.message),
+    scenario.queryMessage,
+  ]);
   return ({ body }) => {
     if (hasFunctionTool(body, 'submitResult')) return undefined;
-    const userText = latestUserText(body);
-    if (hasFunctionTool(body, 'delegateTeam') && lastMessageRole(body) === 'user') {
+    const modelUserText = latestUserText(body);
+    const tracked = trackInbound(modelUserText, bodyUserTexts(body));
+    const userText = tracked.fresh ? tracked.text : currentSynthesisUserText(body) ?? tracked.text;
+    if (hasFunctionTool(body, 'delegateTeam') && tracked.fresh) {
       if (userText === scenario.queryMessage) {
         return delegateCompletion(`delegate-${scenario.seed}-query`, 'query', queryRequest());
       }
       const turn = scenario.turns.find((candidate) => candidate.message === userText);
       if (turn !== undefined) {
+        const turnIndex = scenario.turns.indexOf(turn);
         return delegateCompletion(
-          `delegate-${scenario.seed}-turn-${scenario.turns.indexOf(turn) + 1}`,
+          `delegate-${scenario.seed}-turn-${turnIndex + 1}`,
           'accounting',
-          transactionDraftRequest(turn.known),
+          transactionDraftRequest(knownThroughTurn(scenario, turnIndex)),
         );
       }
     }
     if (userText.includes('Safe checked context:') && containsMaterialFacts(userText, scenario)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
-        },
-      };
+      return finalResponseCompletion(
+        `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
     }
     const checkedContext = latestToolResultText(body);
-    if (userText === scenario.queryMessage && containsMaterialFacts(checkedContext, scenario)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `The household has a ${scenario.currency} ${scenario.amount} transaction from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
-        },
-      };
-    }
     const turn = scenario.turns.find((candidate) => candidate.message === userText);
-    if (turn?.expectedResponse !== undefined
-      && turn.checkedTokens?.every((token) => checkedContext.includes(token)) === true) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: clarificationText(turn.checkedTokens),
-        },
-      };
+    if (turn?.expectedResponse !== undefined) {
+      return finalResponseCompletion(clarificationText(turn.checkedTokens ?? []));
     }
-    return {
-      finishReason: 'stop',
-      message: { role: 'assistant', content: 'I could not verify the transaction details.' },
-    };
+    if (userText === scenario.queryMessage && containsMaterialFacts(checkedContext, scenario)) {
+      return finalResponseCompletion(
+        `The household has a ${scenario.currency} ${scenario.amount} transaction from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
+    }
+    if (turn !== undefined) {
+      return finalResponseCompletion(
+        `I recorded ${scenario.currency} ${scenario.amount} from ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
+    }
+    return finalResponseCompletion('I could not verify the transaction details.');
   };
 }
 
 function createMissingCategoryPrerequisiteResponder(
   scenario: MissingCategoryPrerequisiteScenario,
 ): OpenAiCompatibleTestResponder {
+  const trackInbound = createInboundTurnTracker([
+    scenario.mutationMessage,
+    scenario.prerequisiteMessage,
+    scenario.confirmationMessage,
+    scenario.queryMessage,
+  ]);
   return ({ body }) => {
     if (hasFunctionTool(body, 'submitResult')) return undefined;
-    const userText = latestUserText(body);
+    const modelUserText = latestUserText(body);
+    const tracked = trackInbound(modelUserText, bodyUserTexts(body));
+    const userText = tracked.fresh ? tracked.text : currentSynthesisUserText(body) ?? tracked.text;
     const checkedContext = latestToolResultText(body);
-    if (hasFunctionTool(body, 'delegateTeam') && lastMessageRole(body) === 'user') {
+    if (hasFunctionTool(body, 'delegateTeam') && tracked.fresh) {
       if (userText === scenario.queryMessage) {
         return delegateCompletion(`delegate-${scenario.seed}-query`, 'query', queryRequest());
       }
@@ -2356,14 +2343,14 @@ function createMissingCategoryPrerequisiteResponder(
         return delegateCompletion(
           `delegate-${scenario.seed}-transaction-update`,
           'accounting',
-          transactionDraftRequest(scenario.prerequisiteKnown),
+          transactionDraftRequest({ ...scenario.initialKnown, ...scenario.prerequisiteKnown }),
         );
       }
     }
     if (hasFunctionTool(body, 'delegateTeam')
-      && lastMessageRole(body) === 'tool'
       && userText === scenario.prerequisiteMessage
-      && checkedContext.includes(scenario.categoryAccount.name)) {
+      && checkedContext.includes(scenario.categoryAccount.name)
+      && checkedContext.includes('"effectState":"none"')) {
       return delegateCompletion(
         `delegate-${scenario.seed}-category-prerequisite`,
         'accounting',
@@ -2372,29 +2359,43 @@ function createMissingCategoryPrerequisiteResponder(
     }
     if (userText.includes('Safe checked context:')) {
       const awaitingConfirmation = userText.includes('"effectState":"awaiting_confirmation"');
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: awaitingConfirmation
-            ? `I’ll add ${scenario.categoryAccount.name} as a new ${scenario.categoryAccount.accountingClass} category in ${scenario.currency}, then record ${scenario.currency} ${scenario.amount} with ${scenario.paymentAccount.name} dated ${scenario.occurredOn}. Would you like me to proceed?`
-            : `I recorded ${scenario.currency} ${scenario.amount} with ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
-        },
-      };
+      return finalResponseCompletion(awaitingConfirmation
+        ? `I’ll add ${scenario.categoryAccount.name} as a new ${scenario.categoryAccount.accountingClass} category in ${scenario.currency} with a normal ${scenario.categoryAccount.normalBalance} balance, then record ${scenario.currency} ${scenario.amount} with ${scenario.paymentAccount.name} dated ${scenario.occurredOn}. Would you like me to proceed?`
+        : `I recorded ${scenario.currency} ${scenario.amount} with ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`);
+    }
+    if (userText === scenario.mutationMessage) {
+      return finalResponseCompletion(initialMissingTransactionText(scenario));
+    }
+    if (userText === scenario.prerequisiteMessage
+      && checkedContext.includes('"effectState":"awaiting_confirmation"')) {
+      return finalResponseCompletion(
+        `I’ll add ${scenario.categoryAccount.name} as a new ${scenario.categoryAccount.accountingClass} category in ${scenario.currency} with a normal ${scenario.categoryAccount.normalBalance} balance, then record ${scenario.currency} ${scenario.amount} with ${scenario.paymentAccount.name} dated ${scenario.occurredOn}. Would you like me to proceed?`,
+      );
     }
     if (userText === scenario.queryMessage && containsMaterialFacts(checkedContext, scenario)) {
-      return {
-        finishReason: 'stop',
-        message: {
-          role: 'assistant',
-          content: `The household has a ${scenario.currency} ${scenario.amount} transaction with ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
-        },
-      };
+      return finalResponseCompletion(
+        `The household has a ${scenario.currency} ${scenario.amount} transaction with ${scenario.paymentAccount.name} on ${scenario.expectedDate} under ${scenario.categoryAccount.name}.`,
+      );
     }
-    return {
-      finishReason: 'stop',
-      message: { role: 'assistant', content: 'I could not verify the requested accounting facts.' },
-    };
+    return finalResponseCompletion('I could not verify the requested accounting facts.');
+  };
+}
+
+function finalResponseCompletion(body: string) {
+  return {
+    finishReason: 'tool_calls' as const,
+    message: {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'submit-final-response',
+        type: 'function',
+        function: {
+          name: 'submitFinalResponse',
+          arguments: JSON.stringify({ body }),
+        },
+      }],
+    },
   };
 }
 
@@ -2434,16 +2435,37 @@ function transactionDraftRequest(known: Record<string, string>): Record<string, 
   };
 }
 
+function knownThroughTurn(
+  scenario: MultiTurnTransactionScenario,
+  turnIndex: number,
+): Record<string, string> {
+  return Object.assign({}, ...scenario.turns
+    .slice(0, turnIndex + 1)
+    .map((turn) => turn.known));
+}
+
 function clarificationText(tokens: readonly string[]): string {
   if (tokens.includes('Takeout')) {
     return 'I don’t have a Takeout category. Dining is available; which category should I use?';
   }
-  if (tokens.includes('payment_account')) return 'Which payment account should I use?';
-  if (tokens.includes('occurred_on')) return 'What valid date did the transaction occur on?';
+  if (tokens.includes('currency') && tokens.includes('occurred_on')) {
+    return 'Which currency and date should I use?';
+  }
+  if (tokens.length === 1 && tokens[0] === 'payment_account') return 'Which payment account should I use?';
+  if (tokens.length === 1 && tokens[0] === 'occurred_on') return 'What valid date did the transaction occur on?';
   if (tokens.length === 1 && tokens[0] === 'category') return 'Which category should I use?';
   if (tokens.length === 1 && tokens[0] === 'amount') return 'What amount should I record?';
   if (tokens.length === 1 && tokens[0] === 'currency') return 'Which currency should I use?';
   return 'Which account, date, and category should I use?';
+}
+
+function initialMissingTransactionText(scenario: MissingCategoryPrerequisiteScenario): string {
+  const known = scenario.initialKnown;
+  if (known.amount === undefined) return `What amount should I record for ${scenario.categoryAccount.name}?`;
+  if (known.currency === undefined) return `Which currency should I use for ${scenario.categoryAccount.name}?`;
+  if (known.paymentAccountName === undefined) return `Which payment account should I use for ${scenario.categoryAccount.name}?`;
+  if (known.occurredOn === undefined) return `What date did the transaction for ${scenario.categoryAccount.name} occur on?`;
+  return `Which details should I confirm for ${scenario.categoryAccount.name}?`;
 }
 
 function transactionRequest(scenario: TransactionRequestScenario): Record<string, unknown> {
@@ -2908,12 +2930,26 @@ function lastMessageRole(body: Record<string, unknown>): string | undefined {
 
 function latestUserText(body: Record<string, unknown>): string {
   const messages = Array.isArray(body.messages) ? body.messages : [];
+  for (const candidate of messages) {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) continue;
+    if (candidate.role !== 'user') continue;
+    const text = textContent(candidate.content);
+    if (text.trim() === '.') continue;
+    return text;
+  }
+  return '';
+}
+
+function currentSynthesisUserText(body: Record<string, unknown>): string | undefined {
+  if (lastMessageRole(body) !== 'user') return undefined;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
   for (const candidate of [...messages].reverse()) {
     if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) continue;
     if (candidate.role !== 'user') continue;
-    return textContent(candidate.content);
+    const text = textContent(candidate.content);
+    if (text.includes('Safe checked context:')) return text;
   }
-  return '';
+  return undefined;
 }
 
 function latestToolResultText(body: Record<string, unknown>): string {
@@ -2924,6 +2960,44 @@ function latestToolResultText(body: Record<string, unknown>): string {
     return textContent(candidate.content);
   }
   return '';
+}
+
+function bodyUserTexts(body: Record<string, unknown>): string[] {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  return messages.flatMap((candidate) => {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return [];
+    if (candidate.role !== 'user') return [];
+    const text = textContent(candidate.content);
+    return text.trim() === '.' ? [] : [text];
+  });
+}
+
+function createInboundTurnTracker(messages: readonly string[]): (
+  modelUserText: string,
+  availableUserTexts?: readonly string[],
+) => {
+  text: string;
+  fresh: boolean;
+} {
+  let activeText: string | undefined;
+  let activeIndex = -1;
+  return (modelUserText, availableUserTexts = []) => {
+    let candidateIndex = -1;
+    let selectedText: string | undefined;
+    for (const candidateText of [modelUserText, ...availableUserTexts]) {
+      const index = messages.indexOf(candidateText);
+      if (index > activeIndex && (candidateIndex === -1 || index < candidateIndex)) {
+        candidateIndex = index;
+        selectedText = candidateText;
+      }
+    }
+    const fresh = candidateIndex >= 0 && candidateIndex > activeIndex;
+    if (fresh) {
+      activeIndex = candidateIndex;
+      activeText = selectedText;
+    }
+    return { text: activeText ?? modelUserText, fresh };
+  };
 }
 
 function textContent(value: unknown): string {

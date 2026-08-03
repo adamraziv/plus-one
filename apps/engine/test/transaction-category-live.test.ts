@@ -14,6 +14,7 @@ import { OrchestratorAgent, type OrchestratorTurnResult } from '../src/agents/or
 import { AccountingDelegateRequestSchemaV1 } from '../src/tools/delegate-team-schemas.js';
 import type { OrchestratorTeamRuntime } from '../src/tools/delegate-team.js';
 import { pendingChartResultFixture } from './helpers/pending-chart-result.js';
+import { submitOrchestratorFinalResponse } from '../../../test/helpers/orchestrator-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const conversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -50,9 +51,10 @@ describe('transaction category transcript flow', () => {
           : recordedResult('The dining transaction was recorded.');
     });
     let transactionDelegations = 0;
-    const generate = vi.fn(async (_prompt: unknown, options?: { toolChoice?: unknown }) => {
-      if (options?.toolChoice === 'none') {
-        return { text: 'I recorded USD 50.00 from test wallet on 2026-07-15 under Dining.' };
+    const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as Record<string, unknown>;
+      if (typeof options.toolChoice === 'object') {
+        return submitOrchestratorFinalResponse(options, 'I recorded USD 50.00 from test wallet on 2026-07-15 under Dining.');
       }
       if (transactionDelegations === 0) {
         transactionDelegations += 1;
@@ -62,7 +64,7 @@ describe('transaction category transcript flow', () => {
             paymentAccountName: 'test wallet',
           }),
         });
-        return { text: 'I need a few more details.' };
+        return submitOrchestratorFinalResponse(options, 'Which transaction category should I use? Existing categories include Food and Groceries. You can also ask me to add a new category.');
       }
       if (transactionDelegations === 1) {
         transactionDelegations += 1;
@@ -75,13 +77,13 @@ describe('transaction category transcript flow', () => {
             categoryName: 'dining',
           }),
         });
-        return { text: 'I found the transaction details.' };
+        return submitOrchestratorFinalResponse(options, 'I don’t have a "dining" category yet. Existing transaction categories include Food and Groceries. Should I use one of those, or add a new category?');
       }
       await executeDelegate(orchestrator, {
         team: 'accounting',
         request: chartDraft(),
       });
-      return { text: 'I have a category change ready.' };
+      return submitOrchestratorFinalResponse(options, 'I’ll add Dining as a new expense category with a normal debit balance in USD, then record USD 50.00 from test wallet dated 2026-07-15 under Dining. Would you like me to proceed?');
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },

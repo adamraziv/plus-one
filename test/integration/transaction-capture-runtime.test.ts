@@ -11,7 +11,7 @@ import { closeDatabasePools, createDatabasePools } from '@plus-one/database';
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { createDefaultQueryTools } from '../../apps/engine/src/query-tools.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const ids = {
@@ -53,7 +53,7 @@ describe('production transaction capture runtime', () => {
       if (invocation.schemaName !== 'team-lead-invocation') {
         throw new Error('Only the accounting lead should require a model call in this runtime path.');
       }
-      return submitContractResult(options, invocation.suggestedPlan);
+      return submitContractResult(options, teamLeadPlanDraft(invocation.suggestedPlan));
     });
     const agentSystem = createAgentSystem({
       models: {

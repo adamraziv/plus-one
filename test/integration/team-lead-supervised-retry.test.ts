@@ -10,7 +10,7 @@ import { budgetingTeamDefinition } from '@plus-one/planning';
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { createDefaultQueryTools } from '../../apps/engine/src/query-tools.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -91,7 +91,7 @@ describe('team lead supervised retry', () => {
                 }],
               });
             }
-            return submitContractResult(options, invocation.suggestedPlan);
+            return submitContractResult(options, teamLeadPlanDraft(invocation.suggestedPlan));
           }
           if (agentId === 'budget-maker') {
             makerCall += 1;
