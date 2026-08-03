@@ -448,6 +448,127 @@ describe('orchestrator durable loop acceptance', () => {
     }
   });
 
+  it('recovers a resolving interaction when the Working Memory effect is already present', async () => {
+    context = await createPostgresTestContext('orchestrator_loop_crash_recovery');
+    const pool = new Pool({ connectionString: context.roleUrls.operations });
+    await pool.query(
+      `INSERT INTO operations.households (household_id, reporting_currency, reporting_timezone)
+       VALUES ($1, 'USD', 'UTC')`,
+      [householdId],
+    );
+    const repository = new PostgresPendingInteractionRepository(pool);
+    const model = {
+      id: 'openai/gpt-5',
+      endpoint: 'https://llm.example.test/v1',
+      apiKey: 'test-api-key',
+    };
+    const sessionMemory = createOrchestratorSessionMemory({
+      connectionString: context.roleUrls.memory,
+      model,
+    });
+    try {
+      const emptyDocument = { version: 1 as const, entries: {} };
+      const pending = PendingWorkingMemoryMutationSchema.parse({
+      proposalId: 'wmproposal_01JNZQ4A9B8C7D6E5F4G3H2J1S',
+      householdId,
+      conversationId,
+      speakerPrincipalRef: 'telegram:user:1',
+      mutation: {
+        operation: 'create',
+        entryId: 'wme_01JNZQ4A9B8C7D6E5F4G3H2J1S',
+        entry: {
+          kind: 'communication_preference',
+          summary: 'Use concise replies.',
+          scope: 'household',
+          value: { detail: 'concise' },
+        },
+      },
+      basedOnRevision: workingMemoryRevision(emptyDocument),
+      createdAt: '2026-08-03T10:00:00.000Z',
+      expiresAt: '2026-08-03T10:15:00.000Z',
+      });
+      const interaction = await repository.create(PendingInteractionSchemaV1.parse({
+      schemaName: 'pending-interaction',
+      schemaVersion: 1,
+      interactionId: pending.proposalId,
+      kind: 'working_memory_confirmation',
+      householdId,
+      conversationId,
+      speakerPrincipalRef: 'telegram:user:1',
+      pendingWorkingMemoryMutation: pending,
+      status: 'pending',
+      version: 0,
+      createdAt: pending.createdAt,
+      expiresAt: pending.expiresAt,
+      }));
+      const claimed = await repository.claim({
+      householdId,
+      interactionId: interaction.interactionId,
+      externalMessageId: 'crash-approval',
+      expectedVersion: interaction.version,
+      });
+      if (claimed.kind !== 'claimed') throw new Error('Expected the crash fixture to be claimed.');
+
+      const applyWorkingMemoryMutation = vi.spyOn(sessionMemory, 'applyWorkingMemoryMutation');
+      await expect(sessionMemory.applyWorkingMemoryMutation({
+      threadId: conversationId,
+      resourceId: householdId,
+      principalRef: 'telegram:user:1',
+      basedOnRevision: pending.basedOnRevision,
+      mutation: pending.mutation,
+      })).resolves.toMatchObject({ status: 'succeeded' });
+
+      const finalizePendingWorkingMemoryResolution = vi.fn(async (input: {
+      status: 'applied' | 'rejected' | 'expired' | 'stale' | 'failed';
+      code: string;
+      }) => ({
+        status: input.status,
+        code: input.code,
+        response: response('The preference was already saved and verified after recovery.'),
+      }));
+      const runNormalTurn = vi.fn(async () => response('Handled as a normal turn.'));
+      const recovered = await runConversationTurn({
+      pendingInteractions: repository,
+      orchestrator: {
+        classifyPendingWorkingMemoryInput: vi.fn(),
+        resolvePendingWorkingMemoryMutation: vi.fn(),
+        finalizePendingWorkingMemoryResolution,
+      } as never,
+      runNormalTurn,
+      sessionMemory,
+      }, { message: message('yes', 'crash-approval') });
+
+      expect(recovered.body).toContain('already saved and verified');
+      expect(runNormalTurn).not.toHaveBeenCalled();
+      expect(finalizePendingWorkingMemoryResolution).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'applied',
+      code: 'working_memory_mutation_recovered',
+      }));
+      expect(applyWorkingMemoryMutation).toHaveBeenCalledOnce();
+      await expect(repository.findById({ householdId, interactionId: interaction.interactionId }))
+        .resolves.toMatchObject({
+        status: 'applied',
+        resolutionExternalMessageId: 'crash-approval',
+        resolutionCode: 'working_memory_mutation_recovered',
+        });
+      const readback = await sessionMemory.inspectWorkingMemory({
+      threadId: conversationId,
+      resourceId: householdId,
+      principalRef: 'telegram:user:1',
+      });
+      expect(readback.status).toBe('succeeded');
+      if (readback.status === 'succeeded') {
+        expect(workingMemoryMutationEffectIsPresent({
+          document: readback.document,
+          mutation: pending.mutation,
+        })).toBe(true);
+      }
+    } finally {
+      await sessionMemory.close().catch(() => undefined);
+      await pool.end().catch(() => undefined);
+    }
+  });
+
   it('does not resume a context-switched clarification when approving the original proposal', async () => {
     context = await createPostgresTestContext('orchestrator_loop_context_switch');
     const pool = new Pool({ connectionString: context.roleUrls.operations });
