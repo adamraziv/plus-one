@@ -30,6 +30,7 @@ import {
 } from '@plus-one/runtime';
 import { AccountingJournalMutationProposalSchemaV1 } from '@plus-one/accounting';
 import { confirmationDecision, OrchestratorAgent } from '../src/agents/orchestrator.js';
+import { SubmitPendingInteractionDispositionToolId } from '../src/agents/pending-interaction-disposition.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
 import { workingMemoryRevision } from '../src/memory/working-memory-document.js';
 import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
@@ -776,6 +777,71 @@ function testTeamRuntime(runTeamLead: OrchestratorTeamRuntime['runTeamLead']): O
 }
 
 describe('OrchestratorAgent', () => {
+  it('classifies pending interaction input with strict direct decisions and an isolated semantic tool', async () => {
+    const generate = vi.fn(async (_prompt: unknown, options: unknown) => {
+      const call = options as {
+        tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
+        activeTools: string[];
+        toolChoice: unknown;
+        prepareStep: () => Promise<{ tools: Record<string, unknown>; activeTools: string[]; toolChoice: unknown }>;
+      };
+      const tool = call.tools[SubmitPendingInteractionDispositionToolId];
+      if (tool?.execute === undefined) throw new Error('Expected the forced disposition tool.');
+      await tool.execute({ disposition: 'new_intent' }, {});
+      return {};
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(),
+      teams: [queryTeam],
+    });
+    const pending = pendingWorkingMemory();
+
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('yes'),
+      pending,
+    })).resolves.toBe('approve');
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('go ahead'),
+      pending,
+    })).resolves.toBe('approve');
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('no'),
+      pending,
+    })).resolves.toBe('reject');
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('cancel'),
+      pending,
+    })).resolves.toBe('reject');
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('yes, but use USD instead'),
+      pending,
+    })).resolves.toBe('ambiguous');
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('Create a monthly food budget.'),
+      pending,
+    })).resolves.toBe('new_intent');
+    await expect(orchestrator.classifyPendingWorkingMemoryInput({
+      message: message('Buat anggaran makanan bulanan.'),
+      pending,
+    })).resolves.toBe('new_intent');
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    const options = generate.mock.calls[0]?.[1] as {
+      activeTools: string[];
+      toolChoice: unknown;
+      tools: Record<string, unknown>;
+      prepareStep: () => Promise<{ tools: Record<string, unknown>; activeTools: string[]; toolChoice: unknown }>;
+    };
+    expect(Object.keys(options.tools)).toEqual([SubmitPendingInteractionDispositionToolId]);
+    expect(options.activeTools).toEqual([SubmitPendingInteractionDispositionToolId]);
+    expect(options.toolChoice).toEqual({ type: 'tool', toolName: SubmitPendingInteractionDispositionToolId });
+    await expect(options.prepareStep()).resolves.toMatchObject({
+      activeTools: [SubmitPendingInteractionDispositionToolId],
+      toolChoice: { type: 'tool', toolName: SubmitPendingInteractionDispositionToolId },
+    });
+  });
+
   it('gives final synthesis checked proposal details and forbids past-tense persistence', async () => {
     const pending = pendingChartTeamResult({
       name: 'Bank ABC',

@@ -72,6 +72,11 @@ import {
   SubmitFinalResponseToolId,
   type FinalResponseSubmission,
 } from './orchestrator-final-response.js';
+import {
+  createPendingInteractionDispositionSession,
+  pendingInteractionDispositionPrompt,
+  SubmitPendingInteractionDispositionToolId,
+} from './pending-interaction-disposition.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -425,6 +430,37 @@ export class OrchestratorAgent {
       };
     }
     this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))(agentConfig);
+  }
+
+  async classifyPendingWorkingMemoryInput(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal?: AbortSignal;
+  }): Promise<'approve' | 'reject' | 'new_intent' | 'ambiguous'> {
+    const direct = confirmationDecision(input.message.body);
+    if (direct !== 'unclear') return direct;
+    if (/\b(?:but|instead|change|except)\b/i.test(input.message.body)) return 'ambiguous';
+
+    const session = createPendingInteractionDispositionSession();
+    const signal = input.signal ?? AbortSignal.timeout(60_000);
+    await this.agent.generate(pendingInteractionDispositionPrompt(input), {
+      tools: { [SubmitPendingInteractionDispositionToolId]: session.tool },
+      activeTools: [SubmitPendingInteractionDispositionToolId],
+      toolChoice: {
+        type: 'tool' as const,
+        toolName: SubmitPendingInteractionDispositionToolId,
+      },
+      prepareStep: async () => ({
+        tools: { [SubmitPendingInteractionDispositionToolId]: session.tool },
+        activeTools: [SubmitPendingInteractionDispositionToolId],
+        toolChoice: {
+          type: 'tool' as const,
+          toolName: SubmitPendingInteractionDispositionToolId,
+        },
+      }),
+      abortSignal: signal,
+    } as never);
+    return session.requireDisposition();
   }
 
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
