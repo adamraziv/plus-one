@@ -4,7 +4,6 @@ import {
   PendingWorkingMemoryMutationSchema,
 } from '@plus-one/contracts';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
-import { SubmitPendingInteractionDispositionToolId } from '../../apps/engine/src/agents/pending-interaction-disposition.js';
 import { createOrchestratorSessionMemory } from '../../apps/engine/src/memory/orchestrator-session-memory.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
@@ -32,17 +31,8 @@ afterEach(async () => {
 describe('pending Working Memory classifier acceptance', () => {
   it('classifies a new intent through real thread-scoped Mastra memory processing', async () => {
     context = await createPostgresTestContext('pending_classifier_memory');
-    let requestCount = 0;
     modelServer = await startOpenAiCompatibleTestServer({
-      responder: () => {
-        requestCount += 1;
-        if (requestCount > 1) {
-          return {
-            message: { role: 'assistant', content: 'Classification recorded.' },
-            finishReason: 'stop',
-          };
-        }
-        return {
+      responder: () => ({
           message: {
             role: 'assistant',
             content: null,
@@ -50,14 +40,13 @@ describe('pending Working Memory classifier acceptance', () => {
               id: 'pending-disposition-call',
               type: 'function',
               function: {
-                name: SubmitPendingInteractionDispositionToolId,
-                arguments: JSON.stringify({ disposition: 'new_intent' }),
+                name: 'submitResult',
+                arguments: JSON.stringify({ result: { kind: 'new_intent' } }),
               },
             }],
           },
           finishReason: 'tool_calls',
-        };
-      },
+        }),
     });
     const model = {
       id: modelServer.environment.ORCHESTRATOR_MODEL!,

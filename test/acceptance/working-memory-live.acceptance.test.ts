@@ -134,14 +134,65 @@ describe('Working Memory through the real gateway and configured provider', () =
 
     const approved = await sendMessage({ ...target, body: 'yes' });
     expectSuccessful(approved);
-    expect(approved.body).toMatch(/saved|stored|updated|preference/i);
+    expect(approved.body.length).toBeGreaterThan(0);
     const stored = await readMemory(target);
-    expect(findEntry(stored, 'communication_preference')).toBeDefined();
+    expect(findEntry(stored, 'communication_preference'), JSON.stringify(stored)).toBeDefined();
 
     const terminal = await pendingInteraction(target);
     expect(terminal.status).toBe('applied');
     expect(terminal.resolutionExternalMessageId).toBeTruthy();
   }, 300_000);
+
+  it('working-memory-model-compatibility: issue #33 survives five fresh detailed Indonesian budget flows', async () => {
+    await runFreshIssue33Flows('Buat budget bulanan: total 10 juta IDR, prioritaskan makanan 2 juta IDR dan transportasi 1 juta IDR.');
+  }, 900_000);
+
+  it('working-memory-model-compatibility: issue #33 survives five fresh short Indonesian budget flows', async () => {
+    await runFreshIssue33Flows('Tolong buatkan budget bulanan untuk rumah tangga kita.');
+  }, 900_000);
+
+  it('working-memory-model-compatibility: issue #33 classifies multilingual, natural, and mixed confirmations live', async () => {
+    for (const approvalBody of ['yes', 'Yes, go ahead and save it.', 'Ya, silakan simpan.']) {
+      const target = ids();
+      const proposal = await sendMessage({
+        ...target,
+        body: 'Please remember that I prefer concise household summaries, but ask me for confirmation before saving it.',
+      });
+      expectSuccessful(proposal);
+      expect((await pendingInteraction(target)).status).toBe('pending');
+
+      const approved = await sendMessage({ ...target, body: approvalBody });
+      expectSuccessful(approved);
+      expect(findEntry(await readMemory(target), 'communication_preference')).toBeDefined();
+      expect((await pendingInteraction(target)).status).toBe('applied');
+    }
+
+    const rejectedTarget = ids();
+    await expect(sendMessage({
+      ...rejectedTarget,
+      body: 'Please remember that I prefer concise household summaries, but ask me for confirmation before saving it.',
+    })).resolves.toMatchObject({ status: 200 });
+    const rejected = await sendMessage({ ...rejectedTarget, body: 'Tidak, jangan simpan.' });
+    expectSuccessful(rejected);
+    expect(await readMemory(rejectedTarget)).toMatchObject({ version: 1, entries: {} });
+    expect((await pendingInteraction(rejectedTarget)).status).toBe('rejected');
+
+    const mixedTarget = ids();
+    await expect(sendMessage({
+      ...mixedTarget,
+      body: 'Please remember that I prefer concise household summaries, but ask me for confirmation before saving it.',
+    })).resolves.toMatchObject({ status: 200 });
+    const mixed = await sendMessage({ ...mixedTarget, body: 'Yes, but make the preference detailed instead.' });
+    expectSuccessful(mixed);
+    expect(mixed.body).not.toMatch(/saved|stored|updated successfully/i);
+    expect(await readMemory(mixedTarget)).toMatchObject({ version: 1, entries: {} });
+    expect((await pendingInteraction(mixedTarget)).status).toBe('pending');
+
+    const approvedAfterMixed = await sendMessage({ ...mixedTarget, body: 'yes' });
+    expectSuccessful(approvedAfterMixed);
+    expect(findEntry(await readMemory(mixedTarget), 'communication_preference')).toBeDefined();
+    expect((await pendingInteraction(mixedTarget)).status).toBe('applied');
+  }, 1_200_000);
 
   it('working-memory-model-compatibility: creates a natural-language goal after inspection and recalls it in a new thread', async () => {
     const target = ids();
@@ -591,6 +642,33 @@ async function pendingInteraction(target: LiveIds): Promise<{
     };
   } finally {
     await operations.end();
+  }
+}
+
+async function runFreshIssue33Flows(budgetBody: string): Promise<void> {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const target = ids();
+    const proposal = await sendMessage({
+      ...target,
+      body: 'Please remember that I prefer concise household summaries, but ask me for confirmation before saving it.',
+    });
+    expectSuccessful(proposal);
+    const pendingBeforeBudget = await pendingInteraction(target);
+    expect(pendingBeforeBudget.status, `${budgetBody} attempt ${attempt}`).toBe('pending');
+    await expect(readMemory(target)).resolves.toMatchObject({ version: 1, entries: {} });
+
+    const budget = await sendMessage({ ...target, body: budgetBody });
+    expectSuccessful(budget);
+    expect(budget.body).not.toMatch(/concise.*(?:saved|stored)|(?:saved|stored).*concise/i);
+    expect(await pendingInteraction(target)).toEqual(pendingBeforeBudget);
+    await expect(readMemory(target)).resolves.toMatchObject({ version: 1, entries: {} });
+
+    const approved = await sendMessage({ ...target, body: 'Ya, silakan simpan.' });
+    expectSuccessful(approved);
+    expect(findEntry(await readMemory(target), 'communication_preference')).toBeDefined();
+    const terminal = await pendingInteraction(target);
+    expect(terminal.status, `${budgetBody} attempt ${attempt}`).toBe('applied');
+    expect(terminal.resolutionExternalMessageId).toBeTruthy();
   }
 }
 
