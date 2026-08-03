@@ -29,6 +29,17 @@ export const PlanningClarificationSchemaV1 = z.object({
 
 const budgetText = z.string().min(1).max(400);
 
+export const BudgetingEvidenceSpanSchemaV1 = z.object({
+  path: z.string().min(1).max(160),
+  sourceQuote: z.string().min(1).max(400),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).strict().superRefine((span, context) => {
+  if (span.end <= span.start) {
+    context.addIssue({ code: 'custom', path: ['end'], message: 'Evidence end must be after start.' });
+  }
+});
+
 export const BudgetingKnownInputsSchemaV1 = z.object({
   priorities: z.array(budgetText).min(1).max(20).optional(),
   timeframe: z.object({
@@ -40,9 +51,11 @@ export const BudgetingKnownInputsSchemaV1 = z.object({
     name: budgetText,
     targetAmount: MoneySchemaV1.optional(),
   }).strict()).min(1).max(100).optional(),
+  evidence: z.array(BudgetingEvidenceSpanSchemaV1).max(200).optional(),
 }).strict();
 
 export type BudgetingKnownInputsV1 = z.infer<typeof BudgetingKnownInputsSchemaV1>;
+export type BudgetingEvidenceSpanV1 = z.infer<typeof BudgetingEvidenceSpanSchemaV1>;
 
 export function missingBudgetPlanFields(known: BudgetingKnownInputsV1) {
   return [
