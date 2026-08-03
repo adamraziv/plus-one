@@ -1192,9 +1192,9 @@ export class OrchestratorAgent {
         prepareStep: async () => ({
           tools: { [SubmitFinalResponseToolId]: responseSession.tool },
           activeTools: [SubmitFinalResponseToolId],
-          toolChoice: { type: 'tool' as const, toolName: SubmitFinalResponseToolId },
+          toolChoice: 'auto' as const,
         }),
-        toolChoice: { type: 'tool' as const, toolName: SubmitFinalResponseToolId },
+        toolChoice: 'auto',
         abortSignal: input.signal,
       } as never), input.signal);
       return responseSession.requireSubmission().body;

@@ -2240,15 +2240,6 @@ describe('OrchestratorAgent', () => {
         finishReason: 'stop' as const,
         content: [{ type: 'text' as const, text: 'Final synthesis after corrected delegation.' }],
       },
-      {
-        finishReason: 'tool-calls' as const,
-        content: [{
-          type: 'tool-call' as const,
-          toolCallId: 'final-response',
-          toolName: 'submitFinalResponse',
-          input: JSON.stringify({ body: 'Final synthesis after corrected delegation.' }),
-        }],
-      },
     ];
     const scriptedModel = {
       specificationVersion: 'v2' as const,
@@ -2280,8 +2271,8 @@ describe('OrchestratorAgent', () => {
 
     expect(response.body).toBe('Final synthesis after corrected delegation.');
     expect(response.body).not.toContain('The checked evidence includes one account row.');
-    expect(scriptedModel.doGenerate).toHaveBeenCalledTimes(4);
-    expect(modelCalls).toHaveLength(4);
+    expect(scriptedModel.doGenerate).toHaveBeenCalledTimes(3);
+    expect(modelCalls).toHaveLength(3);
   });
 
   it('passes the inbound timestamp and user body into a non-memory model prompt', async () => {

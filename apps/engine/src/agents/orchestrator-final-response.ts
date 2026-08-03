@@ -53,12 +53,29 @@ export function createFinalResponseSubmissionSession(input: {
       const submissionCalls = toolCalls.filter(
         (call) => call.toolName === SubmitFinalResponseToolId,
       );
-      if (submissionCalls.length === 0 && toolCalls.length !== 0) return messages;
+      if (submissionCalls.length === 0) {
+        if (toolCalls.length !== 0) return messages;
+        const parsedText = FinalResponseSubmissionSchema.safeParse({ body: text });
+        if (!parsedText.success || containsSerializedToolMarkup(parsedText.data.body)) {
+          protocolViolation = true;
+          abort(
+            'Do not return serialized tool markup. Call submitFinalResponse or return only the user-facing reply.',
+            { retry: true },
+          );
+          return messages;
+        }
+        try {
+          input.validateBody(parsedText.data.body);
+        } catch (error) {
+          protocolViolation = true;
+          abort(safeSubmissionRepairFeedback(error), { retry: true });
+        }
+        submission = parsedText.data;
+        return messages;
+      }
 
-      const hasTerminalText = (text?.trim().length ?? 0) !== 0;
       const validShape = submissionCalls.length === 1
-        && toolCalls.length === 1
-        && !hasTerminalText;
+        && toolCalls.length === 1;
       if (!validShape) {
         protocolViolation = true;
         abort(
@@ -75,6 +92,16 @@ export function createFinalResponseSubmissionSession(input: {
           { retry: true },
         );
         return messages;
+      }
+      const terminalText = text?.trim();
+      if (terminalText !== undefined
+        && terminalText.length !== 0
+        && terminalText !== parsed.data.body) {
+        protocolViolation = true;
+        abort(
+          'Do not return reply text that conflicts with submitFinalResponse.',
+          { retry: true },
+        );
       }
       try {
         input.validateBody(parsed.data.body);
@@ -116,6 +143,10 @@ function safeSubmissionRepairFeedback(error: unknown): string {
     return error.message;
   }
   return GENERIC_REPAIR_FEEDBACK;
+}
+
+function containsSerializedToolMarkup(value: string): boolean {
+  return /<\s*\/?\s*(?:invoke|parameter|tool[_-]?call|function[_-]?call)\b/i.test(value);
 }
 
 export function orchestratorResponseNotSubmittedError(): PlusOneError {
