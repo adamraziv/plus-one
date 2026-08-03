@@ -146,7 +146,33 @@ function safeSubmissionRepairFeedback(error: unknown): string {
 }
 
 function containsSerializedToolMarkup(value: string): boolean {
-  return /<\s*\/?\s*(?:invoke|parameter|tool[_-]?call|function[_-]?call)\b/i.test(value);
+  const normalized = value.toLowerCase();
+  const tags = new Set(['invoke', 'parameter', 'tool_call', 'tool-call', 'function_call', 'function-call']);
+  let index = normalized.indexOf('<');
+  while (index !== -1) {
+    let cursor = index + 1;
+    while (isAsciiWhitespace(normalized[cursor])) cursor += 1;
+    if (normalized[cursor] === '/') cursor += 1;
+    while (isAsciiWhitespace(normalized[cursor])) cursor += 1;
+    const tokenStart = cursor;
+    while (isAsciiTagCharacter(normalized[cursor])) cursor += 1;
+    if (tags.has(normalized.slice(tokenStart, cursor))) return true;
+    index = normalized.indexOf('<', index + 1);
+  }
+  return false;
+}
+
+function isAsciiWhitespace(value: string | undefined): boolean {
+  return value === ' ' || value === '\n' || value === '\r' || value === '\t';
+}
+
+function isAsciiTagCharacter(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const code = value.codePointAt(0);
+  return value === '_' || value === '-'
+    || (code !== undefined && ((code >= 48 && code <= 57)
+      || (code >= 65 && code <= 90)
+      || (code >= 97 && code <= 122)));
 }
 
 export function orchestratorResponseNotSubmittedError(): PlusOneError {

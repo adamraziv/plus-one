@@ -15,6 +15,7 @@ import type { OrchestratorTeamRuntime } from './tools/delegate-team.js';
 import { runOrchestratorLoop } from './workflows/orchestrator-loop.js';
 import { runConversationTurn } from './workflows/conversation-turn-router.js';
 import type { Mastra } from '@mastra/core';
+import { isTransientModelError } from '@plus-one/runtime';
 
 export function createRuntimeRoutes(input: {
   config: EngineConfig;
@@ -91,6 +92,12 @@ export function createRuntimeRoutes(input: {
               error: 'orchestrator_timed_out',
               retryable: true,
             }, 504);
+          }
+          if (isTransientModelError(error)) {
+            return context.json({
+              error: 'model_temporarily_unavailable',
+              retryable: true,
+            }, 503);
           }
           throw error;
         }

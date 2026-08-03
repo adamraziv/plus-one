@@ -223,6 +223,22 @@ describe('conversation turn router', () => {
     }
   });
 
+  it('keeps a pending interaction when semantic classification fails', async () => {
+    const repository = new InMemoryPendingInteractions();
+    await repository.create(pending);
+    const deps = dependencies({ repository, disposition: 'approve' });
+    const classify = vi.fn(async () => { throw new Error('semantic provider unavailable'); });
+
+    await expect(runConversationTurn({
+      ...deps,
+      orchestrator: { ...deps.orchestrator, classifyPendingWorkingMemoryInput: classify },
+    }, { message: message('Ya, silakan simpan.', 'message-classifier-failure') }))
+      .resolves.toMatchObject({ body: 'Resolved ambiguous.' });
+    expect((await repository.findOpen({ householdId, conversationId, speakerPrincipalRef: principalRef }))?.status)
+      .toBe('pending');
+    expect(deps.mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ decision: 'ambiguous' }));
+  });
+
   it('completes an expired approval as expired', async () => {
     const repository = new InMemoryPendingInteractions();
     await repository.create(PendingInteractionSchemaV1.parse({

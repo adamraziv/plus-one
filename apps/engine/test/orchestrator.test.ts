@@ -29,8 +29,7 @@ import {
   type TeamDefinition,
 } from '@plus-one/runtime';
 import { AccountingJournalMutationProposalSchemaV1 } from '@plus-one/accounting';
-import { confirmationDecision, OrchestratorAgent } from '../src/agents/orchestrator.js';
-import { SubmitPendingInteractionDispositionToolId } from '../src/agents/pending-interaction-disposition.js';
+import { OrchestratorAgent } from '../src/agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../src/memory/orchestrator-session-memory.js';
 import { workingMemoryRevision } from '../src/memory/working-memory-document.js';
 import { internalIdentifierMatchCategory } from '../src/safety/internal-identifier.js';
@@ -777,18 +776,20 @@ function testTeamRuntime(runTeamLead: OrchestratorTeamRuntime['runTeamLead']): O
 }
 
 describe('OrchestratorAgent', () => {
-  it('classifies pending interaction input with strict direct decisions and an isolated semantic tool', async () => {
+  it('classifies a standalone new intent through one structured semantic call', async () => {
     const generate = vi.fn(async (_prompt: unknown, options: unknown) => {
       const call = options as {
-        tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
-        activeTools: string[];
-        toolChoice: unknown;
-        prepareStep: () => Promise<{ tools: Record<string, unknown>; activeTools: string[]; toolChoice: unknown }>;
+        prepareStep: (input: { stepNumber: number }) => Promise<{
+          tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
+          activeTools: string[];
+          toolChoice: unknown;
+        }>;
       };
-      const tool = call.tools[SubmitPendingInteractionDispositionToolId];
-      if (tool?.execute === undefined) throw new Error('Expected the forced disposition tool.');
-      await tool.execute({ disposition: 'new_intent' }, {});
-      return {};
+      const prepared = await call.prepareStep({ stepNumber: 0 });
+      const tool = prepared.tools.submitResult;
+      if (tool?.execute === undefined) throw new Error('Expected the structured result tool.');
+      await tool.execute({ result: { kind: 'new_intent' } }, {});
+      return { steps: [{ finishReason: 'stop' }] };
     });
     const orchestrator = singleLoopOrchestrator({
       generate,
@@ -798,62 +799,62 @@ describe('OrchestratorAgent', () => {
     const pending = pendingWorkingMemory();
 
     await expect(orchestrator.classifyPendingWorkingMemoryInput({
-      message: message('yes'),
-      pending,
-    })).resolves.toBe('approve');
-    await expect(orchestrator.classifyPendingWorkingMemoryInput({
-      message: message('go ahead'),
-      pending,
-    })).resolves.toBe('approve');
-    await expect(orchestrator.classifyPendingWorkingMemoryInput({
-      message: message('no'),
-      pending,
-    })).resolves.toBe('reject');
-    await expect(orchestrator.classifyPendingWorkingMemoryInput({
-      message: message('cancel'),
-      pending,
-    })).resolves.toBe('reject');
-    await expect(orchestrator.classifyPendingWorkingMemoryInput({
-      message: message('yes, but use USD instead'),
-      pending,
-    })).resolves.toBe('ambiguous');
-    await expect(orchestrator.classifyPendingWorkingMemoryInput({
       message: message('Create a monthly food budget.'),
       pending,
     })).resolves.toBe('new_intent');
-    await expect(orchestrator.classifyPendingWorkingMemoryInput({
-      message: message('Buat anggaran makanan bulanan.'),
-      pending,
-    })).resolves.toBe('new_intent');
+    expect(generate).toHaveBeenCalledTimes(1);
+    for (const [, options] of generate.mock.calls) {
+      expect((options as { toolChoice: unknown }).toolChoice).toBe('auto');
+      const prepared = await (options as {
+        prepareStep: (input: { stepNumber: number }) => Promise<{ toolChoice: unknown }>;
+      }).prepareStep({ stepNumber: 0 });
+      expect(prepared.toolChoice).toBe('auto');
+    }
+  });
 
+  it.each([
+    {
+      name: 'requires matching approval decisions',
+      outputs: [{ kind: 'resolve', decision: 'approve' }, { kind: 'resolve', decision: 'approve' }],
+      expected: { kind: 'resolve', decision: 'approve' },
+    },
+    {
+      name: 'rejects disagreement on a mutation decision',
+      outputs: [{ kind: 'resolve', decision: 'approve' }, { kind: 'resolve', decision: 'reject' }],
+      expected: { kind: 'ambiguous' },
+    },
+    {
+      name: 'allows the checker to promote ambiguity only to a new intent',
+      outputs: [{ kind: 'ambiguous' }, { kind: 'new_intent' }],
+      expected: { kind: 'new_intent' },
+    },
+  ])('$name', async ({ outputs, expected }) => {
+    let outputIndex = 0;
+    const generate = vi.fn(async (_prompt: unknown, options: unknown) => {
+      const call = options as {
+        prepareStep: (input: { stepNumber: number }) => Promise<{
+          tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
+        }>;
+      };
+      const prepared = await call.prepareStep({ stepNumber: 0 });
+      const tool = prepared.tools.submitResult;
+      if (tool?.execute === undefined) throw new Error('Expected the structured result tool.');
+      await tool.execute({ result: outputs[outputIndex++]! }, {});
+      return { steps: [{ finishReason: 'stop' }] };
+    });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead: vi.fn(),
+      teams: [queryTeam],
+    });
+
+    await expect(orchestrator.classifyPendingInteractionInput({
+      message: message('Yes, please do that.'),
+      pending: pendingWorkingMemory(),
+      subject: 'working_memory',
+      changeSummary: 'Use concise household summaries',
+    })).resolves.toEqual(expected);
     expect(generate).toHaveBeenCalledTimes(2);
-    const options = generate.mock.calls[0]?.[1] as {
-      activeTools: string[];
-      maxSteps: number;
-      memory: unknown;
-      toolChoice: unknown;
-      tools: Record<string, unknown>;
-      prepareStep: () => Promise<{ tools: Record<string, unknown>; activeTools: string[]; toolChoice: unknown }>;
-    };
-    expect(options.memory).toEqual({
-      thread: conversationId,
-      resource: householdId,
-      options: {
-        readOnly: true,
-        lastMessages: false,
-        semanticRecall: false,
-        observationalMemory: false,
-        workingMemory: { enabled: false },
-      },
-    });
-    expect(Object.keys(options.tools)).toEqual([SubmitPendingInteractionDispositionToolId]);
-    expect(options.activeTools).toEqual([SubmitPendingInteractionDispositionToolId]);
-    expect(options.maxSteps).toBe(1);
-    expect(options.toolChoice).toBe('auto');
-    await expect(options.prepareStep()).resolves.toMatchObject({
-      activeTools: [SubmitPendingInteractionDispositionToolId],
-      toolChoice: 'auto',
-    });
   });
 
   it('gives final synthesis checked proposal details and forbids past-tense persistence', async () => {
@@ -947,24 +948,6 @@ describe('OrchestratorAgent', () => {
     expect(generate).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ['yes', 'approve'],
-    ['go ahead', 'approve'],
-    ['yes, go ahead please', 'approve'],
-    ['yes please', 'approve'],
-    ['sure, please go ahead', 'approve'],
-    ['do it please', 'approve'],
-    ['CONFIRM', 'approve'],
-    ['please do', 'approve'],
-    ['sounds good', 'approve'],
-    ['no, cancel it', 'reject'],
-    ['please cancel', 'reject'],
-    ['yes, but use USD instead', 'unclear'],
-    ['what does debit mean?', 'unclear'],
-  ] as const)('classifies %s as %s for a suspended proposal', (body, expected) => {
-    expect(confirmationDecision(body)).toBe(expected);
-  });
-
   it('reports readback-verified account creation after confirmation', async () => {
     const pending = pendingChartTeamResult();
     const resumePendingMutation = vi.fn(async () => persistedChartTeamResult());
@@ -980,6 +963,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const turn = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1016,6 +1001,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1076,6 +1063,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1128,6 +1117,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1198,6 +1189,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1266,6 +1259,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1305,6 +1300,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('yes'),
@@ -1358,6 +1355,8 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
+    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'ambiguous' });
 
     const result = await orchestrator.resolvePendingMutation({
       message: message('I am not sure'),
@@ -1673,10 +1672,10 @@ describe('OrchestratorAgent', () => {
     });
 
     await expect(orchestrator.run({ message: message('What do you remember about me?') }))
-      .resolves.toMatchObject({ body: 'I could not use saved context, so I continued without it.' });
+      .resolves.toMatchObject({ body: 'I could not complete the change to the requested Working Memory operation. No changes were made.' });
 
     expect(configuredAgent).toBe(orchestrator.agent);
-    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate).toHaveBeenCalledTimes(4);
     expect(requestContexts[0]).toBe(requestContexts[1]);
     expect((requestContexts[1] as { get(key: string): unknown }).get('plus-one.orchestrator'))
       .toMatchObject({ memoryDegraded: true });
@@ -1698,8 +1697,8 @@ describe('OrchestratorAgent', () => {
     });
 
     await expect(orchestrator.run({ message: message('What do you remember about me?') }))
-      .resolves.toMatchObject({ body: 'I continued without unavailable saved context.' });
-    expect(generate).toHaveBeenCalledTimes(2);
+      .resolves.toMatchObject({ body: 'I could not complete the change to the requested Working Memory operation. No changes were made.' });
+    expect(generate).toHaveBeenCalledTimes(4);
     expect((requestContexts[1] as { get(key: string): unknown }).get('plus-one.orchestrator'))
       .toMatchObject({ memoryDegraded: true });
   });
@@ -1762,7 +1761,7 @@ describe('OrchestratorAgent', () => {
     });
 
     await expect(orchestrator.run({ message: message('What do you remember about me?') }))
-      .resolves.toMatchObject({ body: 'I continued without unavailable saved context.' });
+      .resolves.toMatchObject({ body: 'I could not complete the change to the requested Working Memory operation. No changes were made.' });
     expect(JSON.stringify(prompt)).not.toContain('<durable-working-memory>');
     expect(requestState).toMatchObject({
       memoryDegraded: true,
@@ -1830,15 +1829,17 @@ describe('OrchestratorAgent', () => {
     });
 
     await expect(orchestrator.run({ message: message('What do you remember about me?') }))
-      .resolves.toMatchObject({ body: 'I could not access saved context, so I continued without it.' });
+      .resolves.toMatchObject({ body: 'I could not complete the change to the requested Working Memory operation. No changes were made.' });
     expect(requestState).toMatchObject({
       memoryDegraded: true,
-      memoryFailures: [expect.objectContaining({
+    });
+    expect((requestState as { memoryFailures: unknown[] }).memoryFailures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         operation: 'inspect',
         code: 'working_memory_read_failed',
         category: 'storage_unavailable',
-      })],
-    });
+      }),
+    ]));
   });
 
   it('accepts a direct create only after the custom adapter reports verified success', async () => {
@@ -1965,11 +1966,11 @@ describe('OrchestratorAgent', () => {
 
   it('returns typed Working Memory resolution statuses for approval, rejection, expiry, stale approval, and unclear feedback', async () => {
     const scenarios = [
-      { name: 'approval', body: 'yes', decision: 'approve' as const, text: 'The goal is now in place.', expectedStatus: 'applied', applyCode: undefined, expired: false },
-      { name: 'rejection', body: 'no', decision: 'reject' as const, text: 'No changes were made.', expectedStatus: 'rejected', applyCode: undefined, expired: false },
-      { name: 'expiry', body: 'yes', decision: 'approve' as const, text: 'That approval expired, so the change was not completed.', expectedStatus: 'expired', applyCode: undefined, expired: true },
-      { name: 'stale approval', body: 'yes', decision: 'approve' as const, text: 'The change was not completed because the context changed. Please ask me to review it again.', expectedStatus: 'stale', applyCode: 'working_memory_revision_stale', expired: false },
-      { name: 'unclear', body: 'maybe', decision: 'ambiguous' as const, text: 'I am ready to make that change. Would you like me to approve it?', expectedStatus: 'pending', applyCode: undefined, expired: false },
+      { name: 'approval', body: 'yes', decision: 'approve' as const, text: 'The change to Buy a BMW X7 is now in place.', expectedStatus: 'applied', applyCode: undefined, expired: false },
+      { name: 'rejection', body: 'no', decision: 'reject' as const, text: 'No changes were made to Buy a BMW X7.', expectedStatus: 'rejected', applyCode: undefined, expired: false },
+      { name: 'expiry', body: 'yes', decision: 'approve' as const, text: 'I could not complete the change to Buy a BMW X7. No changes were made.', expectedStatus: 'expired', applyCode: undefined, expired: true },
+      { name: 'stale approval', body: 'yes', decision: 'approve' as const, text: 'I could not complete the change to Buy a BMW X7. No changes were made.', expectedStatus: 'stale', applyCode: 'working_memory_revision_stale', expired: false },
+      { name: 'unclear', body: 'maybe', decision: 'ambiguous' as const, text: 'I can update Buy a BMW X7. Would you like me to proceed?', expectedStatus: 'pending', applyCode: undefined, expired: false },
     ] as const;
 
     for (const scenario of scenarios) {
@@ -2036,10 +2037,10 @@ describe('OrchestratorAgent', () => {
       decision: 'approve',
     });
     expect(unavailable).toMatchObject({ status: 'failed', code: 'working_memory_storage_unavailable' });
-    expect(unavailable.response.body).toBe('The change could not be stored.');
+    expect(unavailable.response.body).toBe('I could not complete the change to Buy a BMW X7. No changes were made.');
   });
 
-  it('raises a typed error when Working Memory synthesis never submits a response', async () => {
+  it('returns a safe fallback when Working Memory synthesis never submits a response', async () => {
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
       agentFactory: (config) => ({ ...config, generate: vi.fn(async () => rawOrchestratorTextLeak('')) }) as never,
@@ -2060,7 +2061,10 @@ describe('OrchestratorAgent', () => {
       message: message('yes'),
       pending: pendingWorkingMemory(),
       decision: 'approve',
-    })).rejects.toMatchObject({ code: 'orchestrator_response_not_submitted' });
+    })).resolves.toMatchObject({
+      status: 'applied',
+      response: { body: 'The change to Buy a BMW X7 is now in place.' },
+    });
   });
 
   it('keeps the full checked team result for citations while exposing only a safe final-synthesis view to the model', async () => {

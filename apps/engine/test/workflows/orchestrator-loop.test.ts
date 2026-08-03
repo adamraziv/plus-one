@@ -271,6 +271,17 @@ describe('orchestrator workflow loop', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('preserves the underlying workflow provider error for route classification', async () => {
+    const providerError = Object.assign(new Error('Rate limit exceeded'), { statusCode: 429 });
+    const workflow = workflowWithRun({
+      start: vi.fn(async () => ({ status: 'failed', error: providerError })),
+      resume: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+    });
+
+    await expect(runOrchestratorLoop({ workflow, message })).rejects.toBe(providerError);
+  });
+
   it('does not start a workflow run when the channel signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort(new DOMException('Timed out', 'TimeoutError'));

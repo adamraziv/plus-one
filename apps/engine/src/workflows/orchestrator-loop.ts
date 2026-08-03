@@ -312,6 +312,9 @@ async function executeOrchestratorLoop(input: {
     if (isSuspended(result)) {
       return finalResponseFromPayload(result.suspendPayload);
     }
+    if (isRecord(result) && 'error' in result && result.error !== undefined) {
+      throw result.error;
+    }
     throw new Error(`Unexpected orchestrator loop result: ${(result as { status?: string }).status ?? 'unknown'}`);
   } finally {
     input.signal?.removeEventListener('abort', onAbort);
@@ -320,6 +323,10 @@ async function executeOrchestratorLoop(input: {
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException('Orchestrator workflow aborted.', 'AbortError');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function optionalSignal(signal: AbortSignal | undefined): { signal?: AbortSignal } {

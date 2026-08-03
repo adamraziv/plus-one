@@ -63,11 +63,17 @@ export async function runConversationTurn(
   if (open.status === 'resolving') return recoverResolvingInteraction(dependencies, open, input);
   if (open.resolutionResponse !== undefined) return open.resolutionResponse;
 
-  const disposition = await dependencies.orchestrator.classifyPendingWorkingMemoryInput({
-    message,
-    pending: open.pendingWorkingMemoryMutation,
-    ...optionalSignal(input.signal),
-  });
+  let disposition: Awaited<ReturnType<ConversationTurnRouterDependencies['orchestrator']['classifyPendingWorkingMemoryInput']>>;
+  try {
+    disposition = await dependencies.orchestrator.classifyPendingWorkingMemoryInput({
+      message,
+      pending: open.pendingWorkingMemoryMutation,
+      ...optionalSignal(input.signal),
+    });
+  } catch (error) {
+    if (input.signal?.aborted) throw error;
+    disposition = 'ambiguous';
+  }
   if (disposition === 'new_intent') return dependencies.runNormalTurn(input);
   if (disposition === 'ambiguous') {
     const result = await dependencies.orchestrator.resolvePendingWorkingMemoryMutation({
