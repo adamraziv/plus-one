@@ -109,7 +109,8 @@ describe('pending interaction contracts', () => {
     });
     expect(PendingInteractionSchemaV1.parse(terminal).status).toBe('applied');
     const parsedTerminal = PendingInteractionSchemaV1.parse(terminal);
-    const { resolvedAt: _resolvedAt, ...withoutResolvedAt } = parsedTerminal;
+    const withoutResolvedAt = { ...parsedTerminal };
+    delete withoutResolvedAt.resolvedAt;
     expect(() => PendingInteractionSchemaV1.parse(withoutResolvedAt)).toThrow();
   });
 

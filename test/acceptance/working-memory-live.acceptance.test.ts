@@ -42,6 +42,40 @@ afterAll(async () => {
 }, 120_000);
 
 describe('Working Memory through the real gateway and configured provider', () => {
+  it('working-memory-model-compatibility: issue #33 keeps the exact confirmation pending across an Indonesian budget request', async () => {
+    const target = ids();
+    const proposal = await sendMessage({
+      ...target,
+      body: 'Please remember that I prefer concise household summaries, but ask me for confirmation before saving it.',
+    });
+    expectSuccessful(proposal);
+    expect(proposal.body).toMatch(/confirm|approve|would you like|remember|save/i);
+
+    const before = await pendingInteraction(target);
+    expect(before.status).toBe('pending');
+
+    const unrelated = await sendMessage({
+      ...target,
+      body: 'Buat budget bulanan: total 10 juta IDR, prioritaskan makanan 2 juta IDR dan transportasi 1 juta IDR.',
+    });
+    expectSuccessful(unrelated);
+    expect(unrelated.body).not.toMatch(/concise.*(?:saved|stored)|(?:saved|stored).*concise/i);
+
+    const afterUnrelated = await pendingInteraction(target);
+    expect(afterUnrelated).toEqual(before);
+    await expect(readMemory(target)).resolves.toMatchObject({ version: 1, entries: {} });
+
+    const approved = await sendMessage({ ...target, body: 'yes' });
+    expectSuccessful(approved);
+    expect(approved.body).toMatch(/saved|stored|updated|preference/i);
+    const stored = await readMemory(target);
+    expect(findEntry(stored, 'communication_preference')).toBeDefined();
+
+    const terminal = await pendingInteraction(target);
+    expect(terminal.status).toBe('applied');
+    expect(terminal.resolutionExternalMessageId).toBeTruthy();
+  }, 300_000);
+
   it('working-memory-model-compatibility: creates a natural-language goal after inspection and recalls it in a new thread', async () => {
     const target = ids();
     const created = await sendMessage({
@@ -454,6 +488,40 @@ async function seedHousehold(householdId: string): Promise<void> {
        ON CONFLICT DO NOTHING`,
       [householdId],
     );
+  } finally {
+    await operations.end();
+  }
+}
+
+async function pendingInteraction(target: LiveIds): Promise<{
+  status: string;
+  payload: unknown;
+  resolutionExternalMessageId: string | null;
+}> {
+  const operations = new Pool({ connectionString: live().context.roleUrls.operations, max: 1 });
+  try {
+    const result = await operations.query<{
+      status: string;
+      payload: unknown;
+      resolution_external_message_id: string | null;
+    }>(
+      `SELECT status, payload, resolution_external_message_id
+       FROM operations.pending_interactions
+       JOIN operations.households ON households.id = pending_interactions.household_id
+       WHERE households.household_id = $1
+         AND pending_interactions.conversation_id = $2
+         AND pending_interactions.speaker_principal_ref = $3
+       ORDER BY pending_interactions.id DESC
+       LIMIT 1`,
+      [target.householdId, target.conversationId, principalRef],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error('Expected a durable pending Working Memory interaction.');
+    return {
+      status: row.status,
+      payload: row.payload,
+      resolutionExternalMessageId: row.resolution_external_message_id,
+    };
   } finally {
     await operations.end();
   }

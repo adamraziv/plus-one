@@ -307,8 +307,10 @@ function pendingInteractionRepository() {
       stored = PendingInteractionSchemaV1.parse(candidate);
       return stored;
     }),
-    findOpen: vi.fn(async (_input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) =>
-      stored?.status === 'pending' || stored?.status === 'resolving' ? stored : undefined),
+    findOpen: vi.fn(async (input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) => {
+      void input;
+      return stored?.status === 'pending' || stored?.status === 'resolving' ? stored : undefined;
+    }),
     findById: vi.fn(async () => stored),
     findByResolutionMessage: vi.fn(async ({ externalMessageId }: { externalMessageId: string }) =>
       stored?.resolutionExternalMessageId === externalMessageId ? stored : undefined),
