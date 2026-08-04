@@ -1693,6 +1693,41 @@ describe('OrchestratorAgent', () => {
     }
   });
 
+  it('logs typed orchestrator failure diagnostics', async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), 'plus-one-orchestrator-'));
+    const logging = configureLogging({ homeDirectory });
+    const generate = vi.fn(async () => {
+      throw new PlusOneError({
+        category: 'runtime_failure',
+        code: 'orchestrator_response_not_submitted',
+        message: 'The orchestrator did not submit a valid final response.',
+        retry: 'after_backoff',
+        receiptLookupRequired: false,
+      });
+    });
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead: vi.fn(), teams: [] });
+
+    try {
+      await expect(orchestrator.run({ message: message('Can you help?') }))
+        .rejects.toMatchObject({ code: 'orchestrator_response_not_submitted' });
+      await logging.flush();
+      const records = (await readFile(join(homeDirectory, 'logs', 'agent.log'), 'utf8'))
+        .trim().split('\n')
+        .map((line) => parseLogEnvelope(line))
+        .filter((record): record is LogEnvelopeV1 => record !== undefined);
+      expect(records).toContainEqual(expect.objectContaining({
+        eventName: 'turn.failed',
+        severityText: 'ERROR',
+        attributes: expect.objectContaining({
+          'error.code': 'orchestrator_response_not_submitted',
+          'exception.message': 'The orchestrator did not submit a valid final response.',
+        }),
+      }));
+    } finally {
+      await logging.close();
+    }
+  });
+
   it('limits model construction to the top-level orchestrator agent', () => {
     const configs: Array<{
       id: string | undefined;
@@ -2488,6 +2523,115 @@ describe('OrchestratorAgent', () => {
     expect(response.body).not.toContain('The checked evidence includes one account row.');
     expect(scriptedModel.doGenerate).toHaveBeenCalledTimes(3);
     expect(modelCalls).toHaveLength(3);
+  });
+
+  it('stops a stale delegation plan after a pending result and recovers through checked synthesis', async () => {
+    const pending = pendingChartTeamResult();
+    const runTeamLead = vi.fn(async () => pending);
+    const resumePendingMutation = vi.fn(async () => persistedChartTeamResult());
+    const modelCalls: unknown[] = [];
+    const scriptedModel = {
+      specificationVersion: 'v2' as const,
+      provider: 'test',
+      modelId: 'orchestrator-pending-result-recovery',
+      supportedUrls: {},
+      doGenerate: vi.fn(async (options: unknown) => {
+        modelCalls.push(options);
+        const prompt = JSON.stringify((options as { prompt?: unknown }).prompt);
+        if (modelCalls.length === 1) {
+          return {
+            finishReason: 'tool-calls' as const,
+            content: [{
+              type: 'tool-call' as const,
+              toolCallId: 'delegate-pending',
+              toolName: 'delegateTeam',
+              input: JSON.stringify({
+                team: 'accounting',
+                request: {
+                  schemaName: 'accounting-lead-request',
+                  schemaVersion: 1,
+                  intent: 'chart_of_accounts',
+                  request: {
+                    schemaName: 'chart-work-request-draft',
+                    schemaVersion: 1,
+                    action: 'create_account',
+                    instruction: 'Add Bank ABC as an IDR asset account.',
+                    known: {
+                      accountName: 'Bank ABC',
+                      accountingClass: 'asset',
+                      normalBalance: 'debit',
+                      nativeCurrency: 'IDR',
+                    },
+                  },
+                },
+              }),
+            }],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            warnings: [],
+          };
+        }
+        if (prompt.includes('delegate-pending')) {
+          throw new Error('stale delegateTeam request reached a reduced tool set');
+        }
+        return {
+          finishReason: 'tool-calls' as const,
+          content: [{
+            type: 'tool-call' as const,
+            toolCallId: 'submit-pending-recovery',
+            toolName: 'submitFinalResponse',
+            input: JSON.stringify({
+              body: 'I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?',
+            }),
+          }],
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          warnings: [],
+        };
+      }),
+      doStream: async () => {
+        throw new Error('The orchestrator test uses non-streaming generation.');
+      },
+    };
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => new Agent({ ...config, model: scriptedModel as never }),
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead,
+        resumePendingMutation,
+        cancelPendingMutation: vi.fn(),
+      },
+    });
+
+    const turn = await orchestrator.runTurn({ message: message('Add Bank ABC as an IDR asset account.') });
+
+    expect(turn).toMatchObject({
+      kind: 'ask-user',
+      response: { body: 'I’ll add Bank ABC as an IDR asset account with a normal debit balance. Would you like me to proceed?' },
+    });
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(resumePendingMutation).not.toHaveBeenCalled();
+    expect(modelCalls).toHaveLength(2);
+  });
+
+  it('uses the same checked-result recovery for a non-accounting terminal result', async () => {
+    const runTeamLead = vi.fn(async () => failedTeamResult());
+    const generate = vi.fn()
+      .mockImplementationOnce(async () => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'query',
+          request: queryDraft('Show our transactions.'),
+        });
+        return rawOrchestratorTextLeak(' ');
+      })
+      .mockImplementationOnce(async (_prompt: unknown, options: unknown) =>
+        submitFinalResponse(options, 'I could not complete that request safely. Please try again.'));
+    const orchestrator = singleLoopOrchestrator({ generate, runTeamLead, teams: [queryTeam] });
+
+    const response = await orchestrator.run({ message: message('Show our transactions.') });
+
+    expect(response.body).toBe('I could not complete that request safely. Please try again.');
+    expect(runTeamLead).toHaveBeenCalledOnce();
+    expect(generate).toHaveBeenCalledTimes(2);
   });
 
   it('passes the inbound timestamp and user body into a non-memory model prompt', async () => {
