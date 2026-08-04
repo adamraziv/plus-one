@@ -20,7 +20,10 @@ export function canonicalBudgetingDraft(
   if (!hasBudgetFacts(known)) return parsed;
   if (
     known.evidence !== undefined
-    && budgetingEvidenceIsGrounded(message, known)
+    && (
+      budgetingEvidenceIsGrounded(message, known)
+      || budgetingEvidenceIsContainedInInstruction(parsed.request.instruction, known)
+    )
     && budgetingEvidenceCoversKnownFacts(known)
   ) return parsed;
   return BudgetingDelegateRequestSchemaV1.parse({
@@ -42,6 +45,27 @@ export function budgetingEvidenceIsGrounded(
   );
 }
 
+function budgetingEvidenceIsContainedInInstruction(
+  instruction: string,
+  known: BudgetingKnownInputsV1,
+): boolean {
+  const normalizedInstruction = normalizedEvidenceText(instruction);
+  return (known.evidence ?? []).every((span) =>
+    normalizedInstruction.includes(normalizedEvidenceText(span.sourceQuote)),
+  );
+}
+
+function normalizedEvidenceText(value: string): string {
+  const expanded = value.toLocaleLowerCase().replace(
+    /\b(\d+(?:\.\d+)?)\s*k\b/g,
+    (_match: string, numberText: string) => String(Number(numberText) * 1_000),
+  );
+  return expanded
+    .replaceAll(/[^a-z0-9]+/g, ' ')
+    .replaceAll(/(?<=\d) +(?=\d)/g, '')
+    .trim();
+}
+
 export function budgetingEvidenceCoversKnownFacts(known: BudgetingKnownInputsV1): boolean {
   const evidence = known.evidence ?? [];
   return requiredBudgetEvidencePaths(known).every((requiredPath) =>
@@ -61,7 +85,9 @@ function requiredBudgetEvidencePaths(known: BudgetingKnownInputsV1): string[] {
 function evidencePathCovers(requiredPath: string, evidencePath: string): boolean {
   return evidencePath === requiredPath
     || requiredPath.startsWith(`${evidencePath}.`)
-    || requiredPath.startsWith(`${evidencePath}[`);
+    || requiredPath.startsWith(`${evidencePath}[`)
+    || evidencePath.startsWith(`${requiredPath}.`)
+    || evidencePath.startsWith(`${requiredPath}[`);
 }
 
 function hasBudgetFacts(known: BudgetingKnownInputsV1): boolean {
