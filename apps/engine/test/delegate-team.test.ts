@@ -6,6 +6,7 @@ import {
   AccountingDelegateRequestSchemaV1,
   BudgetingDelegateRequestSchemaV1,
   DelegateTeamToolInputSchema,
+  parseDelegateTeamToolInput,
 } from '../src/tools/delegate-team-schemas.js';
 import { MaterializedAccountingLeadRequestSchemaV1 } from '../src/accounting/accounting-lead-contracts.js';
 
@@ -74,6 +75,43 @@ describe('createDelegateTeamTool', () => {
         requiredCalculations: [],
       },
     }).success).toBe(false);
+  });
+
+  it('normalizes the observed budgeting evidence and money aliases before validation', () => {
+    const parsed = parseDelegateTeamToolInput({
+      team: 'budgeting',
+      request: {
+        intent: 'budget_plan',
+        request: {
+          instruction: 'savings, monthly, 500k idr, living',
+          scopeKey: 'monthly',
+          known: {
+            priorities: ['savings'],
+            targetAmount: { amount: 500000, currency: 'IDR' },
+            categories: [{ name: 'living' }],
+            evidence: [
+              { semanticPath: 'priorities[0]', sourceQuote: 'savings', start: 0, end: 7 },
+              { semanticPath: 'targetAmount.amount', sourceQuote: '500k idr', start: 18, end: 26 },
+              { semanticPath: 'categories[0].name', sourceQuote: 'living', start: 28, end: 34 },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(parsed.request).toMatchObject({
+      intent: 'budget_plan',
+      request: {
+        known: {
+          targetAmount: { amount: '500000', currency: 'IDR' },
+          evidence: expect.arrayContaining([
+            { path: 'priorities[0]', sourceQuote: 'savings', start: 0, end: 7 },
+            { path: 'targetAmount.amount', sourceQuote: '500k idr', start: 18, end: 26 },
+            { path: 'categories[0].name', sourceQuote: 'living', start: 28, end: 34 },
+          ]),
+        },
+      },
+    });
   });
 
   it('rejects the malformed accounting shape observed from a generic request schema', () => {

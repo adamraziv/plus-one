@@ -37,13 +37,13 @@ const pending = PendingInteractionSchemaV1.parse({
       },
     },
     basedOnRevision: 'a'.repeat(64),
-    createdAt: '2026-07-06T00:00:00.000Z',
-    expiresAt: '2026-07-06T00:15:00.000Z',
+    createdAt: '2026-12-06T00:00:00.000Z',
+    expiresAt: '2026-12-06T00:15:00.000Z',
   },
   status: 'pending',
   version: 0,
-  createdAt: '2026-07-06T00:00:00.000Z',
-  expiresAt: '2026-07-06T00:15:00.000Z',
+  createdAt: '2026-12-06T00:00:00.000Z',
+  expiresAt: '2026-12-06T00:15:00.000Z',
 });
 
 const message = (body: string, externalMessageId: string) => InboundChannelMessageSchemaV1.parse({
@@ -53,7 +53,7 @@ const message = (body: string, externalMessageId: string) => InboundChannelMessa
   householdId,
   channel: 'telegram',
   externalMessageId,
-  receivedAt: '2026-07-06T00:05:00.000Z',
+  receivedAt: '2026-12-06T00:05:00.000Z',
   speaker: { principalRef },
   body,
   attachments: [],
@@ -97,6 +97,16 @@ class InMemoryPendingInteractions implements PendingInteractionRepository {
       record.householdId === input.householdId
       && record.conversationId === input.conversationId
       && record.speakerPrincipalRef === input.speakerPrincipalRef
+      && Date.parse(record.expiresAt) > Date.now()
+      && (record.status === 'pending' || record.status === 'resolving'));
+  }
+
+  async findExpired(input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) {
+    return [...this.records.values()].find((record) =>
+      record.householdId === input.householdId
+      && record.conversationId === input.conversationId
+      && record.speakerPrincipalRef === input.speakerPrincipalRef
+      && Date.parse(record.expiresAt) <= Date.now()
       && (record.status === 'pending' || record.status === 'resolving'));
   }
 
@@ -116,6 +126,7 @@ class InMemoryPendingInteractions implements PendingInteractionRepository {
     householdId: string;
     interactionId: string;
     externalMessageId: string;
+    decision: 'approve' | 'reject';
     expectedVersion: number;
   }) {
     const record = await this.findById(input);
@@ -127,6 +138,7 @@ class InMemoryPendingInteractions implements PendingInteractionRepository {
       status: 'resolving',
       version: record.version + 1,
       resolutionExternalMessageId: input.externalMessageId,
+      resolutionDecision: input.decision,
     });
     this.records.set(record.interactionId, claimed);
     return { kind: 'claimed' as const, interaction: claimed };
@@ -153,6 +165,35 @@ class InMemoryPendingInteractions implements PendingInteractionRepository {
     });
     this.records.set(record.interactionId, completed);
     return completed;
+  }
+
+  async expire(input: {
+    householdId: string;
+    interactionId: string;
+    externalMessageId: string;
+    expectedVersion: number;
+    resolutionCode: string;
+    resolutionResponse: ReturnType<typeof response>;
+    resolvedAt: string;
+  }) {
+    const record = await this.findById(input);
+    if (record === undefined
+      || record.version !== input.expectedVersion
+      || !['pending', 'resolving'].includes(record.status)
+      || Date.parse(record.expiresAt) > Date.now()) {
+      throw new Error('pending interaction changed');
+    }
+    const expired = PendingInteractionSchemaV1.parse({
+      ...record,
+      status: 'expired',
+      version: record.version + 1,
+      resolutionExternalMessageId: record.resolutionExternalMessageId ?? input.externalMessageId,
+      resolutionCode: input.resolutionCode,
+      resolutionResponse: input.resolutionResponse,
+      resolvedAt: input.resolvedAt,
+    });
+    this.records.set(record.interactionId, expired);
+    return expired;
   }
 }
 
@@ -259,6 +300,32 @@ describe('conversation turn router', () => {
     expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('expired');
   });
 
+  it('expires an old interaction before routing a new intent', async () => {
+    const repository = new InMemoryPendingInteractions();
+    await repository.create(PendingInteractionSchemaV1.parse({
+      ...pending,
+      createdAt: '2026-07-05T23:45:00.000Z',
+      expiresAt: '2026-07-06T00:00:00.000Z',
+      pendingWorkingMemoryMutation: {
+        ...pending.pendingWorkingMemoryMutation,
+        createdAt: '2026-07-05T23:45:00.000Z',
+        expiresAt: '2026-07-06T00:00:00.000Z',
+      },
+    }));
+    const deps = dependencies({ repository, disposition: 'new_intent' });
+
+    await expect(runConversationTurn(deps, { message: message('What is our July budget?', 'message-new-intent') }))
+      .resolves.toMatchObject({ body: 'Handled as a new request.' });
+
+    expect(deps.mocks.resolve).not.toHaveBeenCalled();
+    expect(deps.mocks.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'expired',
+      code: 'working_memory_proposal_expired',
+    }));
+    expect(deps.mocks.normal).toHaveBeenCalledOnce();
+    expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('expired');
+  });
+
   it('replays a completed resolution without classifying or applying again', async () => {
     const repository = new InMemoryPendingInteractions();
     await repository.create(pending);
@@ -281,6 +348,7 @@ describe('conversation turn router', () => {
       status: 'resolving',
       version: 1,
       resolutionExternalMessageId: 'message-crashed',
+      resolutionDecision: 'approve',
     }));
     const deps = dependencies({ repository, disposition: 'approve' });
     const mutation = pending.pendingWorkingMemoryMutation.mutation;
@@ -319,6 +387,7 @@ describe('conversation turn router', () => {
       status: 'resolving',
       version: 1,
       resolutionExternalMessageId: 'message-stale',
+      resolutionDecision: 'approve',
     }));
     const deps = dependencies({ repository, disposition: 'approve' });
     const inspectWorkingMemory = vi.fn(async () => ({
@@ -348,6 +417,7 @@ describe('conversation turn router', () => {
       status: 'resolving',
       version: 1,
       resolutionExternalMessageId: 'message-inspection-failed',
+      resolutionDecision: 'approve',
     }));
     const deps = dependencies({ repository, disposition: 'approve' });
     const applyWorkingMemoryMutation = vi.fn();
@@ -380,5 +450,30 @@ describe('conversation turn router', () => {
       directive: 'The change could not be recovered. Do not say it was completed.',
     });
     expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('failed');
+  });
+
+  it('does not apply a rejected decision during crash recovery', async () => {
+    const repository = new InMemoryPendingInteractions();
+    repository.records.set(pending.interactionId, PendingInteractionSchemaV1.parse({
+      ...pending,
+      status: 'resolving',
+      version: 1,
+      resolutionExternalMessageId: 'message-rejected-crash',
+      resolutionDecision: 'reject',
+    }));
+    const deps = dependencies({ repository, disposition: 'approve' });
+    const applyWorkingMemoryMutation = vi.fn();
+    const inspectWorkingMemory = vi.fn();
+
+    const recovered = await runConversationTurn({
+      ...deps,
+      sessionMemory: { inspectWorkingMemory, applyWorkingMemoryMutation } as never,
+    }, { message: message('a later request', 'message-rejected-crash') });
+
+    expect(recovered.body).toBe('Resolved reject.');
+    expect(deps.mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ decision: 'reject' }));
+    expect(inspectWorkingMemory).not.toHaveBeenCalled();
+    expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
+    expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('rejected');
   });
 });

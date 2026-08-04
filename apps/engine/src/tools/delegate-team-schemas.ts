@@ -25,6 +25,10 @@ import {
 } from '../accounting/accounting-request-drafts.js';
 
 const jsonObjectSchema = z.record(z.string(), JsonValueSchema);
+const budgetingRequestDescription =
+  'Budgeting plan shape: {"intent":"budget_plan","request":{"instruction":"preserve the user request","scopeKey":"monthly","known":{"priorities":["..."],"targetAmount":{"amount":"0","currency":"IDR"},"categories":[{"name":"..."}],"evidence":[{"path":"priorities[0]","sourceQuote":"...","start":0,"end":1}]}}}. '
+  + 'Scenario shape: {"intent":"budget_scenarios","request":{"instruction":"preserve the user request","scenarioCount":2,"known":{...}}}. '
+  + 'Use exact evidence keys path, sourceQuote, start, and end; amounts are decimal strings.';
 const TeamIdSchema = z.enum([
   'query',
   'accounting',
@@ -174,9 +178,7 @@ export const DelegateTeamToolInputSchema = z.object({
     jsonObjectSchema,
     z.string().min(2).max(32_000).describe('JSON-object text for providers that serialize nested tool input.'),
   ]).describe(
-    'One semantic team request. Budgeting exact shape: '
-      + '{"intent":"budget_plan","request":{"instruction":"preserve the user request","scopeKey":"monthly"}} '
-      + 'or use intent "budget_scenarios" with request fields instruction and scenarioCount.',
+    `One semantic team request. ${budgetingRequestDescription}`,
   ),
 }).strict().describe('Delegate exactly one user task to the specialist team matching the user intent.');
 
@@ -184,7 +186,10 @@ export type { TransactionCaptureRequestDraftV1 };
 
 export function parseDelegateTeamToolInput(input: unknown) {
   const parsed = DelegateTeamToolInputSchema.parse(input);
-  const request = decodeProviderRequest(parsed.request);
+  const decodedRequest = decodeProviderRequest(parsed.request);
+  const request = parsed.team === 'budgeting'
+    ? normalizeBudgetingProviderRequest(decodedRequest)
+    : decodedRequest;
   if (parsed.team === 'query') {
     const canonical = QueryDelegateRequestSchemaV1.safeParse(request);
     return {
@@ -286,6 +291,71 @@ function decodeProviderRequest(request: JsonValue | string): Record<string, Json
   return jsonObjectSchema.parse(decoded);
 }
 
+function normalizeBudgetingProviderRequest(
+  request: Record<string, JsonValue>,
+): Record<string, JsonValue> {
+  if (request.intent !== 'budget_plan' && request.intent !== 'budget_scenarios') return request;
+  const nested = jsonRecord(request.request);
+  const known = nested === undefined ? undefined : jsonRecord(nested.known);
+  if (nested === undefined || known === undefined) return request;
+  const normalizedKnown: Record<string, JsonValue> = { ...known };
+  if (Array.isArray(known.evidence)) {
+    normalizedKnown.evidence = known.evidence.map(normalizeBudgetEvidence);
+  }
+  if (known.targetAmount !== undefined) {
+    normalizedKnown.targetAmount = normalizeBudgetMoney(known.targetAmount);
+  }
+  if (Array.isArray(known.categories)) {
+    normalizedKnown.categories = known.categories.map((category) => {
+      const record = jsonRecord(category);
+      if (record === undefined || record.targetAmount === undefined) return category;
+      return { ...record, targetAmount: normalizeBudgetMoney(record.targetAmount) };
+    });
+  }
+  return { ...request, request: { ...nested, known: normalizedKnown } };
+}
+
+function normalizeBudgetEvidence(value: JsonValue): JsonValue {
+  const evidence = jsonRecord(value);
+  if (evidence === undefined) return value;
+  const {
+    semanticPath: _semanticPath,
+    startOffset: _startOffset,
+    endOffset: _endOffset,
+    ...withoutAliases
+  } = evidence;
+  const path = typeof evidence.path === 'string'
+    ? evidence.path
+    : typeof evidence.semanticPath === 'string' ? evidence.semanticPath : undefined;
+  const start = typeof evidence.start === 'number'
+    ? evidence.start
+    : typeof evidence.startOffset === 'number' ? evidence.startOffset : undefined;
+  const end = typeof evidence.end === 'number'
+    ? evidence.end
+    : typeof evidence.endOffset === 'number' ? evidence.endOffset : undefined;
+  return {
+    ...withoutAliases,
+    ...(path === undefined ? {} : { path }),
+    ...(start === undefined ? {} : { start }),
+    ...(end === undefined ? {} : { end }),
+  };
+}
+
+function normalizeBudgetMoney(value: JsonValue): JsonValue {
+  const money = jsonRecord(value);
+  if (money === undefined || money.amount === undefined) return value;
+  const amount = normalizeBudgetAmount(money.amount);
+  return amount === money.amount ? value : { ...money, amount };
+}
+
+function normalizeBudgetAmount(value: JsonValue): JsonValue {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return value;
+  const shorthand = /^(\d+(?:\.\d+)?)\s*k$/i.exec(value.trim());
+  if (shorthand === null) return value;
+  return String(Number(shorthand[1]) * 1_000);
+}
+
 function normalizeAccountingProviderRequest(
   request: Record<string, JsonValue>,
 ): Record<string, JsonValue> {
@@ -349,7 +419,7 @@ export function requestForRuntime(request: unknown): JsonValue {
 
 export function delegateTeamRequestCorrection(team: string): string {
   if (team === 'budgeting') {
-    return 'Budgeting request must be exactly {"intent":"budget_plan","request":{"instruction":"preserve the user request","scopeKey":"monthly"}} or use intent "budget_scenarios" with request fields instruction and scenarioCount. The nested key is request.';
+    return `Budgeting request must use the canonical nested request shape. ${budgetingRequestDescription}`;
   }
   if (team === 'query') {
     return 'Query request must contain businessQuestion and may contain timeframe, desiredGrain, requiredCalculations, and coverage.';

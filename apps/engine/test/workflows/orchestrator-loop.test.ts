@@ -68,8 +68,8 @@ const pendingWorkingMemoryMutation = PendingWorkingMemoryMutationSchema.parse({
     },
   },
   basedOnRevision: 'a'.repeat(64),
-  createdAt: '2026-07-06T00:00:00.000Z',
-  expiresAt: '2026-07-06T00:15:00.000Z',
+  createdAt: '2026-12-06T00:00:00.000Z',
+  expiresAt: '2026-12-06T00:15:00.000Z',
 });
 
 describe('orchestrator workflow loop', () => {
@@ -404,18 +404,31 @@ function pendingInteractionRepository() {
     }),
     findOpen: vi.fn(async (input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) => {
       void input;
-      return stored?.status === 'pending' || stored?.status === 'resolving' ? stored : undefined;
+      return stored !== undefined
+        && (stored.status === 'pending' || stored.status === 'resolving')
+        && Date.parse(stored.expiresAt) > Date.now()
+        ? stored
+        : undefined;
+    }),
+    findExpired: vi.fn(async (input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) => {
+      void input;
+      return stored !== undefined
+        && (stored.status === 'pending' || stored.status === 'resolving')
+        && Date.parse(stored.expiresAt) <= Date.now()
+        ? stored
+        : undefined;
     }),
     findById: vi.fn(async () => stored),
     findByResolutionMessage: vi.fn(async ({ externalMessageId }: { externalMessageId: string }) =>
       stored?.resolutionExternalMessageId === externalMessageId ? stored : undefined),
-    claim: vi.fn(async ({ externalMessageId }: { externalMessageId: string }) => {
+    claim: vi.fn(async ({ externalMessageId, decision }: { externalMessageId: string; decision: 'approve' | 'reject' }) => {
       if (stored === undefined) throw new Error('missing interaction');
       stored = PendingInteractionSchemaV1.parse({
         ...stored,
         status: 'resolving',
         version: stored.version + 1,
         resolutionExternalMessageId: externalMessageId,
+        resolutionDecision: decision,
       });
       return { kind: 'claimed' as const, interaction: stored };
     }),
@@ -430,6 +443,24 @@ function pendingInteractionRepository() {
         ...stored,
         status: input.status,
         version: stored.version + 1,
+        resolutionCode: input.resolutionCode,
+        resolutionResponse: input.resolutionResponse,
+        resolvedAt: input.resolvedAt,
+      });
+      return stored;
+    }),
+    expire: vi.fn(async (input: {
+      externalMessageId: string;
+      resolutionCode: string;
+      resolutionResponse: ReturnType<typeof response>;
+      resolvedAt: string;
+    }) => {
+      if (stored === undefined) throw new Error('missing interaction');
+      stored = PendingInteractionSchemaV1.parse({
+        ...stored,
+        status: 'expired',
+        version: stored.version + 1,
+        resolutionExternalMessageId: stored.resolutionExternalMessageId ?? input.externalMessageId,
         resolutionCode: input.resolutionCode,
         resolutionResponse: input.resolutionResponse,
         resolvedAt: input.resolvedAt,

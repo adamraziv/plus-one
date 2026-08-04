@@ -8,7 +8,7 @@ import {
 import type { PendingInteractionRepository } from '@plus-one/database';
 import type { OrchestratorAgent, WorkingMemoryResolutionResult } from '../agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
-import { workingMemoryMutationEffectIsPresent } from '../memory/working-memory-document.js';
+import { proposalExpired, workingMemoryMutationEffectIsPresent } from '../memory/working-memory-document.js';
 
 type TerminalWorkingMemoryResolutionStatus = Exclude<WorkingMemoryResolutionStatusV1, 'pending'>;
 
@@ -59,20 +59,45 @@ export async function runConversationTurn(
   }
 
   const open = await dependencies.pendingInteractions.findOpen(scope);
-  if (open === undefined) return dependencies.runNormalTurn(input);
-  if (open.status === 'resolving') return recoverResolvingInteraction(dependencies, open, input);
-  if (open.resolutionResponse !== undefined) return open.resolutionResponse;
+  const expired = open === undefined
+    ? await dependencies.pendingInteractions.findExpired(scope)
+    : undefined;
+  const interaction = open ?? expired;
+  if (interaction === undefined) return dependencies.runNormalTurn(input);
+  if (open?.status === 'resolving') return recoverResolvingInteraction(dependencies, open, input);
+  if (interaction.resolutionResponse !== undefined) return interaction.resolutionResponse;
 
   let disposition: Awaited<ReturnType<ConversationTurnRouterDependencies['orchestrator']['classifyPendingWorkingMemoryInput']>>;
   try {
     disposition = await dependencies.orchestrator.classifyPendingWorkingMemoryInput({
       message,
-      pending: open.pendingWorkingMemoryMutation,
+      pending: interaction.pendingWorkingMemoryMutation,
       ...optionalSignal(input.signal),
     });
   } catch (error) {
     if (input.signal?.aborted) throw error;
     disposition = 'ambiguous';
+  }
+  if (expired !== undefined) {
+    if (disposition === 'new_intent') {
+      const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
+        message,
+        pending: expired.pendingWorkingMemoryMutation,
+        status: 'expired',
+        code: 'working_memory_proposal_expired',
+        directive: 'The proposal expired before it was approved. Do not say it was completed.',
+        ...optionalSignal(input.signal),
+      });
+      await completeIfTerminal(dependencies, expired, result, input);
+      return dependencies.runNormalTurn(input);
+    }
+    const result = await dependencies.orchestrator.resolvePendingWorkingMemoryMutation({
+      message,
+      pending: expired.pendingWorkingMemoryMutation,
+      decision: disposition,
+      ...optionalSignal(input.signal),
+    });
+    return completeIfTerminal(dependencies, expired, result, input);
   }
   if (disposition === 'new_intent') return dependencies.runNormalTurn(input);
   if (disposition === 'ambiguous') {
@@ -83,23 +108,15 @@ export async function runConversationTurn(
       ...optionalSignal(input.signal),
     });
     if (result.status === 'pending') return result.response;
-    const claimed = await dependencies.pendingInteractions.claim({
-      householdId: open.householdId,
-      interactionId: open.interactionId,
-      externalMessageId: message.externalMessageId,
-      expectedVersion: open.version,
-    });
-    if (claimed.kind === 'replay' && claimed.interaction.resolutionResponse !== undefined) {
-      return claimed.interaction.resolutionResponse;
-    }
-    return completeIfTerminal(dependencies, claimed.interaction, result, input);
+    return completeIfTerminal(dependencies, open!, result, input);
   }
 
   const claimed = await dependencies.pendingInteractions.claim({
-    householdId: open.householdId,
-    interactionId: open.interactionId,
+    householdId: open!.householdId,
+    interactionId: open!.interactionId,
     externalMessageId: message.externalMessageId,
-    expectedVersion: open.version,
+    decision: disposition,
+    expectedVersion: open!.version,
   });
   if (claimed.kind === 'replay' && claimed.interaction.resolutionResponse !== undefined) {
     return claimed.interaction.resolutionResponse;
@@ -130,6 +147,31 @@ async function recoverResolvingInteraction(
   interaction: PendingInteractionV1,
   input: ConversationTurnRouterInput,
 ): Promise<OrchestratorFinalResponseV1> {
+  if (proposalExpired(interaction.expiresAt, new Date())) {
+    const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: interaction.pendingWorkingMemoryMutation,
+      status: 'expired',
+      code: 'working_memory_proposal_expired',
+      directive: 'The proposal expired before it was approved. Do not say it was completed.',
+      ...optionalSignal(input.signal),
+    });
+    return completeIfTerminal(dependencies, interaction, result, input);
+  }
+  if (interaction.resolutionDecision === 'reject') {
+    return resolveClaimedInteraction(dependencies, interaction, 'reject', input);
+  }
+  if (interaction.resolutionDecision !== 'approve') {
+    const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: interaction.pendingWorkingMemoryMutation,
+      status: 'failed',
+      code: 'working_memory_resolution_decision_missing',
+      directive: 'The change could not be recovered because the original decision was not recorded. Do not say it was completed; ask the user to review the proposal again.',
+      ...optionalSignal(input.signal),
+    });
+    return completeIfTerminal(dependencies, interaction, result, input);
+  }
   const memory = dependencies.sessionMemory;
   if (memory === undefined) {
     const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
@@ -217,15 +259,25 @@ async function completeIfTerminal(
 ): Promise<OrchestratorFinalResponseV1> {
   if (result.status === 'pending') return result.response;
   try {
-    const completed = await dependencies.pendingInteractions.complete({
-      householdId: interaction.householdId,
-      interactionId: interaction.interactionId,
-      expectedVersion: interaction.version,
-      status: result.status as TerminalWorkingMemoryResolutionStatus,
-      resolutionCode: result.code,
-      resolutionResponse: result.response,
-      resolvedAt: input.message.receivedAt,
-    });
+    const completed = result.status === 'expired'
+      ? await dependencies.pendingInteractions.expire({
+        householdId: interaction.householdId,
+        interactionId: interaction.interactionId,
+        externalMessageId: input.message.externalMessageId,
+        expectedVersion: interaction.version,
+        resolutionCode: result.code,
+        resolutionResponse: result.response,
+        resolvedAt: input.message.receivedAt,
+      })
+      : await dependencies.pendingInteractions.complete({
+        householdId: interaction.householdId,
+        interactionId: interaction.interactionId,
+        expectedVersion: interaction.version,
+        status: result.status as TerminalWorkingMemoryResolutionStatus,
+        resolutionCode: result.code,
+        resolutionResponse: result.response,
+        resolvedAt: input.message.receivedAt,
+      });
     return completed.resolutionResponse ?? result.response;
   } catch (error) {
     const replay = await dependencies.pendingInteractions.findByResolutionMessage({
@@ -234,6 +286,11 @@ async function completeIfTerminal(
       externalMessageId: interaction.resolutionExternalMessageId ?? input.message.externalMessageId,
     });
     if (replay?.resolutionResponse !== undefined) return replay.resolutionResponse;
+    const current = await dependencies.pendingInteractions.findById({
+      householdId: interaction.householdId,
+      interactionId: interaction.interactionId,
+    });
+    if (current?.resolutionResponse !== undefined) return current.resolutionResponse;
     throw error;
   }
 }

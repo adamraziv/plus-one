@@ -24,8 +24,8 @@ const otherConversationId = 'conversation_01JNZQ4A9B8C7D6E5F4G3H2J1M';
 const principalRef = 'telegram:user:42';
 const proposalId = 'wmproposal_01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const otherProposalId = 'wmproposal_01ARZ3NDEKTSV4RRFFQ69G5FAW';
-const createdAt = '2026-08-03T10:00:00.000Z';
-const expiresAt = '2026-08-03T10:05:00.000Z';
+const createdAt = '2026-12-03T10:00:00.000Z';
+const expiresAt = '2026-12-03T10:05:00.000Z';
 
 async function seedHouseholds(pool: Pool): Promise<void> {
   await pool.query(
@@ -62,6 +62,8 @@ function candidate(overrides: {
   conversationId?: string;
   speakerPrincipalRef?: string;
   proposalId?: string;
+  createdAt?: string;
+  expiresAt?: string;
 } = {}) {
   const interactionId = overrides.interactionId ?? proposalId;
   const pendingProposalId = overrides.proposalId ?? interactionId;
@@ -81,8 +83,8 @@ function candidate(overrides: {
       },
     },
     basedOnRevision: 'a'.repeat(64),
-    createdAt,
-    expiresAt,
+    createdAt: overrides.createdAt ?? createdAt,
+    expiresAt: overrides.expiresAt ?? expiresAt,
   };
   return PendingInteractionSchemaV1.parse({
     schemaName: 'pending-interaction' as const,
@@ -95,8 +97,8 @@ function candidate(overrides: {
     pendingWorkingMemoryMutation: pending,
     status: 'pending' as const,
     version: 0,
-    createdAt,
-    expiresAt,
+    createdAt: overrides.createdAt ?? createdAt,
+    expiresAt: overrides.expiresAt ?? expiresAt,
   });
 }
 
@@ -140,21 +142,24 @@ describe('PostgresPendingInteractionRepository', () => {
         interactionId: proposalId,
         householdId,
         externalMessageId: 'telegram:42:approve-1',
+        decision: 'approve',
         expectedVersion: 0,
       });
       expect(claimed.kind).toBe('claimed');
-      expect(claimed.interaction).toMatchObject({ status: 'resolving', version: 1 });
+      expect(claimed.interaction).toMatchObject({ status: 'resolving', version: 1, resolutionDecision: 'approve' });
 
       await expect(repository.claim({
         interactionId: proposalId,
         householdId,
         externalMessageId: 'telegram:42:approve-1',
+        decision: 'approve',
         expectedVersion: 0,
       })).resolves.toMatchObject({ kind: 'replay' });
       await expect(repository.claim({
         interactionId: proposalId,
         householdId,
         externalMessageId: 'telegram:42:approve-2',
+        decision: 'approve',
         expectedVersion: 0,
       })).rejects.toMatchObject({ code: 'pending_interaction_state_conflict' });
 
@@ -182,6 +187,43 @@ describe('PostgresPendingInteractionRepository', () => {
         conversationId,
         externalMessageId: 'telegram:42:approve-1',
       })).resolves.toMatchObject({ status: 'applied' });
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('excludes an expired interaction and reuses its scope after atomic expiry', async () => {
+    const { pool, repository } = await setup('pending_interactions_expiry');
+    try {
+      const now = Date.now();
+      const expired = await repository.create(candidate({
+        createdAt: new Date(now - 120_000).toISOString(),
+        expiresAt: new Date(now - 60_000).toISOString(),
+      }));
+      await expect(repository.findOpen({ householdId, conversationId, speakerPrincipalRef: principalRef }))
+        .resolves.toBeUndefined();
+      await expect(repository.findExpired({ householdId, conversationId, speakerPrincipalRef: principalRef }))
+        .resolves.toMatchObject({ interactionId: expired.interactionId, status: 'pending' });
+
+      await expect(repository.expire({
+        householdId,
+        interactionId: expired.interactionId,
+        externalMessageId: 'telegram:42:expired-1',
+        expectedVersion: expired.version,
+        resolutionCode: 'working_memory_proposal_expired',
+        resolutionResponse: response(),
+        resolvedAt: new Date(now).toISOString(),
+      })).resolves.toMatchObject({ status: 'expired', version: 1 });
+
+      const fresh = await repository.create(candidate({
+        interactionId: otherProposalId,
+        proposalId: otherProposalId,
+        createdAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + 60_000).toISOString(),
+      }));
+      expect(fresh.interactionId).toBe(otherProposalId);
+      await expect(repository.findOpen({ householdId, conversationId, speakerPrincipalRef: principalRef }))
+        .resolves.toMatchObject({ interactionId: otherProposalId, status: 'pending' });
     } finally {
       await pool.end();
     }

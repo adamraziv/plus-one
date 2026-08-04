@@ -1272,6 +1272,37 @@ describe('budgetingIntakeForDraft', () => {
     expect(budgetingIntakeForDraft(continuationMessage, request)).toBeUndefined();
   });
 
+  it('preserves typed facts when continuation evidence is grounded in the assembled instruction', () => {
+    const continuationMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'yes to all',
+    });
+    const request = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'savings, monthly, 500,000 IDR, living. yes to all',
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['savings'],
+          targetAmount: { amount: '500000', currency: 'IDR' },
+          categories: [{ name: 'living' }],
+          evidence: [
+            { path: 'priorities[0]', sourceQuote: 'savings', start: 0, end: 7 },
+            { path: 'targetAmount', sourceQuote: '500k IDR', start: 0, end: 8 },
+            { path: 'categories[0]', sourceQuote: 'living', start: 0, end: 6 },
+          ],
+        },
+      },
+    });
+
+    expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(continuationMessage, request)).known)
+      .toEqual(request.request.known);
+  });
+
   it('rejects budget evidence when the quote or offsets do not match the message', () => {
     const completeMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
