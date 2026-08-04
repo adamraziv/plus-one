@@ -175,13 +175,14 @@ function isAsciiTagCharacter(value: string | undefined): boolean {
       || (code >= 97 && code <= 122)));
 }
 
-export function orchestratorResponseNotSubmittedError(): PlusOneError {
+export function orchestratorResponseNotSubmittedError(cause?: unknown): PlusOneError {
   return new PlusOneError({
     category: 'runtime_failure',
     code: 'orchestrator_response_not_submitted',
     message: 'The orchestrator did not submit a valid final response.',
     retry: 'after_backoff',
     receiptLookupRequired: false,
+    ...(cause === undefined ? {} : { cause }),
   });
 }
 

@@ -1029,6 +1029,16 @@ export class OrchestratorAgent {
               messageCount: Array.isArray(prompt) ? prompt.length : 1,
             },
           });
+          const recoverTeamResults = async (): Promise<OrchestratorTurnResult | undefined> => {
+            if (invocation.teamResults.length === 0) return undefined;
+            const body = await this.synthesizeTeamResults(
+              message,
+              invocation.teamResults,
+              signal,
+              (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
+            );
+            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
+          };
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -1054,30 +1064,30 @@ export class OrchestratorAgent {
                 }), signal);
               } catch (retryError) {
                 if (isWorkingMemoryFailure(retryError)) this.recordMemoryOutcome(memoryOutcomeFromError(retryError));
-                if (isBudgetingResponseSubmissionFailure(retryError, invocation)) {
-                  return budgetingFallbackTurn(message, invocation.teamResults, invocation.transactionCaptureContinuation);
+                if (!signal.aborted
+                  && retryError instanceof PlusOneError
+                  && retryError.code === 'orchestrator_response_not_submitted'
+                  && invocation.teamResults.length !== 0) {
+                  const recovered = await recoverTeamResults();
+                  if (recovered !== undefined) return recovered;
                 }
                 throw retryError;
               }
             } else {
               if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
               if (error instanceof PlusOneError && error.code === 'orchestrator_response_not_submitted') {
-                if (invocation.teamResults.some((result) => result.team === 'budgeting')) {
-                  return budgetingFallbackTurn(message, invocation.teamResults, invocation.transactionCaptureContinuation);
+                if (!signal.aborted) {
+                  const recovered = await recoverTeamResults();
+                  if (recovered !== undefined) return recovered;
                 }
                 throw error;
               }
               if (!signal.aborted && isTransientModelError(error)) {
                 throw error;
               }
-              if (!signal.aborted && invocation.teamResults.length !== 0) {
-                const body = await this.synthesizeTeamResults(
-                  message,
-                  invocation.teamResults,
-                  signal,
-                  (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
-                );
-                return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
+              if (!signal.aborted) {
+                const recovered = await recoverTeamResults();
+                if (recovered !== undefined) return recovered;
               }
               if (!signal.aborted && invocation.delegationFailed) {
                 return delegationFailureTurn(message);
@@ -1137,6 +1147,7 @@ export class OrchestratorAgent {
             failureCategory: turnFailureCategory(error),
             durationMs: Date.now() - startedAt,
           },
+          ...(error instanceof PlusOneError ? { error } : {}),
         });
         throw error;
       } finally {
@@ -1213,6 +1224,7 @@ export class OrchestratorAgent {
       outputProcessors: [responseSession.outputProcessor],
       stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
         responseSession.hasSubmission()
+        || (invocation.teamResults.length !== 0 && !canDelegateAnotherSubstep(invocation))
         || stopAtStepLimit({ steps }),
       errorProcessors: [createTransientModelRetryProcessor({
         maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
@@ -1256,7 +1268,7 @@ export class OrchestratorAgent {
       return { result, submission: responseSession.requireSubmission() };
     } catch (error) {
       if (responseSession.protocolViolationObserved() && isResponseProtocolTripWire(error)) {
-        throw orchestratorResponseNotSubmittedError();
+        throw orchestratorResponseNotSubmittedError(error);
       }
       throw error;
     }
@@ -1304,7 +1316,7 @@ export class OrchestratorAgent {
       return responseSession.requireSubmission().body;
     } catch (error) {
       if (responseSession.protocolViolationObserved() && isResponseProtocolTripWire(error)) {
-        throw orchestratorResponseNotSubmittedError();
+        throw orchestratorResponseNotSubmittedError(error);
       }
       throw error;
     }
@@ -1778,28 +1790,6 @@ function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTu
         + 'No changes were made. Please try again.',
     ),
   };
-}
-
-function budgetingFallbackTurn(
-  message: InboundChannelMessageV1,
-  teamResults: readonly TeamResultEnvelopeV2[],
-  transactionContinuation?: TransactionCaptureContinuationV1,
-): OrchestratorTurnResult {
-  return turnFromTeamResults(
-    message,
-    teamResults,
-    'I could not complete the budget request from the checked result. Please try again if you want to continue.',
-    transactionContinuation,
-  );
-}
-
-function isBudgetingResponseSubmissionFailure(
-  error: unknown,
-  invocation: OrchestratorInvocation,
-): boolean {
-  return error instanceof PlusOneError
-    && error.code === 'orchestrator_response_not_submitted'
-    && invocation.teamResults.some((result) => result.team === 'budgeting');
 }
 
 function responseFromTrustedBody(
