@@ -340,4 +340,45 @@ describe('conversation turn router', () => {
     }));
     expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('stale');
   });
+
+  it('fails a resolving interaction when Working Memory inspection returns a failure', async () => {
+    const repository = new InMemoryPendingInteractions();
+    repository.records.set(pending.interactionId, PendingInteractionSchemaV1.parse({
+      ...pending,
+      status: 'resolving',
+      version: 1,
+      resolutionExternalMessageId: 'message-inspection-failed',
+    }));
+    const deps = dependencies({ repository, disposition: 'approve' });
+    const applyWorkingMemoryMutation = vi.fn();
+    const inspectWorkingMemory = vi.fn(async () => ({
+      status: 'failed' as const,
+      outcome: {
+        operation: 'inspect' as const,
+        status: 'failed' as const,
+        code: 'working_memory_read_failed',
+        category: 'storage_unavailable' as const,
+        retry: 'after_backoff' as const,
+      },
+      error: new Error('Working Memory storage unavailable'),
+    }));
+
+    const recovered = await runConversationTurn({
+      ...deps,
+      sessionMemory: { inspectWorkingMemory, applyWorkingMemoryMutation } as never,
+    }, { message: message('yes', 'message-inspection-failed') });
+
+    expect(recovered.body).toBe('Recovered working_memory_storage_unavailable.');
+    expect(inspectWorkingMemory).toHaveBeenCalledOnce();
+    expect(deps.mocks.resolve).not.toHaveBeenCalled();
+    expect(applyWorkingMemoryMutation).not.toHaveBeenCalled();
+    expect(deps.mocks.finalize).toHaveBeenCalledWith({
+      message: expect.anything(),
+      pending: pending.pendingWorkingMemoryMutation,
+      status: 'failed',
+      code: 'working_memory_storage_unavailable',
+      directive: 'The change could not be recovered. Do not say it was completed.',
+    });
+    expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('failed');
+  });
 });

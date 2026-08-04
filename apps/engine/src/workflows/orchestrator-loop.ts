@@ -5,6 +5,7 @@ import {
   OrchestratorFinalResponseSchemaV1,
   PendingInteractionSchemaV1,
   PendingWorkingMemoryMutationSchema,
+  PlusOneError,
   TeamResultEnvelopeSchemaV2,
   type InboundChannelMessageV1,
   type OrchestratorFinalResponseV1,
@@ -234,8 +235,11 @@ async function persistPendingWorkingMemoryInteraction(
     expiresAt: pending.expiresAt,
   });
   try {
-    return repository.create(interaction);
+    return await repository.create(interaction);
   } catch (error) {
+    if (!(error instanceof PlusOneError) || error.code !== 'pending_interaction_scope_conflict') {
+      throw error;
+    }
     const existing = await repository.findOpen({
       householdId: pending.householdId,
       conversationId: pending.conversationId,

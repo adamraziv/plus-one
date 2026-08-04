@@ -580,14 +580,15 @@ export class OrchestratorAgent {
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
     const signal = input.signal ?? timeoutSignal!.signal;
     try {
-      const proposedChange = finalSynthesisTeamResultView(input.pending).proposedChange;
-      const changeSummary = proposedChange?.accountName;
-      const disposition = await this.classifyPendingInteractionInput({
-        message: input.message,
-        subject: 'checked_mutation',
-        ...(changeSummary === undefined ? {} : { changeSummary }),
-        signal,
-      });
+      const changeSummary = checkedMutationClassificationContext(input);
+      const disposition = changeSummary === undefined
+        ? { kind: 'ambiguous' as const }
+        : await this.classifyPendingInteractionInput({
+            message: input.message,
+            subject: 'checked_mutation',
+            changeSummary,
+            signal,
+          });
       const decision = disposition.kind === 'resolve' ? disposition.decision : 'ambiguous';
       if (decision === 'approve') {
         const result = await this.dependencies.teamRuntime.resumePendingMutation({
@@ -845,7 +846,7 @@ export class OrchestratorAgent {
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
     const signal = input.signal ?? timeoutSignal!.signal;
     try {
-      return this.synthesizeWorkingMemoryOutcome({
+      return await this.synthesizeWorkingMemoryOutcome({
         message: input.message,
         event: workingMemoryConfirmationEvent(input.pending),
         signal,
@@ -1426,6 +1427,29 @@ function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cle
       clearTimeout(timer);
     },
   };
+}
+
+function checkedMutationClassificationContext(input: {
+  pending: TeamResultEnvelopeV2;
+  transactionContinuation?: TransactionCaptureContinuationV1;
+}): string | undefined {
+  if (input.pending.effect.state !== 'awaiting_confirmation') return undefined;
+
+  try {
+    const view = finalSynthesisTeamResultView(input.pending);
+    const context = {
+      commandType: input.pending.effect.command.commandType,
+      payload: input.pending.effect.command.payload,
+      proposalFacts: view.proposalFacts,
+      ...(input.transactionContinuation === undefined
+        ? {}
+        : { transactionContinuationRequest: input.transactionContinuation.request }),
+    };
+    const serialized = JSON.stringify(context);
+    return serialized === undefined ? undefined : serialized;
+  } catch {
+    return undefined;
+  }
 }
 
 function adjudicatePendingDisposition(

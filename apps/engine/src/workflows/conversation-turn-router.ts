@@ -162,6 +162,18 @@ async function recoverResolvingInteraction(
     return completeIfTerminal(dependencies, interaction, result, input);
   }
 
+  if (inspection.status === 'failed') {
+    const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: interaction.pendingWorkingMemoryMutation,
+      status: 'failed',
+      code: 'working_memory_storage_unavailable',
+      directive: 'The change could not be recovered. Do not say it was completed.',
+      ...optionalSignal(input.signal),
+    });
+    return completeIfTerminal(dependencies, interaction, result, input);
+  }
+
   if (inspection.status === 'succeeded') {
     if (workingMemoryMutationEffectIsPresent({
       document: inspection.document,

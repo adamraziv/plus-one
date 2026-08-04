@@ -4,6 +4,7 @@ import {
   OrchestratorFinalResponseSchemaV1,
   PendingInteractionSchemaV1,
   PendingWorkingMemoryMutationSchema,
+  PlusOneError,
   type PendingInteractionV1,
 } from '@plus-one/contracts';
 import { pendingChartResultFixture as pendingTeamResult } from '../helpers/pending-chart-result.js';
@@ -160,6 +161,89 @@ describe('orchestrator workflow loop', () => {
       status: 'pending',
       pendingWorkingMemoryMutation,
     }));
+  });
+
+  it('reuses the open interaction after an asynchronous scope conflict', async () => {
+    const pendingInteractions = pendingInteractionRepository();
+    const conflict = new PlusOneError({
+      category: 'serialization_conflict',
+      code: 'pending_interaction_scope_conflict',
+      message: 'An open Working Memory confirmation already exists.',
+      retry: 'after_state_resolution',
+      receiptLookupRequired: true,
+    });
+    pendingInteractions.create.mockRejectedValueOnce(conflict);
+    pendingInteractions.findOpen.mockResolvedValueOnce(pendingInteraction());
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+      synthesizePendingWorkingMemoryConfirmation: vi.fn(),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+
+    await workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]?.execute({
+      inputData: message,
+      suspend: vi.fn(),
+      abortSignal,
+    } as never);
+
+    expect(pendingInteractions.findOpen).toHaveBeenCalledWith({
+      householdId: pendingWorkingMemoryMutation.householdId,
+      conversationId: pendingWorkingMemoryMutation.conversationId,
+      speakerPrincipalRef: pendingWorkingMemoryMutation.speakerPrincipalRef,
+    });
+    expect(orchestrator.synthesizePendingWorkingMemoryConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('propagates non-conflict persistence failures without looking for an open interaction', async () => {
+    const pendingInteractions = pendingInteractionRepository();
+    const failure = new Error('database unavailable');
+    pendingInteractions.create.mockRejectedValueOnce(failure);
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+
+    await expect(workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]?.execute({
+      inputData: message,
+      suspend: vi.fn(),
+      abortSignal,
+    } as never)).rejects.toBe(failure);
+    expect(pendingInteractions.findOpen).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a scope conflict when the open interaction cannot be recovered', async () => {
+    const pendingInteractions = pendingInteractionRepository();
+    const conflict = new PlusOneError({
+      category: 'serialization_conflict',
+      code: 'pending_interaction_scope_conflict',
+      message: 'An open Working Memory confirmation already exists.',
+      retry: 'after_state_resolution',
+      receiptLookupRequired: true,
+    });
+    pendingInteractions.create.mockRejectedValueOnce(conflict);
+    pendingInteractions.findOpen.mockResolvedValueOnce(undefined);
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+
+    await expect(workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]?.execute({
+      inputData: message,
+      suspend: vi.fn(),
+      abortSignal,
+    } as never)).rejects.toBe(conflict);
   });
 
   it('imports a legacy Working Memory suspension and resolves it through the typed router', async () => {
@@ -354,4 +438,21 @@ function pendingInteractionRepository() {
     }),
   };
   return repository;
+}
+
+function pendingInteraction() {
+  return PendingInteractionSchemaV1.parse({
+    schemaName: 'pending-interaction',
+    schemaVersion: 1,
+    interactionId: pendingWorkingMemoryMutation.proposalId,
+    kind: 'working_memory_confirmation',
+    householdId: pendingWorkingMemoryMutation.householdId,
+    conversationId: pendingWorkingMemoryMutation.conversationId,
+    speakerPrincipalRef: pendingWorkingMemoryMutation.speakerPrincipalRef,
+    pendingWorkingMemoryMutation,
+    status: 'pending',
+    version: 0,
+    createdAt: pendingWorkingMemoryMutation.createdAt,
+    expiresAt: pendingWorkingMemoryMutation.expiresAt,
+  });
 }

@@ -266,6 +266,20 @@ function pendingChartTeamResult(input: {
   });
 }
 
+function pendingWithCommandPayload(pending: TeamResultEnvelopeV2, payload: unknown) {
+  if (pending.effect.state !== 'awaiting_confirmation') throw new Error('Expected a pending mutation.');
+  return TeamResultEnvelopeSchemaV2.parse({
+    ...pending,
+    effect: {
+      ...pending.effect,
+      command: {
+        ...pending.effect.command,
+        payload,
+      },
+    },
+  });
+}
+
 function persistedChartTeamResult() {
   const pending = pendingChartTeamResult();
   if (pending.effect.state !== 'awaiting_confirmation') throw new Error('Expected pending chart result');
@@ -963,7 +977,7 @@ describe('OrchestratorAgent', () => {
         cancelPendingMutation: vi.fn(),
       },
     });
-    vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+    const classify = vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
       .mockResolvedValue({ kind: 'resolve', decision: 'approve' });
 
     const turn = await orchestrator.resolvePendingMutation({
@@ -978,6 +992,187 @@ describe('OrchestratorAgent', () => {
       },
     });
     expect(resumePendingMutation).toHaveBeenCalledOnce();
+    const context = JSON.parse(classify.mock.calls[0]![0].changeSummary!);
+    expect(context).toEqual(expect.objectContaining({
+      commandType: 'apply_chart_of_accounts_change',
+      payload: expect.objectContaining({ action: 'create_account', name: 'Bank ABC' }),
+    }));
+  });
+
+  it('passes complete command and continuation context to checked-mutation classification', async () => {
+    const base = pendingChartTeamResult({ claimText: 'Prepared the requested chart change.' });
+    const accountPending = pendingWithCommandPayload(base, {
+      schemaName: 'chart-of-accounts-proposal',
+      schemaVersion: 1,
+      action: 'create_account',
+      householdId,
+      bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      parentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      name: 'Bank ABC',
+      purpose: 'Household operating account',
+      accountingClass: 'asset',
+      normalBalance: 'debit',
+      nativeCurrency: 'IDR',
+      ownershipLabel: 'joint household account',
+    });
+    const mappingPending = pendingWithCommandPayload(base, {
+      schemaName: 'chart-of-accounts-proposal',
+      schemaVersion: 1,
+      action: 'replace_source_mapping',
+      archivedMappingId: 'accountmap_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      householdId,
+      bookId: 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      mappingId: 'accountmap_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+      accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      sourceSystem: 'bank-feed',
+      externalAccountId: 'external-checking-42',
+      metadata: { institution: 'Example Bank', accountType: 'checking' },
+    });
+    const transactionContinuation = {
+      schemaName: 'transaction-capture-continuation' as const,
+      schemaVersion: 1 as const,
+      request: {
+        schemaName: 'transaction-capture-request-draft' as const,
+        schemaVersion: 1 as const,
+        instruction: '50 USD yesterday in dining from test wallet',
+        known: {
+          amount: '50.00',
+          currency: CurrencyCodeSchema.parse('USD'),
+          paymentAccountName: 'test wallet',
+          occurredOn: '2026-07-15',
+          categoryName: 'dining',
+        },
+      },
+    };
+    const cancelPendingMutation = vi.fn(async () => undefined);
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate: vi.fn() }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation: vi.fn(),
+        cancelPendingMutation,
+      },
+    });
+    const classify = vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
+      .mockResolvedValue({ kind: 'resolve', decision: 'reject' });
+
+    await orchestrator.resolvePendingMutation({
+      message: message('no'),
+      pending: accountPending,
+      transactionContinuation,
+    });
+    await orchestrator.resolvePendingMutation({
+      message: message('no'),
+      pending: mappingPending,
+    });
+
+    const accountContext = JSON.parse(classify.mock.calls[0]![0].changeSummary!);
+    expect(accountContext).toEqual(expect.objectContaining({
+      commandType: 'apply_chart_of_accounts_change',
+      payload: expect.objectContaining({
+        action: 'create_account',
+        name: 'Bank ABC',
+        purpose: 'Household operating account',
+        accountingClass: 'asset',
+        normalBalance: 'debit',
+        nativeCurrency: 'IDR',
+        ownershipLabel: 'joint household account',
+        parentAccountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      }),
+      proposalFacts: ['Prepared the requested chart change.'],
+      transactionContinuationRequest: transactionContinuation.request,
+    }));
+    const mappingContext = JSON.parse(classify.mock.calls[1]![0].changeSummary!);
+    expect(mappingContext.payload).toEqual(expect.objectContaining({
+      action: 'replace_source_mapping',
+      archivedMappingId: 'accountmap_01JNZQ4A9B8C7D6E5F4G3H2J2K',
+      mappingId: 'accountmap_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+      accountId: 'account_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+      sourceSystem: 'bank-feed',
+      externalAccountId: 'external-checking-42',
+      metadata: { institution: 'Example Bank', accountType: 'checking' },
+    }));
+    expect(cancelPendingMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when a checked-mutation envelope is not awaiting confirmation', async () => {
+    const pending = persistedChartTeamResult();
+    const resumePendingMutation = vi.fn();
+    const cancelPendingMutation = vi.fn();
+    const generate = vi.fn(async (_prompt: unknown, options: unknown) =>
+      submitFinalResponse(options, 'I added Bank ABC as an IDR asset account with a normal debit balance.'));
+    const orchestrator = new OrchestratorAgent({
+      model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
+      agentFactory: (config) => ({ ...config, generate }) as never,
+      teams: [accountingTeam],
+      teamRuntime: {
+        runTeamLead: vi.fn(),
+        resumePendingMutation,
+        cancelPendingMutation,
+      },
+    });
+    const classify = vi.spyOn(orchestrator, 'classifyPendingInteractionInput');
+
+    const result = await orchestrator.resolvePendingMutation({
+      message: message('yes'),
+      pending,
+    });
+
+    expect(result.kind).toBe('final');
+    expect(classify).not.toHaveBeenCalled();
+    expect(resumePendingMutation).not.toHaveBeenCalled();
+    expect(cancelPendingMutation).not.toHaveBeenCalled();
+  });
+
+  it('keeps the internal Working Memory confirmation timeout active until synthesis settles', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const synthesis = new Promise<undefined>((resolve) => {
+        release = () => resolve(undefined);
+      });
+      const synthesizeWorkingMemoryOutcome = vi.fn((input: unknown) => {
+        void input;
+        return synthesis;
+      });
+      const orchestrator = singleLoopOrchestrator({
+        generate: vi.fn(),
+        runTeamLead: vi.fn(),
+        teams: [],
+      });
+      (orchestrator as unknown as {
+        synthesizeWorkingMemoryOutcome: (input: unknown) => Promise<undefined>;
+      }).synthesizeWorkingMemoryOutcome = synthesizeWorkingMemoryOutcome;
+
+      const pendingSynthesis = orchestrator.synthesizePendingWorkingMemoryConfirmation({
+        message: message('yes'),
+        pending: pendingWorkingMemory(),
+      });
+      const signal = (synthesizeWorkingMemoryOutcome.mock.calls[0]![0] as { signal: AbortSignal }).signal;
+
+      vi.advanceTimersByTime(60_000);
+      expect(signal.aborted).toBe(true);
+      release();
+      await expect(pendingSynthesis).resolves.toBeUndefined();
+
+      const externalController = new AbortController();
+      synthesizeWorkingMemoryOutcome.mockResolvedValue(undefined);
+      const externalSynthesis = orchestrator.synthesizePendingWorkingMemoryConfirmation({
+        message: message('yes'),
+        pending: pendingWorkingMemory(),
+        signal: externalController.signal,
+      });
+      expect((synthesizeWorkingMemoryOutcome.mock.calls[1]![0] as { signal: AbortSignal }).signal)
+        .toBe(externalController.signal);
+      vi.advanceTimersByTime(60_000);
+      expect(externalController.signal.aborted).toBe(false);
+      await expect(externalSynthesis).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('continues the retained transaction after a confirmed new category is created', async () => {
@@ -1343,6 +1538,7 @@ describe('OrchestratorAgent', () => {
       nativeCurrency: 'USD',
     });
     const resumePendingMutation = vi.fn();
+    const cancelPendingMutation = vi.fn();
     const generate = vi.fn(async (_prompt: unknown, options: unknown) =>
       submitFinalResponse(options, 'I’ll add Dining as a new expense category with a normal debit balance in USD, then record USD 50.00 from test wallet dated 2026-07-15 under Dining. Would you like me to proceed?'));
     const orchestrator = new OrchestratorAgent({
@@ -1352,14 +1548,14 @@ describe('OrchestratorAgent', () => {
       teamRuntime: {
         runTeamLead: vi.fn(),
         resumePendingMutation,
-        cancelPendingMutation: vi.fn(),
+        cancelPendingMutation,
       },
     });
     vi.spyOn(orchestrator, 'classifyPendingInteractionInput')
       .mockResolvedValue({ kind: 'ambiguous' });
 
     const result = await orchestrator.resolvePendingMutation({
-      message: message('I am not sure'),
+      message: message('yes, but make it a liability'),
       pending,
       transactionContinuation: {
         schemaName: 'transaction-capture-continuation',
@@ -1390,6 +1586,7 @@ describe('OrchestratorAgent', () => {
       },
     });
     expect(resumePendingMutation).not.toHaveBeenCalled();
+    expect(cancelPendingMutation).not.toHaveBeenCalled();
     expect(generate).toHaveBeenCalledOnce();
   });
 
