@@ -53,8 +53,25 @@ describe('transaction category transcript flow', () => {
     let transactionDelegations = 0;
     const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
       const options = rawOptions as Record<string, unknown>;
-      if (typeof options.toolChoice === 'object') {
-        return submitOrchestratorFinalResponse(options, 'I recorded USD 50.00 from test wallet on 2026-07-15 under Dining.');
+      if (Array.isArray(options.activeTools) && options.activeTools.length === 0) {
+        const prepareStep = options.prepareStep as ((input: { stepNumber: number }) => Promise<{
+          tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
+        }>);
+        const prepared = await prepareStep({ stepNumber: 0 });
+        const submitResult = prepared.tools.submitResult;
+        if (submitResult?.execute === undefined) throw new Error('Expected the structured semantic result tool.');
+        await submitResult.execute({ result: { kind: 'resolve', decision: 'approve' } }, {});
+        return { steps: [{ finishReason: 'stop' }] };
+      }
+      if (typeof options.prepareStep === 'function') {
+        const prepared = await (options.prepareStep as (input: { stepNumber: number }) => Promise<{
+          activeTools?: unknown;
+        }>)({ stepNumber: 0 });
+        if (Array.isArray(prepared.activeTools)
+          && prepared.activeTools.length === 1
+          && prepared.activeTools[0] === 'submitFinalResponse') {
+          return submitOrchestratorFinalResponse(options, 'I recorded USD 50.00 from test wallet on 2026-07-15 under Dining.');
+        }
       }
       if (transactionDelegations === 0) {
         transactionDelegations += 1;

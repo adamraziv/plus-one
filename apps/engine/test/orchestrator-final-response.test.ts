@@ -61,15 +61,11 @@ describe('orchestrator final response submission', () => {
 
   it.each([
     {
-      name: 'raw prose',
-      overrides: { text: 'This is ordinary assistant text.' },
-    },
-    {
       name: 'serialized XML pseudo-tool markup',
       overrides: { text: '<invoke name="mutateWorkingMemory"><parameter name="operation">create</parameter></invoke>' },
     },
     {
-      name: 'a submission plus terminal text',
+      name: 'a submission plus conflicting terminal text',
       overrides: {
         text: 'The reply was also returned as text.',
         toolCalls: [{ toolName: SubmitFinalResponseToolId, toolCallId: 'call-1', args: { body: 'Reply.' } }],
@@ -102,6 +98,35 @@ describe('orchestrator final response submission', () => {
       .rejects.toMatchObject({ options: { retry: true } });
     expect(session.protocolViolationObserved()).toBe(true);
     expect(session.hasSubmission()).toBe(false);
+  });
+
+  it('accepts validated user-facing text when no tool call is present', async () => {
+    const validateBody = vi.fn<(body: string) => void>();
+    const session = createFinalResponseSubmissionSession({ validateBody });
+
+    await expect(runOutputStep(session.outputProcessor, {
+      text: '  This is ordinary assistant text.  ',
+    })).resolves.toBeDefined();
+    expect(validateBody).toHaveBeenCalledWith('This is ordinary assistant text.');
+    expect(session.protocolViolationObserved()).toBe(false);
+    expect(session.requireSubmission()).toEqual({ body: 'This is ordinary assistant text.' });
+  });
+
+  it('accepts terminal text that duplicates the native submission body', async () => {
+    const session = createFinalResponseSubmissionSession({ validateBody: vi.fn() });
+    const submission = {
+      toolName: SubmitFinalResponseToolId,
+      toolCallId: 'call-1',
+      args: { body: 'Reply.' },
+    };
+
+    await expect(runOutputStep(session.outputProcessor, {
+      text: '  Reply.  ',
+      toolCalls: [submission],
+    })).resolves.toBeDefined();
+    await expect(executeTool(session.tool, submission.args)).resolves.toEqual({ accepted: true });
+    expect(session.protocolViolationObserved()).toBe(false);
+    expect(session.requireSubmission()).toEqual({ body: 'Reply.' });
   });
 
   it('allows a domain-only tool step to continue the main loop', async () => {

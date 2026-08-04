@@ -5,6 +5,7 @@ import {
   type ChannelCommandResultV1,
   type InboundChannelMessageV1,
 } from '@plus-one/contracts';
+import type { PendingInteractionRepository } from '@plus-one/database';
 import { ZodError } from 'zod';
 import type { AgentSystem } from './agent-catalog.js';
 import { OrchestratorAgent } from './agents/orchestrator.js';
@@ -12,7 +13,9 @@ import type { EngineConfig } from './config.js';
 import type { OrchestratorSessionMemoryPort } from './memory/orchestrator-session-memory.js';
 import type { OrchestratorTeamRuntime } from './tools/delegate-team.js';
 import { runOrchestratorLoop } from './workflows/orchestrator-loop.js';
+import { runConversationTurn } from './workflows/conversation-turn-router.js';
 import type { Mastra } from '@mastra/core';
+import { isTransientModelError } from '@plus-one/runtime';
 
 export function createRuntimeRoutes(input: {
   config: EngineConfig;
@@ -20,6 +23,7 @@ export function createRuntimeRoutes(input: {
   teamRuntime: OrchestratorTeamRuntime;
   orchestrator?: OrchestratorAgent;
   sessionMemory?: OrchestratorSessionMemoryPort;
+  pendingInteractions?: PendingInteractionRepository;
   getMastra?: () => Mastra;
   commands?: { handle(message: InboundChannelMessageV1): Promise<ChannelCommandResultV1 | undefined> };
 }) {
@@ -51,10 +55,28 @@ export function createRuntimeRoutes(input: {
           }
 
           if (input.getMastra === undefined) {
+            if (input.pendingInteractions !== undefined) {
+              return context.json(await runConversationTurn({
+                pendingInteractions: input.pendingInteractions,
+                orchestrator,
+                ...(input.sessionMemory === undefined ? {} : { sessionMemory: input.sessionMemory }),
+                runNormalTurn: ({ message: normalMessage, signal: normalSignal }) => orchestrator.run({
+                  message: normalMessage,
+                  ...(normalSignal === undefined ? {} : { signal: normalSignal }),
+                }),
+              }, { message, signal }));
+            }
             return context.json(await orchestrator.run({ message, signal }));
           }
           const workflow = input.getMastra().getWorkflow('orchestrator-loop');
-          return context.json(await runOrchestratorLoop({ workflow, message, signal }));
+          return context.json(await runOrchestratorLoop({
+            workflow,
+            message,
+            signal,
+            ...(input.pendingInteractions === undefined ? {} : { pendingInteractions: input.pendingInteractions }),
+            ...(input.sessionMemory === undefined ? {} : { sessionMemory: input.sessionMemory }),
+            orchestrator,
+          }));
         } catch (error) {
           if (error instanceof ZodError) {
             return context.json({
@@ -70,6 +92,12 @@ export function createRuntimeRoutes(input: {
               error: 'orchestrator_timed_out',
               retryable: true,
             }, 504);
+          }
+          if (isTransientModelError(error)) {
+            return context.json({
+              error: 'model_temporarily_unavailable',
+              retryable: true,
+            }, 503);
           }
           throw error;
         }

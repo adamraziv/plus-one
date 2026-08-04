@@ -32,7 +32,7 @@ describe('orchestrator final response acceptance', () => {
         return {
           message: {
             role: 'assistant',
-            content: null,
+            content: 'The repaired response is native.',
             tool_calls: [{
               id: 'submit-final-response-1',
               type: 'function',

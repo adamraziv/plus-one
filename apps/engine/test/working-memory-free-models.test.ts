@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   runSerialFreeModelSweep,
   workingMemoryAcceptanceArgs,
+  workingMemoryModelEnvironment,
 } from '../../../scripts/verify-working-memory-free-models.js';
 
 describe('Working Memory free-model sweep', () => {
@@ -53,5 +54,15 @@ describe('Working Memory free-model sweep', () => {
       '-t',
       'working-memory-model-compatibility:',
     ]);
+  });
+
+  it('isolates every live agent role to the model under test', () => {
+    expect(workingMemoryModelEnvironment('opencode/alpha-free')).toEqual({
+      ORCHESTRATOR_MODEL: 'opencode/alpha-free',
+      LEAD_MODEL: 'opencode/alpha-free',
+      MAKER_MODEL: 'opencode/alpha-free',
+      CHECKER_MODEL: 'opencode/alpha-free',
+      RESEARCH_MODEL: 'opencode/alpha-free',
+    });
   });
 });

@@ -4,14 +4,17 @@ import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
-import { noopObserve } from '@mastra/core/tools';
-import { ZodError } from 'zod';
+import { ZodError, type z } from 'zod';
 import { ChartOfAccountsProposalSchemaV1 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  PendingInteractionDispositionSchemaV1,
   PendingWorkingMemoryMutationSchema,
   TeamResultEnvelopeSchemaV2,
+  WorkingMemoryReplyCheckSchemaV1,
+  WorkingMemoryReplySchemaV1,
+  type WorkingMemoryResolutionStatusV1,
   PlusOneError,
   type ChannelKindV1,
   type ErrorCategoryV1,
@@ -20,8 +23,11 @@ import {
   type RetryDirectiveV1,
   type TeamResultEnvelopeV2,
   type PendingWorkingMemoryMutation,
+  type PendingInteractionDispositionV1,
+  type WorkingMemoryReplySpeechActV1,
 } from '@plus-one/contracts';
 import {
+  AgentRegistry,
   createTransientModelRetryProcessor,
   getLogger,
   internalImplementationDetailMatchCategory,
@@ -33,6 +39,8 @@ import {
   type ChannelEventSink,
   type CatalogLogger,
   type InternalImplementationDetailMatchCategory,
+  MastraStructuredAgentAdapter,
+  type StructuredAgentPort,
   type TeamDefinition,
   withLogContext,
 } from '@plus-one/runtime';
@@ -64,7 +72,6 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
-import { budgetingExplicitRequestForMessage } from '../budgeting/budgeting-request.js';
 import {
   createFinalResponseSubmissionSession,
   finalResponseRepairError,
@@ -72,6 +79,9 @@ import {
   SubmitFinalResponseToolId,
   type FinalResponseSubmission,
 } from './orchestrator-final-response.js';
+import {
+  pendingInteractionDispositionPrompt,
+} from './pending-interaction-disposition.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -91,6 +101,7 @@ const orchestratorInstructions = [
   'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
   'For budgeting, call delegateTeam with exactly a budgeting-lead-request containing a nested budget-plan-request-draft or budget-scenario-request-draft; for a plan use intent budget_plan and request fields instruction, scopeKey, and known, while comparisons use intent budget_scenarios and request fields instruction, scenarioCount, and known. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
   'For budgeting, copy only explicit user-owned facts into request.known: priorities, timeframe start/end, targetAmount amount/currency, and category names/target amounts. Use known:{} when the user did not provide a fact; never guess values.',
+  'For budgeting, every fact copied from the current message into request.known must include known.evidence entries with a semantic path, the exact sourceQuote, and zero-based start/end offsets into the current user message. The runtime verifies each quote; never invent offsets or quote text.',
   'A budgeting follow-up that supplies the requested details in phrases such as "monthly", "prepare it", "set it up", or "go ahead" is still an explicit budget request: preserve those facts and delegate immediately instead of answering directly or waiting for another confirmation.',
   'Preserve the user’s budgeting instruction and user-visible scope, and never invent household identifiers or evidence packages; the budgeting runtime owns authenticated context and checked evidence requirements.',
   'If budgeting returns a planning clarification, carry the user’s answers forward into known on the next delegation instead of repeating an empty draft.',
@@ -190,7 +201,7 @@ type OrchestratorInvocation = {
 
 type WorkingMemorySynthesisEvent = {
   kind: 'confirmation' | 'applied' | 'rejected' | 'failed';
-  operation: WorkingMemoryMutationOperation;
+  operation: WorkingMemoryMutationOperation | WorkingMemoryOperation;
   summary: string;
   directive: string;
 };
@@ -205,22 +216,16 @@ export type OrchestratorTurnResult =
       transactionContinuation?: TransactionCaptureContinuationV1;
     };
 
-export type ConfirmationDecision = 'approve' | 'reject' | 'unclear';
-
-export function confirmationDecision(body: string): ConfirmationDecision {
-  const normalized = body.trim().toLowerCase().replace(/[^a-z0-9']+/g, ' ').trim().replace(/\s+/g, ' ');
-  if (/^(?:please )?(?:no|n|cancel|stop|reject|never mind|nevermind|not now)(?:\b|$)/.test(normalized)
-    || /\b(do not|don't)\b/.test(normalized)) return 'reject';
-  const affirmative = '(?:yes|y|yeah|yep|yup|ok|okay|sure|absolutely|certainly|confirm|confirmed|approve|approved)';
-  const action = '(?:go ahead|proceed|do it|do so|go for it)';
-  if (new RegExp(`^(?:${affirmative}(?: please)?(?: (?:please )?${action})?(?: please)?|(?:please )?${action}(?: please)?|please do|sounds good|that works)$`)
-    .test(normalized)) return 'approve';
-  return 'unclear';
+export interface WorkingMemoryResolutionResult {
+  status: WorkingMemoryResolutionStatusV1;
+  code: string;
+  response: OrchestratorFinalResponseV1;
 }
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
   private readonly activeInvocation = new AsyncLocalStorage<OrchestratorInvocation>();
+  private readonly structuredAgent: StructuredAgentPort;
   readonly agent: OrchestratorAgentInstance;
   readonly agentTools: {
     delegateTeam: ReturnType<typeof createDelegateTeamTool>;
@@ -425,11 +430,126 @@ export class OrchestratorAgent {
       };
     }
     this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))(agentConfig);
+    const semanticAgents = new AgentRegistry();
+    semanticAgents.register({
+      agentId: 'orchestrator-semantic',
+      modelId: dependencies.model.id,
+      roleKind: 'checker',
+      memoryEnabled: false,
+      agent: this.agent as never,
+    });
+    this.structuredAgent = new MastraStructuredAgentAdapter(semanticAgents);
+  }
+
+  async classifyPendingInteractionInput(input: {
+    message: InboundChannelMessageV1;
+    pending?: PendingWorkingMemoryMutation;
+    subject: 'working_memory' | 'checked_mutation';
+    changeSummary?: string;
+    signal?: AbortSignal;
+  }): Promise<PendingInteractionDispositionV1> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      const prompt = pendingInteractionDispositionPrompt({
+        message: input.message,
+        ...(input.pending === undefined ? {} : { pending: input.pending }),
+        subject: input.subject,
+        ...(input.changeSummary === undefined ? {} : { changeSummary: input.changeSummary }),
+        role: 'primary',
+      });
+      const checkerPrompt = pendingInteractionDispositionPrompt({
+        message: input.message,
+        ...(input.pending === undefined ? {} : { pending: input.pending }),
+        subject: input.subject,
+        ...(input.changeSummary === undefined ? {} : { changeSummary: input.changeSummary }),
+        role: 'checker',
+      });
+      const generateDisposition = async (runId: string, semanticPrompt: string): Promise<PendingInteractionDispositionV1 | undefined> => {
+        try {
+          return await this.generateSemanticContract({
+            runId,
+            message: input.message,
+            prompt: semanticPrompt,
+            outputSchema: PendingInteractionDispositionSchemaV1,
+            signal,
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return undefined;
+        }
+      };
+      const primary = await generateDisposition(
+        `pending-disposition:${input.message.externalMessageId}:primary`,
+        prompt,
+      );
+      if (primary === undefined) {
+        return { kind: 'ambiguous' };
+      }
+      if (primary.kind === 'new_intent') return primary;
+      const checker = await generateDisposition(
+        `pending-disposition:${input.message.externalMessageId}:checker`,
+        checkerPrompt,
+      );
+      if (checker === undefined) return { kind: 'ambiguous' };
+      return adjudicatePendingDisposition(primary, checker);
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  async classifyPendingWorkingMemoryInput(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal?: AbortSignal;
+  }): Promise<'approve' | 'reject' | 'new_intent' | 'ambiguous'> {
+    const disposition = await this.classifyPendingInteractionInput({
+      ...input,
+      subject: 'working_memory',
+    });
+    return pendingDispositionForWorkingMemoryRouter(disposition);
   }
 
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
     const result = await this.runTurn(input);
     return result.response;
+  }
+
+  private generateSemanticContract<Output>(input: {
+    runId: string;
+    message: InboundChannelMessageV1;
+    prompt: string;
+    outputSchema: z.ZodType<Output>;
+    signal: AbortSignal;
+  }): Promise<Output> {
+    return this.structuredAgent.generate({
+      runId: input.runId,
+      agentId: 'orchestrator-semantic',
+      modelId: this.dependencies.model.id,
+      roleKind: 'checker',
+      memoryContext: {
+        threadId: input.message.conversationId,
+        resourceId: input.message.householdId,
+      },
+      systemPrompt: [
+        'You are an independent semantic contract agent inside Plus One.',
+        'Use the complete user message and the supplied task instructions as your only input.',
+        'Return only the requested structured contract.',
+        'Do not use memory, hidden context, tools, or unstated assumptions.',
+      ].join('\n'),
+      messages: [{ role: 'user', content: input.prompt }],
+      parentMessages: [],
+      memoryEnabled: false,
+      activeTools: [],
+      toolHistory: [],
+      outputSchema: input.outputSchema,
+      maxSteps: 2,
+      maxRetries: 2,
+      maxToolConcurrency: 1,
+      maxProcessorRetries: 2,
+      maxOutputBytes: 16_000,
+      abortSignal: input.signal,
+    });
   }
 
   async runScheduledWorkingMemoryReview(input: {
@@ -457,10 +577,19 @@ export class OrchestratorAgent {
     transactionContinuation?: TransactionCaptureContinuationV1;
     signal?: AbortSignal;
   }): Promise<OrchestratorTurnResult> {
-    const decision = confirmationDecision(input.message.body);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
     const signal = input.signal ?? timeoutSignal!.signal;
     try {
+      const changeSummary = checkedMutationClassificationContext(input);
+      const disposition = changeSummary === undefined
+        ? { kind: 'ambiguous' as const }
+        : await this.classifyPendingInteractionInput({
+            message: input.message,
+            subject: 'checked_mutation',
+            changeSummary,
+            signal,
+          });
+      const decision = disposition.kind === 'resolve' ? disposition.decision : 'ambiguous';
       if (decision === 'approve') {
         const result = await this.dependencies.teamRuntime.resumePendingMutation({
           message: input.message,
@@ -565,9 +694,10 @@ export class OrchestratorAgent {
   async resolvePendingWorkingMemoryMutation(input: {
     message: InboundChannelMessageV1;
     pending: PendingWorkingMemoryMutation;
+    decision: 'approve' | 'reject' | 'ambiguous';
     transactionContinuation?: TransactionCaptureContinuationV1;
     signal?: AbortSignal;
-  }): Promise<OrchestratorTurnResult> {
+  }): Promise<WorkingMemoryResolutionResult> {
     void input.transactionContinuation;
     const pending = PendingWorkingMemoryMutationSchema.parse(input.pending);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
@@ -591,57 +721,74 @@ export class OrchestratorAgent {
           event: workingMemoryEvent(pending, 'failed', 'The proposal expired before it was approved.'),
           signal,
         });
-        return { kind: 'final', response };
+        return { status: 'expired', code: 'working_memory_proposal_expired', response };
       }
 
-      const decision = confirmationDecision(input.message.body);
-      if (decision === 'reject') {
+      if (input.decision === 'reject') {
         const response = await this.synthesizeWorkingMemoryOutcome({
           message: input.message,
           event: workingMemoryEvent(pending, 'rejected', 'Do not make this change.'),
           signal,
         });
-        return { kind: 'final', response };
+        return { status: 'rejected', code: 'working_memory_mutation_rejected', response };
       }
-      if (decision === 'unclear') {
+      if (input.decision === 'ambiguous') {
         const response = await this.synthesizeWorkingMemoryOutcome({
           message: input.message,
           event: workingMemoryConfirmationEvent(pending),
           signal,
         });
-        return {
-          kind: 'ask-user',
-          response,
-          pendingWorkingMemoryMutation: pending,
-        };
+        return { status: 'pending', code: 'working_memory_confirmation_required', response };
       }
 
       const memory = this.dependencies.sessionMemory;
       if (memory === undefined) {
-        const response = await this.synthesizeWorkingMemoryOutcome({
+        return this.failedWorkingMemoryResolution({
           message: input.message,
-          event: workingMemoryEvent(pending, 'failed', 'The change could not be stored.'),
+          pending,
           signal,
+          code: 'working_memory_storage_unavailable',
+          directive: 'The change could not be stored. Do not say it was completed.',
         });
-        return { kind: 'final', response };
       }
-      const applied = await memory.applyWorkingMemoryMutation({
-        threadId: input.message.conversationId,
-        resourceId: input.message.householdId,
-        principalRef: input.message.speaker.principalRef,
-        basedOnRevision: pending.basedOnRevision,
-        mutation: pending.mutation,
-      });
-      if (applied.status === 'failed') {
-        const directive = applied.code === 'working_memory_revision_stale'
-          ? 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.'
-          : 'Do not say the change was completed because storage did not verify it.';
-        const response = await this.synthesizeWorkingMemoryOutcome({
-          message: input.message,
-          event: workingMemoryEvent(pending, 'failed', directive),
-          signal,
+
+      let applied: Awaited<ReturnType<typeof memory.applyWorkingMemoryMutation>>;
+      try {
+        applied = await memory.applyWorkingMemoryMutation({
+          threadId: input.message.conversationId,
+          resourceId: input.message.householdId,
+          principalRef: input.message.speaker.principalRef,
+          basedOnRevision: pending.basedOnRevision,
+          mutation: pending.mutation,
         });
-        return { kind: 'final', response };
+      } catch (error) {
+        const code = error instanceof PlusOneError ? error.code : 'working_memory_mutation_failed';
+        return this.failedWorkingMemoryResolution({
+          message: input.message,
+          pending,
+          signal,
+          code,
+          directive: 'The change could not be verified. Do not say it was completed.',
+        });
+      }
+      if (applied.status === 'failed') {
+        if (applied.code === 'working_memory_revision_stale') {
+          return this.failedWorkingMemoryResolution({
+            message: input.message,
+            pending,
+            signal,
+            status: 'stale',
+            code: 'working_memory_revision_stale',
+            directive: 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.',
+          });
+        }
+        return this.failedWorkingMemoryResolution({
+          message: input.message,
+          pending,
+          signal,
+          code: applied.code,
+          directive: 'Do not say the change was completed because storage did not verify it.',
+        });
       }
       const reviewDue = memory.noteWorkingMemoryMutationSuccess({ resourceId: input.message.householdId }).reviewDue;
       if (reviewDue) {
@@ -658,10 +805,73 @@ export class OrchestratorAgent {
         event: workingMemoryEvent(pending, 'applied', 'Confirm that the change was verified and completed.'),
         signal,
       });
-      return { kind: 'final', response };
+      return { status: 'applied', code: 'working_memory_mutation_succeeded', response };
     } finally {
       timeoutSignal?.clear();
     }
+  }
+
+  async finalizePendingWorkingMemoryResolution(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    status: Exclude<WorkingMemoryResolutionStatusV1, 'pending'>;
+    code: string;
+    directive: string;
+    signal?: AbortSignal;
+  }): Promise<WorkingMemoryResolutionResult> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      const eventKind = input.status === 'applied'
+        ? 'applied' as const
+        : input.status === 'rejected'
+          ? 'rejected' as const
+          : 'failed' as const;
+      const response = await this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryEvent(input.pending, eventKind, input.directive),
+        signal,
+      });
+      return { status: input.status, code: input.code, response };
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  async synthesizePendingWorkingMemoryConfirmation(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal?: AbortSignal;
+  }): Promise<OrchestratorFinalResponseV1> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      return await this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryConfirmationEvent(input.pending),
+        signal,
+      });
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  private async failedWorkingMemoryResolution(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal: AbortSignal;
+    status?: 'stale' | 'failed';
+    code: string;
+    directive: string;
+  }): Promise<WorkingMemoryResolutionResult> {
+    return this.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: input.pending,
+      status: input.status ?? 'failed',
+      code: input.code,
+      directive: input.directive,
+      signal: input.signal,
+    });
   }
 
   private async synthesizeWorkingMemoryOutcome(input: {
@@ -669,20 +879,65 @@ export class OrchestratorAgent {
     event: WorkingMemorySynthesisEvent;
     signal: AbortSignal;
   }): Promise<OrchestratorFinalResponseV1> {
-    const active = this.activeInvocation.getStore();
-    const body = await this.generateSubmittedResponse({
-      prompt: workingMemorySynthesisPrompt(input.message, input.event, undefined),
+    const reply = await this.generateWorkingMemoryReply({
       message: input.message,
+      event: input.event,
       signal: input.signal,
-      ...(active?.requestContext === undefined ? {} : { requestContext: active.requestContext }),
-      validateBody: (submittedBody) => {
-        assertUserSafeResponseBody(submittedBody);
-        if (!workingMemorySynthesisResponseIsSafe(submittedBody, input.event)) {
-          throw rejectedResponseError('Follow the Working Memory outcome: do not claim success for a failed or declined change, and ask for approval when required.');
-        }
-      },
     });
-    return responseFromTrustedBody(input.message, body);
+    return responseFromTrustedBody(input.message, reply);
+  }
+
+  private async generateWorkingMemoryReply(input: {
+    message: InboundChannelMessageV1;
+    event: WorkingMemorySynthesisEvent;
+    signal: AbortSignal;
+    draft?: string;
+  }): Promise<string> {
+    const expectedSpeechAct = speechActForWorkingMemoryEvent(input.event);
+    const basePrompt = workingMemorySynthesisPrompt(
+      input.message,
+      input.event,
+      input.draft,
+      expectedSpeechAct,
+    );
+    let candidate: z.infer<typeof WorkingMemoryReplySchemaV1> | undefined;
+    for (const attempt of ['initial', 'repair'] as const) {
+      try {
+        candidate = await this.generateSemanticContract({
+          runId: `working-memory-reply:${input.message.externalMessageId}:${attempt}`,
+          message: input.message,
+          prompt: attempt === 'initial'
+            ? basePrompt
+            : `${basePrompt}\nThe previous response did not satisfy the independent event check. Produce a new response with the required speech act.`,
+          outputSchema: WorkingMemoryReplySchemaV1,
+          signal: input.signal,
+        });
+      } catch (error) {
+        if (input.signal.aborted) throw error;
+        candidate = undefined;
+      }
+      if (candidate?.speechAct !== expectedSpeechAct) continue;
+      try {
+        assertUserSafeResponseBody(candidate.body);
+        const check = await this.generateSemanticContract({
+          runId: `working-memory-reply-check:${input.message.externalMessageId}:${attempt}`,
+          message: input.message,
+          prompt: [
+            'Check one generated Working Memory response against the typed event contract.',
+            `Expected speech act: ${expectedSpeechAct}.`,
+            `Required event directive: ${input.event.directive}`,
+            `Generated response: ${candidate.body}`,
+            'Return valid true only when the response expresses the expected event, does not claim a different event, and is suitable for the user. Judge meaning across languages without requiring a particular phrase or punctuation mark.',
+          ].join('\n'),
+          outputSchema: WorkingMemoryReplyCheckSchemaV1,
+          signal: input.signal,
+        });
+        if (check.valid) return candidate.body;
+      } catch (error) {
+        if (input.signal.aborted) throw error;
+      }
+    }
+    return workingMemoryFallbackBody(input.event);
   }
 
   private async continueTransactionCapture(input: {
@@ -774,39 +1029,6 @@ export class OrchestratorAgent {
               messageCount: Array.isArray(prompt) ? prompt.length : 1,
             },
           });
-          const deterministicBudgetRequest = budgetingExplicitRequestForMessage(message);
-          if (deterministicBudgetRequest !== undefined) {
-            try {
-              const executeDelegateTeam = this.agentTools.delegateTeam.execute;
-              if (executeDelegateTeam === undefined) {
-                throw new Error('The delegateTeam tool is not executable.');
-              }
-              const runtimeBudgetRequest = requestForRuntime(deterministicBudgetRequest);
-              if (runtimeBudgetRequest === null
-                || typeof runtimeBudgetRequest !== 'object'
-                || Array.isArray(runtimeBudgetRequest)) {
-                throw new Error('The deterministic budgeting request must be a JSON object.');
-              }
-              await executeDelegateTeam({
-                team: 'budgeting',
-                request: runtimeBudgetRequest,
-              }, {
-                abortSignal: signal,
-                requestContext: new RequestContext(),
-                observe: noopObserve,
-              });
-            } catch (error) {
-              if (signal.aborted) throw error;
-              return delegationFailureTurn(message);
-            }
-            const body = await this.synthesizeTeamResults(
-              message,
-              invocation.teamResults,
-              signal,
-              (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
-            );
-            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
-          }
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -832,11 +1054,17 @@ export class OrchestratorAgent {
                 }), signal);
               } catch (retryError) {
                 if (isWorkingMemoryFailure(retryError)) this.recordMemoryOutcome(memoryOutcomeFromError(retryError));
+                if (isBudgetingResponseSubmissionFailure(retryError, invocation)) {
+                  return budgetingFallbackTurn(message, invocation.teamResults, invocation.transactionCaptureContinuation);
+                }
                 throw retryError;
               }
             } else {
               if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
               if (error instanceof PlusOneError && error.code === 'orchestrator_response_not_submitted') {
+                if (invocation.teamResults.some((result) => result.team === 'budgeting')) {
+                  return budgetingFallbackTurn(message, invocation.teamResults, invocation.transactionCaptureContinuation);
+                }
                 throw error;
               }
               if (!signal.aborted && isTransientModelError(error)) {
@@ -881,7 +1109,10 @@ export class OrchestratorAgent {
           }
           const body = generated.submission.body;
           if (invocation.teamResults.length !== 0) {
-            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
+            const safeBody = invocation.memoryFailures.length === 0
+              ? body
+              : await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+            return turnFromTeamResults(message, invocation.teamResults, safeBody, invocation.transactionCaptureContinuation);
           }
           if (invocation.memoryFailures.length !== 0) {
             const memorySafeBody = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
@@ -935,9 +1166,6 @@ export class OrchestratorAgent {
       body,
       invocation.transactionCaptureContinuation,
     );
-    if (invocation.memoryFailures.length !== 0 && !memoryFailureResponseIsSafe(body)) {
-      throw rejectedResponseError('Explain that the Working Memory operation failed and do not claim that it succeeded.');
-    }
   }
 
   private assertTeamResultResponse(
@@ -1068,9 +1296,9 @@ export class OrchestratorAgent {
         prepareStep: async () => ({
           tools: { [SubmitFinalResponseToolId]: responseSession.tool },
           activeTools: [SubmitFinalResponseToolId],
-          toolChoice: { type: 'tool' as const, toolName: SubmitFinalResponseToolId },
+          toolChoice: 'auto' as const,
         }),
-        toolChoice: { type: 'tool' as const, toolName: SubmitFinalResponseToolId },
+        toolChoice: 'auto',
         abortSignal: input.signal,
       } as never), input.signal);
       return responseSession.requireSubmission().body;
@@ -1088,18 +1316,22 @@ export class OrchestratorAgent {
     invocation: OrchestratorInvocation,
     signal: AbortSignal,
   ): Promise<string> {
-    if (memoryFailureResponseIsSafe(candidate)) return candidate!;
-    return this.generateSubmittedResponse({
-      prompt: memoryFailureSynthesisPrompt(message, invocation.memoryFailures, undefined),
+    const event: WorkingMemorySynthesisEvent = {
+      kind: 'failed',
+      operation: 'read',
+      summary: 'the requested Working Memory operation',
+      directive: [
+        'Explain what could not be completed.',
+        'Do not claim that a failed save, update, delete, or clear succeeded.',
+        'Continue with verified information from the current turn when it is available.',
+        `Failure events: ${JSON.stringify(invocation.memoryFailures)}`,
+      ].join(' '),
+    };
+    return this.generateWorkingMemoryReply({
       message,
+      event,
       signal,
-      requestContext: invocation.requestContext,
-      validateBody: (body) => {
-        assertUserSafeResponseBody(body);
-        if (!memoryFailureResponseIsSafe(body)) {
-          throw rejectedResponseError('Explain that the Working Memory operation failed and do not claim that it succeeded.');
-        }
-      },
+      ...(candidate === undefined ? {} : { draft: candidate }),
     });
   }
 
@@ -1197,6 +1429,50 @@ function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cle
   };
 }
 
+function checkedMutationClassificationContext(input: {
+  pending: TeamResultEnvelopeV2;
+  transactionContinuation?: TransactionCaptureContinuationV1;
+}): string | undefined {
+  if (input.pending.effect.state !== 'awaiting_confirmation') return undefined;
+
+  try {
+    const view = finalSynthesisTeamResultView(input.pending);
+    const context = {
+      commandType: input.pending.effect.command.commandType,
+      payload: input.pending.effect.command.payload,
+      proposalFacts: view.proposalFacts,
+      ...(input.transactionContinuation === undefined
+        ? {}
+        : { transactionContinuationRequest: input.transactionContinuation.request }),
+    };
+    const serialized = JSON.stringify(context);
+    return serialized === undefined ? undefined : serialized;
+  } catch {
+    return undefined;
+  }
+}
+
+function adjudicatePendingDisposition(
+  primary: PendingInteractionDispositionV1,
+  checker: PendingInteractionDispositionV1,
+): PendingInteractionDispositionV1 {
+  if (primary.kind === 'new_intent') return primary;
+  if (primary.kind === 'resolve'
+    && checker.kind === 'resolve'
+    && checker.decision === primary.decision) {
+    return primary;
+  }
+  if (primary.kind === 'ambiguous' && checker.kind === 'new_intent') return checker;
+  return { kind: 'ambiguous' };
+}
+
+function pendingDispositionForWorkingMemoryRouter(
+  disposition: PendingInteractionDispositionV1,
+): 'approve' | 'reject' | 'new_intent' | 'ambiguous' {
+  if (disposition.kind === 'resolve') return disposition.decision;
+  return disposition.kind;
+}
+
 function inboundContextPrompt(message: InboundChannelMessageV1): string {
   return `${dateContextText(message)}\n\n${message.body}`;
 }
@@ -1290,25 +1566,6 @@ function memoryFailureMessages(failures: readonly OrchestratorMemoryFailure[]): 
   });
 }
 
-function memoryFailureSynthesisPrompt(
-  message: InboundChannelMessageV1,
-  failures: readonly OrchestratorMemoryFailure[],
-  candidate: string | undefined,
-): string {
-  return [
-    dateContextText(message),
-    `User request: ${message.body}`,
-    `Internal Working Memory outcomes: ${JSON.stringify(failures)}`,
-    candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
-    'Return only a concise user-facing response. Explain what could not be completed, do not claim the failed save or clear succeeded, and continue with verified information. Do not mention internal codes, schemas, tools, or identifiers.',
-  ].filter((part) => part.length > 0).join('\n\n');
-}
-
-function memoryFailureResponseIsSafe(value: string | undefined): value is string {
-  if (value === undefined || !memoryFailureAcknowledges(value) || memoryFailureClaimsSuccess(value)) return false;
-  return userFacingSafetyMatchCategory(value) === undefined;
-}
-
 function workingMemoryConfirmationEvent(
   pending: PendingWorkingMemoryMutation,
 ): WorkingMemorySynthesisEvent {
@@ -1336,13 +1593,58 @@ function workingMemoryMutationSummary(pending: PendingWorkingMemoryMutation): st
   const mutation = pending.mutation;
   if (mutation.operation === 'clear') return 'all Working Memory';
   if (mutation.operation === 'delete') return 'the selected Working Memory entry';
-  return mutation.entry.summary.replace(/\b(?:wme|wmproposal)_[A-Za-z0-9_-]+\b/gi, 'the selected entry');
+  return redactWorkingMemoryOpaqueIdentifiers(mutation.entry.summary);
+}
+
+function redactWorkingMemoryOpaqueIdentifiers(value: string): string {
+  const normalized = value.toLowerCase();
+  const markers = ['wme_', 'wmproposal_'];
+  let output = '';
+  let copiedThrough = 0;
+  let index = 0;
+  while (index < value.length) {
+    const marker = markers.find((candidate) => normalized.startsWith(candidate, index));
+    if (marker === undefined
+      || (index !== 0 && isAsciiWordCharacter(value[index - 1]))) {
+      index += 1;
+      continue;
+    }
+    let end = index + marker.length;
+    while (end < value.length && isOpaqueIdentifierCharacter(value[end])) end += 1;
+    if (end === index + marker.length
+      || !isAsciiWordCharacter(value[end - 1])
+      || (end < value.length && isAsciiWordCharacter(value[end]))) {
+      index += 1;
+      continue;
+    }
+    output += value.slice(copiedThrough, index);
+    output += 'the selected entry';
+    copiedThrough = end;
+    index = end;
+  }
+  return output + value.slice(copiedThrough);
+}
+
+function isOpaqueIdentifierCharacter(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return isAsciiWordCharacter(value) || value === '-';
+}
+
+function isAsciiWordCharacter(value: string | undefined): boolean {
+  if (value === undefined || value.length === 0) return false;
+  const code = value.codePointAt(0);
+  return code !== undefined
+    && ((code >= 48 && code <= 57)
+      || (code >= 65 && code <= 90)
+      || (code >= 97 && code <= 122)
+      || code === 95);
 }
 
 function workingMemorySynthesisPrompt(
   message: InboundChannelMessageV1,
   event: WorkingMemorySynthesisEvent,
   candidate: string | undefined,
+  expectedSpeechAct: WorkingMemoryReplySpeechActV1,
 ): string {
   return [
     dateContextText(message),
@@ -1350,57 +1652,42 @@ function workingMemorySynthesisPrompt(
     `Working Memory operation: ${event.operation}`,
     `Safe change summary: ${event.summary}`,
     `Required response behavior: ${event.directive}`,
+    `Required speech act: ${expectedSpeechAct}`,
     candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
-    'Return only a concise, natural user-facing response. For a completed change, say it is saved, stored, updated, or otherwise in place. For a declined change, say that no change was made. For a failed change, say it was not completed. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
+    'Return a structured Working Memory reply with the required speech act and a concise natural-language body. Express the required event in the user language when possible. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
   ].filter((part) => part.length > 0).join('\n\n');
 }
 
-function workingMemorySynthesisResponseIsSafe(
-  value: string | undefined,
+function speechActForWorkingMemoryEvent(
   event: WorkingMemorySynthesisEvent,
-): value is string {
-  if (value === undefined || userFacingSafetyMatchCategory(value) !== undefined) return false;
-  if (event.kind === 'confirmation') {
-    return value.includes('?') && !workingMemoryClaimsSuccess(value) && !workingMemoryClaimsFailure(value);
-  }
-  if (event.kind === 'applied') {
-    return value.trim().length > 0 && !workingMemoryClaimsFailure(value);
-  }
-  if (event.kind === 'rejected') {
-    return value.trim().length > 0 && !workingMemoryClaimsSuccess(value);
-  }
-  return workingMemoryClaimsFailure(value) && !workingMemoryClaimsSuccess(value);
+): WorkingMemoryReplySpeechActV1 {
+  if (event.kind === 'confirmation') return 'request_confirmation';
+  if (event.kind === 'applied') return 'confirm_applied';
+  if (event.kind === 'rejected') return 'confirm_rejected';
+  return 'report_failure';
 }
 
-function workingMemoryClaimsFailure(value: string): boolean {
-  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|expired|stale|changed|no changes?|nothing changed|changes? were not made|left .* unchanged|kept .* unchanged|not completed|not complete|didn['’]t|did not|didn['’]t go through|did not go through|cannot|can['’]t|won['’]t|will not|not make|not applied|not stored|not saved|not updated)\b/i.test(value);
-}
-
-function workingMemoryClaimsSuccess(value: string): boolean {
-  if (workingMemoryClaimsFailure(value)) return false;
-  return memoryFailureClaimsSuccess(value)
-    || /\b(?:saved|stored|updated|remembered|applied|cleared|completed|complete|done|set|in place|all set|taken care of|in (?:your )?memory)\b/i.test(value);
-}
-
-function memoryFailureAcknowledges(value: string): boolean {
-  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|not available|unavailable|didn['’]t|did not|cannot|can['’]t|without)\b/i.test(value);
-}
-
-function memoryFailureClaimsSuccess(value: string): boolean {
-  return /\b(?:I|we|Plus One|the system)\s+(?:have\s+|has\s+|did\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value)
-    || /\b(?:is|was|has been)\s+(?:now\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value);
+function workingMemoryFallbackBody(event: WorkingMemorySynthesisEvent): string {
+  const summary = event.summary.endsWith('.') ? event.summary.slice(0, -1) : event.summary;
+  if (event.kind === 'confirmation') return `I can update ${summary}. Would you like me to proceed?`;
+  if (event.kind === 'applied') return `The change to ${summary} is now in place.`;
+  if (event.kind === 'rejected') return `No changes were made to ${summary}.`;
+  return `I could not complete the change to ${summary}. No changes were made.`;
 }
 
 function isWorkingMemoryFailure(error: unknown): boolean {
-  return (error instanceof PlusOneError
-    && (/^working_memory_/.test(error.code) || /^observational_memory_/.test(error.code)))
-    || (error instanceof Error && /input processor error/i.test(error.message));
+  if (error instanceof PlusOneError) {
+    const code = error.code.toLowerCase();
+    if (code.startsWith('working_memory_') || code.startsWith('observational_memory_')) return true;
+  }
+  return error instanceof Error && error.message.toLowerCase().includes('input processor error');
 }
 
 function memoryOperationFromCode(code: string): WorkingMemoryOperation {
-  if (/clear/i.test(code)) return 'clear';
-  if (/update|write/i.test(code)) return 'update';
-  if (/observation/i.test(code)) return 'observation';
+  const normalized = code.toLowerCase();
+  if (normalized.includes('clear')) return 'clear';
+  if (normalized.includes('update') || normalized.includes('write')) return 'update';
+  if (normalized.includes('observation')) return 'observation';
   return 'read';
 }
 
@@ -1491,6 +1778,28 @@ function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTu
         + 'No changes were made. Please try again.',
     ),
   };
+}
+
+function budgetingFallbackTurn(
+  message: InboundChannelMessageV1,
+  teamResults: readonly TeamResultEnvelopeV2[],
+  transactionContinuation?: TransactionCaptureContinuationV1,
+): OrchestratorTurnResult {
+  return turnFromTeamResults(
+    message,
+    teamResults,
+    'I could not complete the budget request from the checked result. Please try again if you want to continue.',
+    transactionContinuation,
+  );
+}
+
+function isBudgetingResponseSubmissionFailure(
+  error: unknown,
+  invocation: OrchestratorInvocation,
+): boolean {
+  return error instanceof PlusOneError
+    && error.code === 'orchestrator_response_not_submitted'
+    && invocation.teamResults.some((result) => result.team === 'budgeting');
 }
 
 function responseFromTrustedBody(
@@ -1584,7 +1893,7 @@ function confirmationResponseIsSafe(
   transactionContinuation?: TransactionCaptureContinuationV1,
 ): boolean {
   if (body === undefined || !body.includes('?')) return false;
-  if (/\b(created|saved|added|applied|recorded|completed|succeeded)\b/i.test(body)) return false;
+  if (containsAnyWord(body, ['created', 'saved', 'added', 'applied', 'recorded', 'completed', 'succeeded'])) return false;
   const proposedChange = finalSynthesisTeamResultView(teamResult).proposedChange;
   if (proposedChange?.action !== 'create_account') return true;
   const requiredDetails = [
@@ -1607,6 +1916,49 @@ function confirmationResponseIsSafe(
   ].filter((detail): detail is string => detail !== undefined);
   return normalizedBody.includes('record')
     && requiredTransactionDetails.every((detail) => normalizedBody.includes(detail.toLowerCase()));
+}
+
+function containsAnyWord(value: string, words: readonly string[]): boolean {
+  return words.some((word) => containsWord(value, word));
+}
+
+function containsWord(value: string, word: string): boolean {
+  const normalized = value.toLowerCase();
+  const target = word.toLowerCase();
+  let index = normalized.indexOf(target);
+  while (index !== -1) {
+    const before = index === 0 ? undefined : normalized[index - 1];
+    const afterIndex = index + target.length;
+    const after = afterIndex >= normalized.length ? undefined : normalized[afterIndex];
+    if (!isAsciiWordCharacter(before) && !isAsciiWordCharacter(after)) return true;
+    index = normalized.indexOf(target, afterIndex);
+  }
+  return false;
+}
+
+function containsAnyPhrase(value: string, phrases: readonly string[]): boolean {
+  const normalized = value.toLowerCase();
+  return phrases.some((phrase) => normalized.includes(phrase.toLowerCase()));
+}
+
+function containsPhraseWithin(
+  value: string,
+  first: string,
+  seconds: readonly string[],
+  maxGap: number,
+): boolean {
+  const normalized = value.toLowerCase();
+  const firstNormalized = first.toLowerCase();
+  let firstIndex = normalized.indexOf(firstNormalized);
+  while (firstIndex !== -1) {
+    const afterFirst = firstIndex + firstNormalized.length;
+    if (seconds.some((second) => {
+      const secondIndex = normalized.indexOf(second.toLowerCase(), afterFirst);
+      return secondIndex !== -1 && secondIndex - afterFirst <= maxGap;
+    })) return true;
+    firstIndex = normalized.indexOf(firstNormalized, afterFirst);
+  }
+  return false;
 }
 
 function canDelegateAnotherSubstep(input: {
@@ -1666,15 +2018,15 @@ function checkedResponseMismatchCategory(
   result: TeamResultEnvelopeV2,
 ): CheckedResponseMismatchCategory | undefined {
   if (result.team !== 'query' || result.effect.state !== 'none') return undefined;
-  if (/\bwould you like\b[\s\S]{0,160}\b(?:proceed|create|record|capture|set up)\b/i.test(body)
-    || /\b(?:being|still)\s+(?:created|recorded|captured|set up)\b/i.test(body)
-    || /\bproceed with\s+(?:capturing|recording|creating|setting up)\b/i.test(body)) {
+  if (containsPhraseWithin(body, 'would you like', ['proceed', 'create', 'record', 'capture', 'set up'], 160)
+    || containsAnyPhrase(body, ['being created', 'being recorded', 'being captured', 'being set up', 'still created', 'still recorded', 'still captured', 'still set up'])
+    || containsAnyPhrase(body, ['proceed with capturing', 'proceed with recording', 'proceed with creating', 'proceed with setting up'])) {
     return 'query_mutation_state_conflict';
   }
-  const directionRequested = /\b(?:debit(?:ed)?|credit(?:ed)?|ledger direction|posting direction)\b/i
-    .test(message.body);
-  const directionClaimed = /\b(?:debited|credited)\b|\b(?:debit|credit)\s+(?:posting|entry|direction)\b/i
-    .test(body);
+  const directionRequested = containsAnyWord(message.body, ['debit', 'debited', 'credit', 'credited'])
+    || containsAnyPhrase(message.body, ['ledger direction', 'posting direction']);
+  const directionClaimed = containsAnyWord(body, ['debited', 'credited'])
+    || containsAnyPhrase(body, ['debit posting', 'debit entry', 'debit direction', 'credit posting', 'credit entry', 'credit direction']);
   return !directionRequested && directionClaimed
     ? 'query_unrequested_posting_direction'
     : undefined;

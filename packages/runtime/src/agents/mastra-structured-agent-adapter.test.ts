@@ -125,11 +125,10 @@ describe('MastraStructuredAgentAdapter', () => {
       .resolves.toEqual({ answer: '42' });
   });
 
-  it('rejects a call that does not submit a contractual result', async () => {
+  it('accepts raw JSON when the model does not call the contractual submission tool', async () => {
     const generate = vi.fn().mockResolvedValue({ text: '{"answer":"42"}' });
 
-    await expect(adapterWith(generate).generate(call()))
-      .rejects.toMatchObject({ code: 'structured_result_not_submitted' });
+    await expect(adapterWith(generate).generate(call())).resolves.toEqual({ answer: '42' });
   });
 
   it('preserves an exhausted Mastra API retry result as transient provider unavailability', async () => {

@@ -32,7 +32,7 @@ import {
   normalizeQueryLeadRequest,
   suggestedLeadPlanForRequest,
 } from '../src/team-runtime.js';
-import { budgetingExplicitRequestForMessage } from '../src/budgeting/budgeting-request.js';
+import { budgetingEvidenceIsGrounded } from '../src/budgeting/budgeting-request.js';
 import {
   accountingRequestMaterializers,
   materializeAccountingLeadRequest,
@@ -1108,7 +1108,7 @@ describe('normalizeQueryLeadRequest', () => {
 
 describe('budgetingIntakeForDraft', () => {
   it('materializes an incomplete budget-plan draft with authenticated scope and no invented evidence', () => {
-    const request = {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
@@ -1119,7 +1119,7 @@ describe('budgetingIntakeForDraft', () => {
         scopeKey: 'monthly',
         known: {},
       },
-    } as const;
+    });
 
     const intake = budgetingIntakeForDraft(message, request);
     expect(BudgetingIntakeRequestSchemaV1.parse(intake)).toEqual({
@@ -1133,7 +1133,7 @@ describe('budgetingIntakeForDraft', () => {
     });
   });
 
-  it('leaves a complete budget draft for authenticated evidence materialization', () => {
+  it('requires evidence for model-supplied budget facts', () => {
     const completeMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
       body: 'Create an August 2026 budget. Prioritize rent before discretionary spending. Total 10000 USD. Include Rent 3000 USD.',
@@ -1156,7 +1156,36 @@ describe('budgetingIntakeForDraft', () => {
       },
     });
 
-    expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+    expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(completeMessage, request)).known)
+      .toEqual({});
+  });
+
+  it('rejects typed facts when evidence does not cover every fact', () => {
+    const completeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Create an August 2026 budget. Prioritize rent before discretionary spending. Total 10000 USD. Include Rent 3000 USD.',
+    });
+    const request = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: 'Create our August budget.',
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['rent before discretionary spending'],
+          targetAmount: { amount: '10000.00', currency: 'USD' },
+          evidence: [
+            { path: 'priorities[0]', sourceQuote: 'Prioritize rent before discretionary spending', start: 30, end: 75 },
+          ],
+        },
+      },
+    });
+
+    expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(completeMessage, request)).known)
+      .toEqual({});
   });
 
   it('discards model-supplied budget facts that are absent from the user message', () => {
@@ -1182,12 +1211,12 @@ describe('budgetingIntakeForDraft', () => {
       .toEqual({});
   });
 
-  it('recovers complete budget facts from an explicit user message when the lead omits known', () => {
+  it('does not infer budget facts when the typed request omits them', () => {
     const completeMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
       body: 'Create a monthly budget for 2026-08-01 through 2026-08-31. Prioritize rent and groceries. The total budget is USD 1650. Include Rent USD 1000, Groceries USD 400, and Dining USD 250.',
     });
-    const request = {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
@@ -1198,17 +1227,18 @@ describe('budgetingIntakeForDraft', () => {
         scopeKey: 'monthly',
         known: {},
       },
-    } as const;
+    });
 
-    expect(budgetingIntakeForDraft(completeMessage, request)).toBeUndefined();
+    expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(completeMessage, request)).known)
+      .toEqual({});
   });
 
-  it('recovers facts from a detailed continuation even when it says to prepare the budget', () => {
+  it('preserves a complete typed budget request when source evidence is exact', () => {
     const continuationMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
       body: 'Monthly for September 2026, from 2026-09-01 through 2026-09-30; prioritize rent and groceries; the total budget is USD 1650. Include Rent USD 1000, Groceries USD 400, and Dining USD 250. Map them to Checking and prepare it.',
     });
-    const request = {
+    const request = BudgetingDelegateRequestSchemaV1.parse({
       schemaName: 'budgeting-lead-request',
       schemaVersion: 1,
       intent: 'budget_plan',
@@ -1217,20 +1247,51 @@ describe('budgetingIntakeForDraft', () => {
         schemaVersion: 1,
         instruction: continuationMessage.body,
         scopeKey: 'monthly',
-        known: {},
-      },
-    } as const;
-
-    expect(budgetingIntakeForDraft(continuationMessage, request)).toBeUndefined();
-    expect(budgetingExplicitRequestForMessage(continuationMessage)).toMatchObject({
-      intent: 'budget_plan',
-      request: {
         known: {
+          priorities: ['rent and groceries'],
           timeframe: { start: '2026-09-01', end: '2026-09-30' },
           targetAmount: { amount: '1650', currency: 'USD' },
+          categories: [
+            { name: 'Rent', targetAmount: { amount: '1000', currency: 'USD' } },
+            { name: 'Groceries', targetAmount: { amount: '400', currency: 'USD' } },
+            { name: 'Dining', targetAmount: { amount: '250', currency: 'USD' } },
+          ],
+          evidence: [
+            { path: 'priorities[0]', sourceQuote: 'prioritize rent and groceries', start: 64, end: 93 },
+            { path: 'timeframe.start', sourceQuote: '2026-09-01', start: 33, end: 43 },
+            { path: 'timeframe.end', sourceQuote: '2026-09-30', start: 52, end: 62 },
+            { path: 'targetAmount', sourceQuote: 'the total budget is USD 1650', start: 95, end: 123 },
+            { path: 'categories[0]', sourceQuote: 'Rent USD 1000', start: 133, end: 146 },
+            { path: 'categories[1]', sourceQuote: 'Groceries USD 400', start: 148, end: 165 },
+            { path: 'categories[2]', sourceQuote: 'Dining USD 250', start: 171, end: 185 },
+          ],
         },
       },
     });
+
+    expect(budgetingIntakeForDraft(continuationMessage, request)).toBeUndefined();
+  });
+
+  it('rejects budget evidence when the quote or offsets do not match the message', () => {
+    const completeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'Create a monthly budget. Prioritize rent. Total USD 1000.',
+    });
+    const grounded = {
+      priorities: ['rent'],
+      evidence: [{ path: 'priorities[0]', sourceQuote: 'Prioritize rent', start: 25, end: 40 }],
+    };
+    const originalEvidence = grounded.evidence[0]!;
+
+    expect(budgetingEvidenceIsGrounded(completeMessage, grounded)).toBe(true);
+    expect(budgetingEvidenceIsGrounded(completeMessage, {
+      ...grounded,
+      evidence: [{ ...originalEvidence, sourceQuote: 'Prioritize groceries' }],
+    })).toBe(false);
+    expect(budgetingEvidenceIsGrounded(completeMessage, {
+      ...grounded,
+      evidence: [{ ...originalEvidence, start: 24 }],
+    })).toBe(false);
   });
 });
 

@@ -28,6 +28,16 @@ export function workingMemoryAcceptanceArgs(): string[] {
   ];
 }
 
+export function workingMemoryModelEnvironment(modelId: string): NodeJS.ProcessEnv {
+  return {
+    ORCHESTRATOR_MODEL: modelId,
+    LEAD_MODEL: modelId,
+    MAKER_MODEL: modelId,
+    CHECKER_MODEL: modelId,
+    RESEARCH_MODEL: modelId,
+  };
+}
+
 export async function runSerialFreeModelSweep(input: {
   modelIds: readonly string[];
   runModel?: RunModel;
@@ -52,7 +62,7 @@ async function runAcceptanceForModel(modelId: string): Promise<{ ok: boolean; fa
   return new Promise((resolve) => {
     const child = spawn('pnpm', workingMemoryAcceptanceArgs(), {
       cwd: process.cwd(),
-      env: { ...process.env, ORCHESTRATOR_MODEL: modelId },
+      env: { ...process.env, ...workingMemoryModelEnvironment(modelId) },
       stdio: 'inherit',
     });
     child.once('error', () => resolve({ ok: false, failureCode: 'spawn_error' }));

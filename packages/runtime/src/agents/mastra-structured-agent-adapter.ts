@@ -59,14 +59,11 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     }
 
     const submissions: Output[] = [];
-    const providerSubmissionSchema = z.preprocess(
-      (value) => normalizeProviderSubmission(value, call.roleKind),
-      call.outputSchema,
-    );
+    const submissionInput = providerSubmissionInputSchema(call.outputSchema);
     const submitResult = createTool({
       id: SubmitResultToolId,
       description: 'Submit the complete result for this invocation. This is the only valid completion channel.',
-      inputSchema: providerSubmissionSchema,
+      inputSchema: submissionInput.schema,
       outputSchema: SubmissionAcknowledgementSchema,
       execute: async (inputData) => {
         if (submissions.length !== 0) {
@@ -79,7 +76,11 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
             details: { agentId: call.agentId, roleKind: call.roleKind },
           });
         }
-        submissions.push(call.outputSchema.parse(inputData));
+        submissions.push(call.outputSchema.parse(normalizeProviderSubmission(
+          inputData,
+          call.roleKind,
+          submissionInput.wrapped,
+        )));
         return { accepted: true as const };
       },
     });
@@ -101,11 +102,24 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     };
     const canRepairWithoutToolState = !hasDomainTools && call.maxSteps > 1;
     const repairStepLimit = canRepairWithoutToolState ? call.maxSteps - 1 : 0;
-    const initialStepLimit = call.maxSteps - repairStepLimit;
+    const initialStepLimit = canRepairWithoutToolState ? 1 : requiredSteps;
     const stopAtStepLimit = stopAfterSemanticModelSteps(initialStepLimit);
     const result = await agent.generate([...call.messages], {
-      instructions: contractualInstructions(call, hasDomainTools, requiresDomainTool),
+      instructions: contractualInstructions(call, hasDomainTools, requiresDomainTool, submissionInput.wrapped),
       activeTools: [...call.activeTools],
+      ...(call.memoryContext === undefined ? {} : {
+        memory: {
+          thread: call.memoryContext.threadId,
+          resource: call.memoryContext.resourceId,
+          options: {
+            readOnly: true,
+            lastMessages: false,
+            semanticRecall: false,
+            observationalMemory: false,
+            workingMemory: { enabled: false as const },
+          },
+        },
+      }),
       stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
         submissions.length !== 0 || stopAtStepLimit({ steps }),
       maxRetries: 0,
@@ -137,7 +151,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
       throw new ModelTemporarilyUnavailableError(lastProviderError);
     }
     assertExecutedRequiredDomainTool(call, result, requiresDomainTool);
-    const textSubmission = parseTextSubmission(result, call.outputSchema, call.roleKind);
+    const textSubmission = parseTextSubmission(result, call.outputSchema, call.roleKind, submissionInput.wrapped);
     let parsed: Output;
     if (submissions.length !== 0) {
       parsed = call.outputSchema.parse(submissions[0]);
@@ -146,8 +160,21 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
     } else if (canRepairWithoutToolState) {
       const stopAtRepairLimit = stopAfterSemanticModelSteps(repairStepLimit);
       const repairResult = await agent.generate([...call.messages], {
-        instructions: contractualRepairInstructions(call),
+        instructions: contractualRepairInstructions(call, submissionInput.wrapped),
         activeTools: [SubmitResultToolId],
+        ...(call.memoryContext === undefined ? {} : {
+          memory: {
+            thread: call.memoryContext.threadId,
+            resource: call.memoryContext.resourceId,
+            options: {
+              readOnly: true,
+              lastMessages: false,
+              semanticRecall: false,
+              observationalMemory: false,
+              workingMemory: { enabled: false as const },
+            },
+          },
+        }),
         stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
           submissions.length !== 0 || stopAtRepairLimit({ steps }),
         maxRetries: 0,
@@ -171,6 +198,7 @@ export class MastraStructuredAgentAdapter implements StructuredAgentPort {
         repairResult,
         call.outputSchema,
         call.roleKind,
+        submissionInput.wrapped,
       );
       if (submissions.length === 0 && repairedTextSubmission === undefined) {
         throw structuredResultNotSubmitted(call);
@@ -212,6 +240,7 @@ function contractualInstructions<Output>(
   call: StructuredAgentCall<Output>,
   hasDomainTools: boolean,
   requiresDomainTool: boolean,
+  submissionWrapped: boolean,
 ): string {
   const completion = requiresDomainTool
     ? 'First call one approved domain tool. After receiving its result, call submitResult exactly once with the complete contractual result.'
@@ -221,15 +250,21 @@ function contractualInstructions<Output>(
   return [
     call.systemPrompt,
     contractualOutputHint(call),
+    submissionWrapped
+      ? 'The submitResult input must be an object with exactly one result property containing the complete contract.'
+      : 'The submitResult input must contain the complete contract without an outer wrapper.',
     completion,
     'Prefer submitResult. If you do not call it, return only one raw JSON object matching the same contract; do not wrap it in prose.',
   ].join('\n');
 }
 
-function contractualRepairInstructions<Output>(call: StructuredAgentCall<Output>): string {
+function contractualRepairInstructions<Output>(call: StructuredAgentCall<Output>, submissionWrapped: boolean): string {
   return [
     call.systemPrompt,
     contractualOutputHint(call),
+    submissionWrapped
+      ? 'The submitResult input must be an object with exactly one result property containing the complete contract.'
+      : 'The submitResult input must contain the complete contract without an outer wrapper.',
     'Execution state: the previous contractual attempt ended without a valid structured submission.',
     'Complete the same task now by calling submitResult exactly once with the full contractual result.',
     'If you do not call submitResult, return only one raw JSON object matching the same contract; do not wrap it in prose.',
@@ -243,19 +278,24 @@ function contractualOutputHint<Output>(call: StructuredAgentCall<Output>): strin
   if (call.roleKind === 'lead') {
     return 'Contract: {"schemaName":"team-lead-plan","schemaVersion":1,"recommendedStrategyName":"allowed-strategy","work":[{"workCellId":"allowed-work-cell"}],"stopCondition":{"code":"kebab-case","description":"non-empty"}}. Do not include makerInput.';
   }
-  return 'Contract: use every required field in the submitResult input schema exactly; do not add an outer wrapper.';
+  return 'Contract: use every required field in the submitResult input schema exactly.';
 }
 
 function parseTextSubmission<Output>(
   result: MastraGenerationResult,
   schema: z.ZodType<Output>,
   roleKind: StructuredAgentCall<unknown>['roleKind'],
+  submissionWrapped: boolean,
 ): Output | undefined {
   for (const text of collectResultTexts(result)) {
     const candidate = rawJsonCandidate(text);
     if (candidate === undefined) continue;
     try {
-      const parsed = schema.safeParse(normalizeProviderSubmission(JSON.parse(candidate), roleKind));
+      const parsed = schema.safeParse(normalizeProviderSubmission(
+        JSON.parse(candidate),
+        roleKind,
+        submissionWrapped,
+      ));
       if (parsed.success) return parsed.data;
     } catch {
       continue;
@@ -267,14 +307,36 @@ function parseTextSubmission<Output>(
 function normalizeProviderSubmission(
   value: unknown,
   roleKind: StructuredAgentCall<unknown>['roleKind'],
+  submissionWrapped: boolean,
 ): unknown {
-  if (roleKind !== 'maker' || value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return value;
+  let normalized = value;
+  if (submissionWrapped
+    && normalized !== null
+    && typeof normalized === 'object'
+    && !Array.isArray(normalized)
+    && Object.keys(normalized).length === 1
+    && 'result' in normalized) {
+    normalized = (normalized as { result: unknown }).result;
   }
-  const output = (value as { output?: unknown }).output;
-  if (typeof output !== 'string') return value;
+  if (roleKind !== 'maker' || normalized === null || typeof normalized !== 'object' || Array.isArray(normalized)) {
+    return normalized;
+  }
+  const output = (normalized as { output?: unknown }).output;
+  if (typeof output !== 'string') return normalized;
   const parsed = parseJsonObject(output);
-  return parsed === undefined ? value : { ...value, output: parsed };
+  return parsed === undefined ? normalized : { ...normalized, output: parsed };
+}
+
+function providerSubmissionInputSchema<Output>(schema: z.ZodType<Output>): {
+  schema: z.ZodType<unknown>;
+  wrapped: boolean;
+} {
+  const jsonSchema = z.toJSONSchema(schema) as { type?: unknown };
+  if (jsonSchema.type === 'object') return { schema, wrapped: false };
+  return {
+    schema: z.object({ result: schema }).strict(),
+    wrapped: true,
+  };
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | undefined {
@@ -303,8 +365,10 @@ function collectResultTexts(result: MastraGenerationResult): string[] {
 function rawJsonCandidate(text: string): string | undefined {
   const trimmed = text.trim();
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed;
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  return fenced?.[1]?.trim();
+  if (!trimmed.startsWith('```') || !trimmed.endsWith('```')) return undefined;
+  let fenced = trimmed.slice(3, -3).trim();
+  if (fenced.toLowerCase().startsWith('json')) fenced = fenced.slice(4).trim();
+  return fenced.length === 0 ? undefined : fenced;
 }
 
 function structuredResultNotSubmitted<Output>(call: StructuredAgentCall<Output>): PlusOneError {
