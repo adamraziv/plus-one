@@ -173,7 +173,7 @@ describe('TeamLeadPlanner', () => {
     expect(receivedCall?.toolHistory).toEqual([]);
   });
 
-  it('normalizes underscore-delimited lead identifiers before validating the final plan', async () => {
+  it('normalizes lead identifiers and binds the request as maker input', async () => {
     const generate = vi.fn(async () => ({
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
@@ -227,7 +227,7 @@ describe('TeamLeadPlanner', () => {
       schemaName: 'team-lead-plan',
       schemaVersion: 1,
       recommendedStrategyName: 'single-maker-checker',
-      work: [{ workCellId: 'query-evidence', makerInput: {} }],
+      work: [{ workCellId: 'query-evidence', makerInput: { businessQuestion: 'What are our balances?' } }],
       stopCondition: { code: 'query-answer', description: 'Return one checked query answer.' },
     });
   });

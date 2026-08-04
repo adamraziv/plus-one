@@ -32,10 +32,10 @@ describe('createDelegateTeamTool', () => {
     expect(tool.description).toContain('Do not use this tool for payments');
   });
 
-  it('exposes team-specific request contracts to the model provider', () => {
+  it('exposes the provider-safe request contract to the model provider', () => {
     const jsonSchema = z.toJSONSchema(DelegateTeamToolInputSchema);
-    const providerSchema = JSON.stringify(jsonSchema);
     const teamSchema = (jsonSchema as { properties?: { team?: unknown } }).properties?.team;
+    const requestSchema = (jsonSchema as { properties?: { request?: unknown } }).properties?.request;
 
     expect(jsonSchema).toMatchObject({ type: 'object' });
     expect(jsonSchema).not.toHaveProperty('anyOf');
@@ -43,11 +43,16 @@ describe('createDelegateTeamTool', () => {
       type: 'string',
       enum: expect.arrayContaining(['query', 'accounting']),
     });
-    expect(providerSchema).toContain('"const":"accounting-lead-request"');
-    expect(providerSchema).toContain('"const":"transaction-capture-request-draft"');
-    expect(providerSchema).toContain('"const":"budgeting-lead-request"');
-    expect(providerSchema).toContain('"const":"budget-plan-request-draft"');
-    expect(providerSchema).toContain('"const":"query-lead-request-draft"');
+    expect(requestSchema).toMatchObject({
+      anyOf: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'object',
+          propertyNames: { type: 'string' },
+          additionalProperties: { $ref: '#/$defs/__schema0' },
+        }),
+        expect.objectContaining({ type: 'string', minLength: 2, maxLength: 32_000 }),
+      ]),
+    });
   });
 
   it('accepts typed budgeting drafts and rejects query-shaped budgeting requests', () => {
@@ -64,9 +69,9 @@ describe('createDelegateTeamTool', () => {
       },
     });
 
-    expect(DelegateTeamToolInputSchema.parse({ team: 'budgeting', request }).request)
+    expect(parseDelegateTeamToolInput({ team: 'budgeting', request }).request)
       .toEqual(request);
-    expect(DelegateTeamToolInputSchema.safeParse({
+    expect(() => parseDelegateTeamToolInput({
       team: 'budgeting',
       request: {
         schemaName: 'query-lead-request-draft',
@@ -74,7 +79,7 @@ describe('createDelegateTeamTool', () => {
         businessQuestion: 'What information is needed to create a budget?',
         requiredCalculations: [],
       },
-    }).success).toBe(false);
+    })).toThrow();
   });
 
   it('normalizes the observed budgeting evidence and money aliases before validation', () => {
@@ -115,7 +120,7 @@ describe('createDelegateTeamTool', () => {
   });
 
   it('rejects the malformed accounting shape observed from a generic request schema', () => {
-    expect(DelegateTeamToolInputSchema.safeParse({
+    expect(() => parseDelegateTeamToolInput({
       team: 'accounting',
       request: {
         intent: 'transaction_capture',
@@ -123,7 +128,7 @@ describe('createDelegateTeamTool', () => {
           known: { amount: 10, paymentAccountName: null },
         },
       },
-    }).success).toBe(false);
+    })).toThrow();
   });
 
   it('accepts only declared Accounting drafts or complete work requests', () => {

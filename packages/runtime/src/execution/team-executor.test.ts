@@ -329,7 +329,7 @@ describe('TeamExecutor', () => {
     expect(result.effectRequirement).toEqual({ kind: 'none' });
   });
 
-  it('returns invalid maker evidence state before freezing it or retrying blindly', async () => {
+  it('drops maker evidence outside the permitted scope before checking', async () => {
     const runtime = {
       createTask: vi.fn(),
       selectContract: vi.fn(),
@@ -364,19 +364,7 @@ describe('TeamExecutor', () => {
         uncertainty: [],
       })
       .mockResolvedValueOnce({
-        schemaName: 'maker-artifact',
-        schemaVersion: 1,
-        outputSchema: { schemaName: 'lookup-output', schemaVersion: 1 },
-        output: { answer: '42' },
-        claims: [{ claimId: 'good', text: '42', evidenceArtifactIds: [] }],
-        assumptions: [],
-        uncertainty: [],
-      })
-      .mockResolvedValueOnce({
-        verdict: 'accepted',
-        coveredArtifactId: 'artifact_01JNZQ4A9B8C7D6E5F4G3H2J1K',
-        coveredArtifactHash: 'a'.repeat(64),
-        findings: [],
+        verdict: 'accepted', findings: [],
       }) };
     const executor = new TeamExecutor({
       runtime: runtime as never,
@@ -412,16 +400,15 @@ describe('TeamExecutor', () => {
     const result = await executor.executeWorkCell(makeExecutionInput());
 
     expect(result).toMatchObject({
-      status: 'failed',
-      failure: {
-        phase: 'maker_validation',
-        code: 'maker_claim_evidence_not_permitted',
-        retry: 'safe',
+      status: 'verified',
+      completionState: 'terminal',
+      acceptedMaker: {
+        claims: [{ claimId: 'bad', evidenceArtifactIds: [] }],
       },
     });
-    expect(runner.run).toHaveBeenCalledTimes(1);
-    expect(runtime.validateMaker).not.toHaveBeenCalled();
-    expect(runtime.fail).toHaveBeenCalledTimes(1);
+    expect(runner.run).toHaveBeenCalledTimes(2);
+    expect(runtime.validateMaker).toHaveBeenCalledTimes(1);
+    expect(runtime.fail).not.toHaveBeenCalled();
   });
 
   it('synthesizes one checked claim for verified query results that omit claims', async () => {

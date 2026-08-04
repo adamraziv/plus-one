@@ -110,7 +110,13 @@ describe('AgentInvocationRunner', () => {
           activeTools: [], toolHistory: [] },
         outputSchema: z.object({ answer: z.string() }), abortSignal: controller.signal,
       })).rejects.toMatchObject({ code: 'agent_call_cancelled' });
-      expect(ledger.finishRun).toHaveBeenCalledWith(expect.any(String), 'cancelled', 'cancelled');
+      expect(ledger.finishRun).toHaveBeenCalledWith(
+        'run_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        'cancelled',
+        'cancelled',
+        'agent_call_cancelled',
+        'never',
+      );
       const records = await logRecords(homeDirectory, logging);
       expect(records).toContainEqual(expect.objectContaining({
         eventName: 'agent.failed',
