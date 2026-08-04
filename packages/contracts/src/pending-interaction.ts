@@ -64,6 +64,7 @@ export const PendingInteractionSchemaV1 = z.object({
   status: PendingInteractionStatusSchemaV1,
   version: z.number().int().nonnegative(),
   resolutionExternalMessageId: z.string().min(1).max(512).optional(),
+  resolutionDecision: z.enum(['approve', 'reject']).optional(),
   resolutionCode: z.string().regex(/^[a-z0-9_]{1,160}$/).optional(),
   resolutionResponse: OrchestratorFinalResponseSchemaV1.optional(),
   createdAt: UtcInstantSchema,
@@ -99,11 +100,12 @@ export const PendingInteractionSchemaV1 = z.object({
   }
 
   const hasExternalMessage = interaction.resolutionExternalMessageId !== undefined;
+  const hasResolutionDecision = interaction.resolutionDecision !== undefined;
   const hasResolutionCode = interaction.resolutionCode !== undefined;
   const hasResolutionResponse = interaction.resolutionResponse !== undefined;
   const hasResolvedAt = interaction.resolvedAt !== undefined;
   if (interaction.status === 'pending') {
-    if (hasExternalMessage || hasResolutionCode || hasResolutionResponse || hasResolvedAt) {
+    if (hasExternalMessage || hasResolutionDecision || hasResolutionCode || hasResolutionResponse || hasResolvedAt) {
       context.addIssue({ code: 'custom', path: ['status'], message: 'Pending interactions cannot contain resolution evidence.' });
     }
     return;

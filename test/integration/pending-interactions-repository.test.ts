@@ -140,21 +140,24 @@ describe('PostgresPendingInteractionRepository', () => {
         interactionId: proposalId,
         householdId,
         externalMessageId: 'telegram:42:approve-1',
+        decision: 'approve',
         expectedVersion: 0,
       });
       expect(claimed.kind).toBe('claimed');
-      expect(claimed.interaction).toMatchObject({ status: 'resolving', version: 1 });
+      expect(claimed.interaction).toMatchObject({ status: 'resolving', version: 1, resolutionDecision: 'approve' });
 
       await expect(repository.claim({
         interactionId: proposalId,
         householdId,
         externalMessageId: 'telegram:42:approve-1',
+        decision: 'approve',
         expectedVersion: 0,
       })).resolves.toMatchObject({ kind: 'replay' });
       await expect(repository.claim({
         interactionId: proposalId,
         householdId,
         externalMessageId: 'telegram:42:approve-2',
+        decision: 'approve',
         expectedVersion: 0,
       })).rejects.toMatchObject({ code: 'pending_interaction_state_conflict' });
 

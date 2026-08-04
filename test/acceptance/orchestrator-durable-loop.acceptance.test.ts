@@ -367,6 +367,7 @@ describe('orchestrator durable loop acceptance', () => {
         householdId,
         interactionId: ambiguous.interactionId,
         externalMessageId: 'matrix-ambiguous-cleanup',
+        decision: 'reject',
         expectedVersion: ambiguous.version,
       });
       if (ambiguousClaim.kind !== 'claimed') throw new Error('Expected the ambiguous fixture to remain claimable.');
@@ -505,6 +506,7 @@ describe('orchestrator durable loop acceptance', () => {
       householdId,
       interactionId: interaction.interactionId,
       externalMessageId: 'crash-approval',
+      decision: 'approve',
       expectedVersion: interaction.version,
       });
       if (claimed.kind !== 'claimed') throw new Error('Expected the crash fixture to be claimed.');

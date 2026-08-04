@@ -8,7 +8,7 @@ import {
 import type { PendingInteractionRepository } from '@plus-one/database';
 import type { OrchestratorAgent, WorkingMemoryResolutionResult } from '../agents/orchestrator.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
-import { workingMemoryMutationEffectIsPresent } from '../memory/working-memory-document.js';
+import { proposalExpired, workingMemoryMutationEffectIsPresent } from '../memory/working-memory-document.js';
 
 type TerminalWorkingMemoryResolutionStatus = Exclude<WorkingMemoryResolutionStatusV1, 'pending'>;
 
@@ -87,6 +87,7 @@ export async function runConversationTurn(
       householdId: open.householdId,
       interactionId: open.interactionId,
       externalMessageId: message.externalMessageId,
+      decision: 'reject',
       expectedVersion: open.version,
     });
     if (claimed.kind === 'replay' && claimed.interaction.resolutionResponse !== undefined) {
@@ -99,6 +100,7 @@ export async function runConversationTurn(
     householdId: open.householdId,
     interactionId: open.interactionId,
     externalMessageId: message.externalMessageId,
+    decision: disposition,
     expectedVersion: open.version,
   });
   if (claimed.kind === 'replay' && claimed.interaction.resolutionResponse !== undefined) {
@@ -130,6 +132,31 @@ async function recoverResolvingInteraction(
   interaction: PendingInteractionV1,
   input: ConversationTurnRouterInput,
 ): Promise<OrchestratorFinalResponseV1> {
+  if (proposalExpired(interaction.expiresAt, new Date())) {
+    const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: interaction.pendingWorkingMemoryMutation,
+      status: 'expired',
+      code: 'working_memory_proposal_expired',
+      directive: 'The proposal expired before it was approved. Do not say it was completed.',
+      ...optionalSignal(input.signal),
+    });
+    return completeIfTerminal(dependencies, interaction, result, input);
+  }
+  if (interaction.resolutionDecision === 'reject') {
+    return resolveClaimedInteraction(dependencies, interaction, 'reject', input);
+  }
+  if (interaction.resolutionDecision !== 'approve') {
+    const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: interaction.pendingWorkingMemoryMutation,
+      status: 'failed',
+      code: 'working_memory_resolution_decision_missing',
+      directive: 'The change could not be recovered because the original decision was not recorded. Do not say it was completed; ask the user to review the proposal again.',
+      ...optionalSignal(input.signal),
+    });
+    return completeIfTerminal(dependencies, interaction, result, input);
+  }
   const memory = dependencies.sessionMemory;
   if (memory === undefined) {
     const result = await dependencies.orchestrator.finalizePendingWorkingMemoryResolution({

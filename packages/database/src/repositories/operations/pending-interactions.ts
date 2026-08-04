@@ -27,6 +27,7 @@ export interface PendingInteractionRepository {
     householdId: string;
     interactionId: string;
     externalMessageId: string;
+    decision: 'approve' | 'reject';
     expectedVersion: number;
   }): Promise<PendingInteractionClaimResult>;
   complete(input: {
@@ -54,6 +55,7 @@ interface PendingInteractionRow extends QueryResultRow {
   status: string;
   version: string | number;
   resolution_external_message_id: string | null;
+  resolution_decision: 'approve' | 'reject' | null;
   resolution_code: string | null;
   resolution_response: unknown;
   created_at: string;
@@ -71,6 +73,7 @@ const pendingInteractionColumns = `
   interaction.status,
   interaction.version::text,
   interaction.resolution_external_message_id,
+  interaction.resolution_decision,
   interaction.resolution_code,
   interaction.resolution_response,
   to_char(interaction.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
@@ -95,7 +98,7 @@ export class PostgresPendingInteractionRepository implements PendingInteractionR
          ON CONFLICT (interaction_id) DO NOTHING
          RETURNING interaction_id, kind, conversation_id, speaker_principal_ref,
            payload, status, version::text,
-           resolution_external_message_id, resolution_code, resolution_response,
+           resolution_external_message_id, resolution_decision, resolution_code, resolution_response,
            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
            to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
            NULL::text AS resolved_at`,
@@ -200,27 +203,31 @@ export class PostgresPendingInteractionRepository implements PendingInteractionR
     householdId: string;
     interactionId: string;
     externalMessageId: string;
+    decision: 'approve' | 'reject';
     expectedVersion: number;
   }): Promise<PendingInteractionClaimResult> {
     const claimed = await this.pool.query<PendingInteractionRow>(
       `UPDATE operations.pending_interactions interaction
        SET status = 'resolving', version = version + 1,
-           resolution_external_message_id = $1, updated_at = clock_timestamp()
+           resolution_external_message_id = $1,
+           resolution_decision = $2,
+           updated_at = clock_timestamp()
        FROM operations.households household
        WHERE household.id = interaction.household_id
-         AND household.household_id = $2
-         AND interaction.interaction_id = $3
+         AND household.household_id = $3
+         AND interaction.interaction_id = $4
          AND interaction.status = 'pending'
-         AND interaction.version = $4
+         AND interaction.version = $5
        RETURNING interaction.interaction_id, interaction.kind,
          interaction.conversation_id, interaction.speaker_principal_ref,
          interaction.payload, interaction.status, interaction.version::text,
-         interaction.resolution_external_message_id, interaction.resolution_code,
+         interaction.resolution_external_message_id, interaction.resolution_decision,
+         interaction.resolution_code,
          interaction.resolution_response,
          to_char(interaction.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
          to_char(interaction.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
          NULL::text AS resolved_at`,
-      [input.externalMessageId, input.householdId, input.interactionId, input.expectedVersion],
+      [input.externalMessageId, input.decision, input.householdId, input.interactionId, input.expectedVersion],
     );
     const row = claimed.rows[0];
     if (row !== undefined) {
@@ -262,7 +269,8 @@ export class PostgresPendingInteractionRepository implements PendingInteractionR
        RETURNING interaction.interaction_id, interaction.kind,
          interaction.conversation_id, interaction.speaker_principal_ref,
          interaction.payload, interaction.status, interaction.version::text,
-         interaction.resolution_external_message_id, interaction.resolution_code,
+         interaction.resolution_external_message_id, interaction.resolution_decision,
+         interaction.resolution_code,
          interaction.resolution_response,
          to_char(interaction.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
          to_char(interaction.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
@@ -343,6 +351,7 @@ function mapPendingInteraction(row: PendingInteractionRow, householdId = row.hou
     ...(row.resolution_external_message_id === null ? {} : {
       resolutionExternalMessageId: row.resolution_external_message_id,
     }),
+    ...(row.resolution_decision === null ? {} : { resolutionDecision: row.resolution_decision }),
     ...(row.resolution_code === null ? {} : { resolutionCode: row.resolution_code }),
     ...(row.resolution_response === null ? {} : { resolutionResponse: row.resolution_response }),
     createdAt: row.created_at,
