@@ -14,6 +14,11 @@ export interface PendingInteractionRepository {
     conversationId: string;
     speakerPrincipalRef: string;
   }): Promise<PendingInteractionV1 | undefined>;
+  findExpired(input: {
+    householdId: string;
+    conversationId: string;
+    speakerPrincipalRef: string;
+  }): Promise<PendingInteractionV1 | undefined>;
   findById(input: {
     householdId: string;
     interactionId: string;
@@ -30,6 +35,15 @@ export interface PendingInteractionRepository {
     decision: 'approve' | 'reject';
     expectedVersion: number;
   }): Promise<PendingInteractionClaimResult>;
+  expire(input: {
+    householdId: string;
+    interactionId: string;
+    externalMessageId: string;
+    expectedVersion: number;
+    resolutionCode: string;
+    resolutionResponse: OrchestratorFinalResponseV1;
+    resolvedAt: string;
+  }): Promise<PendingInteractionV1>;
   complete(input: {
     householdId: string;
     interactionId: string;
@@ -157,6 +171,29 @@ export class PostgresPendingInteractionRepository implements PendingInteractionR
          AND interaction.conversation_id = $2
          AND interaction.speaker_principal_ref = $3
          AND interaction.status IN ('pending', 'resolving')
+         AND interaction.expires_at > clock_timestamp()
+       ORDER BY interaction.id DESC
+       LIMIT 1`,
+      [input.householdId, input.conversationId, input.speakerPrincipalRef],
+    );
+    const row = result.rows[0];
+    return row === undefined ? undefined : mapPendingInteraction(row);
+  }
+
+  async findExpired(input: {
+    householdId: string;
+    conversationId: string;
+    speakerPrincipalRef: string;
+  }): Promise<PendingInteractionV1 | undefined> {
+    const result = await this.pool.query<PendingInteractionRow>(
+      `SELECT ${pendingInteractionColumns}
+       FROM operations.pending_interactions interaction
+       JOIN operations.households household ON household.id = interaction.household_id
+       WHERE household.household_id = $1
+         AND interaction.conversation_id = $2
+         AND interaction.speaker_principal_ref = $3
+         AND interaction.status IN ('pending', 'resolving')
+         AND interaction.expires_at <= clock_timestamp()
        ORDER BY interaction.id DESC
        LIMIT 1`,
       [input.householdId, input.conversationId, input.speakerPrincipalRef],
@@ -243,6 +280,53 @@ export class PostgresPendingInteractionRepository implements PendingInteractionR
       return { kind: 'replay', interaction: existing };
     }
     throw this.stateConflict(input.interactionId, input.expectedVersion);
+  }
+
+  async expire(input: {
+    householdId: string;
+    interactionId: string;
+    externalMessageId: string;
+    expectedVersion: number;
+    resolutionCode: string;
+    resolutionResponse: OrchestratorFinalResponseV1;
+    resolvedAt: string;
+  }): Promise<PendingInteractionV1> {
+    const response = OrchestratorFinalResponseSchemaV1.parse(input.resolutionResponse);
+    const result = await this.pool.query<PendingInteractionRow>(
+      `UPDATE operations.pending_interactions interaction
+       SET status = 'expired', version = version + 1,
+           resolution_external_message_id = COALESCE(interaction.resolution_external_message_id, $1),
+           resolution_code = $2, resolution_response = $3::jsonb,
+           resolved_at = $4::timestamptz, updated_at = clock_timestamp()
+       FROM operations.households household
+       WHERE household.id = interaction.household_id
+         AND household.household_id = $5
+         AND interaction.interaction_id = $6
+         AND interaction.status IN ('pending', 'resolving')
+         AND interaction.version = $7
+         AND interaction.expires_at <= clock_timestamp()
+       RETURNING interaction.interaction_id, interaction.kind,
+         interaction.conversation_id, interaction.speaker_principal_ref,
+         interaction.payload, interaction.status, interaction.version::text,
+         interaction.resolution_external_message_id, interaction.resolution_decision,
+         interaction.resolution_code,
+         interaction.resolution_response,
+         to_char(interaction.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+         to_char(interaction.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
+         to_char(interaction.resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS resolved_at`,
+      [
+        input.externalMessageId,
+        input.resolutionCode,
+        JSON.stringify(response),
+        input.resolvedAt,
+        input.householdId,
+        input.interactionId,
+        input.expectedVersion,
+      ],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw this.stateConflict(input.interactionId, input.expectedVersion);
+    return mapPendingInteraction(row, input.householdId);
   }
 
   async complete(input: {

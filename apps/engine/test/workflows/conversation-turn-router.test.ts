@@ -97,6 +97,16 @@ class InMemoryPendingInteractions implements PendingInteractionRepository {
       record.householdId === input.householdId
       && record.conversationId === input.conversationId
       && record.speakerPrincipalRef === input.speakerPrincipalRef
+      && Date.parse(record.expiresAt) > Date.now()
+      && (record.status === 'pending' || record.status === 'resolving'));
+  }
+
+  async findExpired(input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) {
+    return [...this.records.values()].find((record) =>
+      record.householdId === input.householdId
+      && record.conversationId === input.conversationId
+      && record.speakerPrincipalRef === input.speakerPrincipalRef
+      && Date.parse(record.expiresAt) <= Date.now()
       && (record.status === 'pending' || record.status === 'resolving'));
   }
 
@@ -155,6 +165,35 @@ class InMemoryPendingInteractions implements PendingInteractionRepository {
     });
     this.records.set(record.interactionId, completed);
     return completed;
+  }
+
+  async expire(input: {
+    householdId: string;
+    interactionId: string;
+    externalMessageId: string;
+    expectedVersion: number;
+    resolutionCode: string;
+    resolutionResponse: ReturnType<typeof response>;
+    resolvedAt: string;
+  }) {
+    const record = await this.findById(input);
+    if (record === undefined
+      || record.version !== input.expectedVersion
+      || !['pending', 'resolving'].includes(record.status)
+      || Date.parse(record.expiresAt) > Date.now()) {
+      throw new Error('pending interaction changed');
+    }
+    const expired = PendingInteractionSchemaV1.parse({
+      ...record,
+      status: 'expired',
+      version: record.version + 1,
+      resolutionExternalMessageId: record.resolutionExternalMessageId ?? input.externalMessageId,
+      resolutionCode: input.resolutionCode,
+      resolutionResponse: input.resolutionResponse,
+      resolvedAt: input.resolvedAt,
+    });
+    this.records.set(record.interactionId, expired);
+    return expired;
   }
 }
 
@@ -258,6 +297,32 @@ describe('conversation turn router', () => {
     await runConversationTurn(deps, { message: message('yes', 'message-expired') });
 
     expect(deps.mocks.resolve).toHaveBeenCalledOnce();
+    expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('expired');
+  });
+
+  it('expires an old interaction before routing a new intent', async () => {
+    const repository = new InMemoryPendingInteractions();
+    await repository.create(PendingInteractionSchemaV1.parse({
+      ...pending,
+      createdAt: '2026-07-05T23:45:00.000Z',
+      expiresAt: '2026-07-06T00:00:00.000Z',
+      pendingWorkingMemoryMutation: {
+        ...pending.pendingWorkingMemoryMutation,
+        createdAt: '2026-07-05T23:45:00.000Z',
+        expiresAt: '2026-07-06T00:00:00.000Z',
+      },
+    }));
+    const deps = dependencies({ repository, disposition: 'new_intent' });
+
+    await expect(runConversationTurn(deps, { message: message('What is our July budget?', 'message-new-intent') }))
+      .resolves.toMatchObject({ body: 'Handled as a new request.' });
+
+    expect(deps.mocks.resolve).not.toHaveBeenCalled();
+    expect(deps.mocks.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'expired',
+      code: 'working_memory_proposal_expired',
+    }));
+    expect(deps.mocks.normal).toHaveBeenCalledOnce();
     expect((await repository.findById({ householdId, interactionId: pending.interactionId }))?.status).toBe('expired');
   });
 
