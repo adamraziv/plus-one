@@ -103,7 +103,7 @@ export async function runConversationTurn(
   if (disposition === 'ambiguous') {
     const result = await dependencies.orchestrator.resolvePendingWorkingMemoryMutation({
       message,
-      pending: open.pendingWorkingMemoryMutation,
+      pending: open!.pendingWorkingMemoryMutation,
       decision: disposition,
       ...optionalSignal(input.signal),
     });
