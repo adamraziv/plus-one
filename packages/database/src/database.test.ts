@@ -82,6 +82,7 @@ describe('migration discovery', () => {
       '0021_mastra_workflow_timezone_columns.sql',
       '0022_agent_failure_diagnostics.sql',
       '0023_pending_interactions.sql',
+      '0024_pending_interaction_resolution_decision.sql',
     ]);
 
     for (const migration of migrations) {

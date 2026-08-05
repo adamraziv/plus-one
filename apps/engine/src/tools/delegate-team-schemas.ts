@@ -318,12 +318,10 @@ function normalizeBudgetingProviderRequest(
 function normalizeBudgetEvidence(value: JsonValue): JsonValue {
   const evidence = jsonRecord(value);
   if (evidence === undefined) return value;
-  const {
-    semanticPath: _semanticPath,
-    startOffset: _startOffset,
-    endOffset: _endOffset,
-    ...withoutAliases
-  } = evidence;
+  const withoutAliases = Object.fromEntries(
+    Object.entries(evidence).filter(([key]) =>
+      key !== 'semanticPath' && key !== 'startOffset' && key !== 'endOffset'),
+  );
   const path = typeof evidence.path === 'string'
     ? evidence.path
     : typeof evidence.semanticPath === 'string' ? evidence.semanticPath : undefined;

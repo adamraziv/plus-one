@@ -8,13 +8,6 @@ const ModelsResponseSchema = z.object({
   }).passthrough()),
 }).passthrough();
 
-export function freeModelIds(catalog: unknown): string[] {
-  return ModelsResponseSchema.parse(catalog).data
-    .filter(({ id }) => id.endsWith('-free'))
-    .map(({ id, owned_by }) => id.includes('/') || owned_by === undefined ? id : `${owned_by}/${id}`)
-    .sort();
-}
-
 export function modelCatalogUrl(endpoint: string): string {
   const base = endpoint.endsWith('/chat/completions')
     ? endpoint.slice(0, -'/chat/completions'.length)
