@@ -14,7 +14,11 @@ import {
 } from '@plus-one/contracts';
 import { Memory } from '@mastra/memory';
 import { createMastraMemoryStorage } from '@plus-one/database';
-import { canonicalizeJson } from '@plus-one/runtime';
+import {
+  canonicalizeJson,
+  getLogger,
+  type ComponentEventName,
+} from '@plus-one/runtime';
 import { toMastraModel, type EngineLlmModelConfig } from '../mastra/role-agent.js';
 import {
   applyResolvedWorkingMemoryMutation,
@@ -37,6 +41,7 @@ type OrchestratorMemoryOptions = NonNullable<NonNullable<ConstructorParameters<t
 
 export type WorkingMemoryOperation = 'read' | 'update' | 'clear' | 'inspect' | 'validate' | 'mutate' | 'candidate' | 'review' | 'observation';
 export type WorkingMemoryMutationOperation = 'create' | 'replace' | 'delete' | 'clear';
+type WorkingMemoryLogEvent = ComponentEventName<'runtime.memory'>;
 
 export interface WorkingMemoryOperationOutcome {
   operation: WorkingMemoryOperation;
@@ -196,14 +201,23 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     resourceId: string;
     principalRef: string;
   }): Promise<WorkingMemoryInspectionOutcome> {
+    const startedAt = Date.now();
     return this.mutex.run(input.resourceId, async () => {
       const loaded = await this.loadFlexibleWorkingMemory(input);
-      if ('error' in loaded) return inspectionFailure('inspect', loaded.error);
+      if ('error' in loaded) {
+        const result = inspectionFailure('inspect', loaded.error);
+        this.logOutcome('working_memory.read.failed', startedAt, result.outcome);
+        return result;
+      }
       const current = loaded.migrated
-        ? await this.persistAndVerifyMigration(input, loaded.document)
+        ? await this.persistAndVerifyMigration(input, loaded.document, 'inspect')
         : loaded.document;
-      if (current instanceof PlusOneError) return inspectionFailure('inspect', current);
-      return {
+      if (current instanceof PlusOneError) {
+        const result = inspectionFailure('inspect', current);
+        this.logOutcome('working_memory.read.failed', startedAt, result.outcome);
+        return result;
+      }
+      const result: WorkingMemoryInspectionOutcome = {
         status: 'succeeded',
         document: current,
         inspection: {
@@ -216,6 +230,10 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
           code: 'working_memory_inspection_succeeded',
         },
       };
+      this.logOutcome('working_memory.read.completed', startedAt, result.outcome, {
+        recordCount: result.inspection.entries.length,
+      });
+      return result;
     });
   }
 
@@ -224,18 +242,27 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     resourceId: string;
     principalRef: string;
   }): Promise<WorkingMemoryPromptContextOutcome> {
+    const startedAt = Date.now();
     return this.mutex.run(input.resourceId, async () => {
       const loaded = await this.loadFlexibleWorkingMemory(input);
-      if ('error' in loaded) return promptContextFailure(loaded.error);
+      if ('error' in loaded) {
+        const result = promptContextFailure(loaded.error);
+        this.logOutcome('working_memory.read.failed', startedAt, result.outcome);
+        return result;
+      }
       const current = loaded.migrated
-        ? await this.persistAndVerifyMigration(input, loaded.document)
+        ? await this.persistAndVerifyMigration(input, loaded.document, 'read')
         : loaded.document;
-      if (current instanceof PlusOneError) return promptContextFailure(current);
+      if (current instanceof PlusOneError) {
+        const result = promptContextFailure(current);
+        this.logOutcome('working_memory.read.failed', startedAt, result.outcome);
+        return result;
+      }
       const projection = projectWorkingMemoryForPrompt({
         document: current,
         principalRef: input.principalRef,
       });
-      return {
+      const result: WorkingMemoryPromptContextOutcome = {
         status: 'succeeded',
         context: {
           projection,
@@ -247,6 +274,8 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
           code: 'working_memory_prompt_context_succeeded',
         },
       };
+      this.logOutcome('working_memory.read.completed', startedAt, result.outcome);
+      return result;
     });
   }
 
@@ -257,21 +286,33 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     requestedBy: 'user' | 'scheduled_review';
     now: Date;
   }): Promise<WorkingMemoryReviewOutcome> {
-    void input.requestedBy;
+    const startedAt = Date.now();
     return this.mutex.run(input.resourceId, async () => {
       const loaded = await this.loadFlexibleWorkingMemory(input);
-      if ('error' in loaded) return reviewFailure(loaded.error);
+      if ('error' in loaded) {
+        const result = reviewFailure(loaded.error);
+        this.logOutcome('working_memory.review.failed', startedAt, result.outcome, {
+          requestedBy: input.requestedBy,
+        });
+        return result;
+      }
       const current = loaded.migrated
-        ? await this.persistAndVerifyMigration(input, loaded.document)
+        ? await this.persistAndVerifyMigration(input, loaded.document, 'review')
         : loaded.document;
-      if (current instanceof PlusOneError) return reviewFailure(current);
+      if (current instanceof PlusOneError) {
+        const result = reviewFailure(current);
+        this.logOutcome('working_memory.review.failed', startedAt, result.outcome, {
+          requestedBy: input.requestedBy,
+        });
+        return result;
+      }
       const report = reviewWorkingMemoryDocument({
         document: current,
         principalRef: input.principalRef,
         now: input.now.toISOString() as UtcInstant,
       });
       this.acknowledgeWorkingMemoryReview({ resourceId: input.resourceId });
-      return {
+      const result: WorkingMemoryReviewOutcome = {
         status: 'succeeded',
         report,
         outcome: {
@@ -280,6 +321,11 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
           code: 'working_memory_review_succeeded',
         },
       };
+      this.logOutcome('working_memory.review.completed', startedAt, result.outcome, {
+        requestedBy: input.requestedBy,
+        findingCount: report.findings.length,
+      });
+      return result;
     });
   }
 
@@ -300,11 +346,24 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     basedOnRevision: WorkingMemoryRevision;
     mutation: ResolvedWorkingMemoryMutation;
   }): Promise<WorkingMemoryMutationValidationOutcome> {
+    const startedAt = Date.now();
     return this.mutex.run(input.resourceId, async () => {
-      const loaded = await this.loadCurrentFlexibleWorkingMemory(input);
-      if ('error' in loaded) return mutationFailure(input.mutation.operation, loaded.error.code, loaded.error.category, loaded.error.retry, loaded.error);
+      const loaded = await this.loadCurrentFlexibleWorkingMemory(input, 'validate');
+      if ('error' in loaded) {
+        const result = mutationFailure(input.mutation.operation, loaded.error.code, loaded.error.category, loaded.error.retry, loaded.error);
+        this.logOutcome(mutationFailureEvent(result.code), startedAt, {
+          ...result.outcome,
+          operation: 'validate',
+        });
+        return result;
+      }
       if (workingMemoryRevision(loaded.document) !== input.basedOnRevision) {
-        return mutationFailure(input.mutation.operation, 'working_memory_revision_stale', 'serialization_conflict', 'after_state_resolution');
+        const result = mutationFailure(input.mutation.operation, 'working_memory_revision_stale', 'serialization_conflict', 'after_state_resolution');
+        this.logOutcome('working_memory.mutation.rejected', startedAt, {
+          ...result.outcome,
+          operation: 'validate',
+        });
+        return result;
       }
       const applied = applyResolvedWorkingMemoryMutation({
         document: loaded.document,
@@ -313,9 +372,18 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         now: new Date(),
       });
       if (applied.status === 'failed') {
-        return mutationFailure(input.mutation.operation, applied.code, mutationFailureCategory(applied.code), 'never');
+        const result = mutationFailure(input.mutation.operation, applied.code, mutationFailureCategory(applied.code), 'never');
+        this.logOutcome('working_memory.mutation.rejected', startedAt, {
+          ...result.outcome,
+          operation: 'validate',
+        });
+        return result;
       }
-      return mutationSuccess(input.mutation.operation, 'working_memory_mutation_validated', applied.document, 'validate');
+      const result = mutationSuccess(input.mutation.operation, 'working_memory_mutation_validated', applied.document, 'validate');
+      this.logOutcome('working_memory.mutation.completed', startedAt, result.outcome, {
+        recordCount: Object.keys(applied.document.entries).length,
+      });
+      return result;
     });
   }
 
@@ -326,11 +394,18 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
     basedOnRevision: WorkingMemoryRevision;
     mutation: ResolvedWorkingMemoryMutation;
   }): Promise<WorkingMemoryMutationOutcome> {
+    const startedAt = Date.now();
     return this.mutex.run(input.resourceId, async () => {
-      const loaded = await this.loadCurrentFlexibleWorkingMemory(input);
-      if ('error' in loaded) return mutationFailure(input.mutation.operation, loaded.error.code, loaded.error.category, loaded.error.retry, loaded.error);
+      const loaded = await this.loadCurrentFlexibleWorkingMemory(input, 'mutate');
+      if ('error' in loaded) {
+        const result = mutationFailure(input.mutation.operation, loaded.error.code, loaded.error.category, loaded.error.retry, loaded.error);
+        this.logOutcome(mutationFailureEvent(result.code), startedAt, result.outcome);
+        return result;
+      }
       if (workingMemoryRevision(loaded.document) !== input.basedOnRevision) {
-        return mutationFailure(input.mutation.operation, 'working_memory_revision_stale', 'serialization_conflict', 'after_state_resolution');
+        const result = mutationFailure(input.mutation.operation, 'working_memory_revision_stale', 'serialization_conflict', 'after_state_resolution');
+        this.logOutcome('working_memory.mutation.rejected', startedAt, result.outcome);
+        return result;
       }
       const applied = applyResolvedWorkingMemoryMutation({
         document: loaded.document,
@@ -339,7 +414,9 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         now: new Date(),
       });
       if (applied.status === 'failed') {
-        return mutationFailure(input.mutation.operation, applied.code, mutationFailureCategory(applied.code), 'never');
+        const result = mutationFailure(input.mutation.operation, applied.code, mutationFailureCategory(applied.code), 'never');
+        this.logOutcome('working_memory.mutation.rejected', startedAt, result.outcome);
+        return result;
       }
 
       try {
@@ -349,7 +426,9 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
           workingMemory: canonicalWorkingMemoryJson(applied.document),
         });
       } catch (error) {
-        return mutationFailure(input.mutation.operation, 'working_memory_write_failed', 'storage_unavailable', 'after_backoff', error);
+        const result = mutationFailure(input.mutation.operation, 'working_memory_write_failed', 'storage_unavailable', 'after_backoff', error);
+        this.logOutcome('working_memory.write.failed', startedAt, result.outcome);
+        return result;
       }
 
       const readback = await this.loadFlexibleWorkingMemory(input);
@@ -358,9 +437,15 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         after: readback.document,
         mutation: input.mutation,
       })) {
-        return mutationFailure(input.mutation.operation, 'working_memory_readback_mismatch', 'readback_mismatch', 'after_backoff');
+        const result = mutationFailure(input.mutation.operation, 'working_memory_readback_mismatch', 'readback_mismatch', 'after_backoff');
+        this.logOutcome('working_memory.readback.failed', startedAt, result.outcome);
+        return result;
       }
-      return mutationSuccess(input.mutation.operation, 'working_memory_mutation_succeeded', readback.document, 'mutate');
+      const result = mutationSuccess(input.mutation.operation, 'working_memory_mutation_succeeded', readback.document, 'mutate');
+      this.logOutcome('working_memory.mutation.completed', startedAt, result.outcome, {
+        recordCount: Object.keys(readback.document.entries).length,
+      });
+      return result;
     });
   }
 
@@ -390,18 +475,20 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
   private async loadCurrentFlexibleWorkingMemory(input: {
     threadId: string;
     resourceId: string;
-  }): Promise<{ document: FlexibleWorkingMemory } | { error: PlusOneError }> {
+  }, operation: 'validate' | 'mutate'): Promise<{ document: FlexibleWorkingMemory } | { error: PlusOneError }> {
     const loaded = await this.loadFlexibleWorkingMemory(input);
     if ('error' in loaded) return loaded;
     if (!loaded.migrated) return { document: loaded.document };
-    const persisted = await this.persistAndVerifyMigration(input, loaded.document);
+    const persisted = await this.persistAndVerifyMigration(input, loaded.document, operation);
     return persisted instanceof PlusOneError ? { error: persisted } : { document: persisted };
   }
 
   private async persistAndVerifyMigration(
     input: { threadId: string; resourceId: string },
     document: FlexibleWorkingMemory,
+    operation: WorkingMemoryOperation,
   ): Promise<FlexibleWorkingMemory | PlusOneError> {
+    const startedAt = Date.now();
     try {
       await this.agentMemory.updateWorkingMemory({
         threadId: input.threadId,
@@ -409,15 +496,73 @@ class OrchestratorSessionMemory implements OrchestratorSessionMemoryPort {
         workingMemory: canonicalWorkingMemoryJson(document),
       });
     } catch (error) {
-      return newMemoryError('working_memory_write_failed', 'storage_unavailable', 'after_backoff', error);
+      const result = newMemoryError('working_memory_write_failed', 'storage_unavailable', 'after_backoff', error);
+      this.logOutcome('working_memory.migration.failed', startedAt, errorOutcome(operation, result));
+      return result;
     }
     const readback = await this.loadFlexibleWorkingMemory(input);
     if ('error' in readback || readback.migrated || workingMemoryRevision(readback.document) !== workingMemoryRevision(document)) {
-      return newMemoryError('working_memory_readback_mismatch', 'readback_mismatch', 'after_backoff', undefined);
+      const result = newMemoryError('working_memory_readback_mismatch', 'readback_mismatch', 'after_backoff', undefined);
+      this.logOutcome('working_memory.migration.failed', startedAt, errorOutcome(operation, result));
+      return result;
     }
+    this.logOutcome('working_memory.migration.completed', startedAt, {
+      operation,
+      status: 'succeeded',
+      code: 'working_memory_migration_succeeded',
+    }, {
+      recordCount: Object.keys(readback.document.entries).length,
+    });
     return readback.document;
   }
 
+  private logOutcome(
+    eventName: WorkingMemoryLogEvent,
+    startedAt: number,
+    outcome: WorkingMemoryOperationOutcome,
+    extra: Readonly<Record<string, string | number | boolean>> = {},
+  ): void {
+    const logger = getLogger('runtime.memory');
+    const fields = {
+      operation: outcome.operation,
+      outcomeCode: outcome.code,
+      ...(outcome.category === undefined ? {} : { failureCategory: outcome.category }),
+      ...(outcome.retry === undefined ? {} : { retryDirective: outcome.retry }),
+      durationMs: Math.max(0, Date.now() - startedAt),
+      ...extra,
+    };
+    if (eventName === 'working_memory.read.completed') {
+      logger.debug(eventName, { fields });
+    } else if (eventName === 'working_memory.mutation.rejected') {
+      logger.warn(eventName, {
+        fields: {
+          ...fields,
+          failureCategory: outcome.category ?? 'runtime_failure',
+          retryDirective: outcome.retry ?? 'never',
+        },
+      });
+    } else if (
+      eventName === 'working_memory.mutation.completed'
+      || eventName === 'working_memory.migration.completed'
+      || eventName === 'working_memory.review.completed'
+    ) {
+      logger.info(eventName, { fields });
+    } else {
+      const failureFields = {
+        ...fields,
+        failureCategory: outcome.category ?? 'runtime_failure',
+        retryDirective: outcome.retry ?? 'never',
+      };
+      switch (eventName) {
+        case 'working_memory.read.failed':
+        case 'working_memory.write.failed':
+        case 'working_memory.readback.failed':
+        case 'working_memory.migration.failed':
+        case 'working_memory.review.failed':
+          logger.error(eventName, { fields: failureFields });
+      }
+    }
+  }
 }
 
 class ResourceMutex {
@@ -568,6 +713,26 @@ function mutationFailureCategory(code: string): ErrorCategoryV1 {
   if (code === 'working_memory_entry_forbidden') return 'policy_rejected';
   if (code === 'working_memory_entry_not_found') return 'validation_rejected';
   return 'validation_rejected';
+}
+
+function mutationFailureEvent(code: string): WorkingMemoryLogEvent {
+  if (code === 'working_memory_write_failed') return 'working_memory.write.failed';
+  if (code === 'working_memory_readback_mismatch') return 'working_memory.readback.failed';
+  if (code === 'working_memory_read_failed') return 'working_memory.read.failed';
+  return 'working_memory.mutation.rejected';
+}
+
+function errorOutcome(
+  operation: WorkingMemoryOperation,
+  error: PlusOneError,
+): WorkingMemoryOperationOutcome {
+  return {
+    operation,
+    status: 'failed',
+    code: error.code,
+    category: error.category,
+    retry: error.retry,
+  };
 }
 
 function canonicalWorkingMemoryJson(document: FlexibleWorkingMemory): string {

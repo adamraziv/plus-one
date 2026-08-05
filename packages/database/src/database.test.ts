@@ -80,6 +80,9 @@ describe('migration discovery', () => {
       '0019_mutation_command_concrete_payload_schema.sql',
       '0020_idr_currency_metadata.sql',
       '0021_mastra_workflow_timezone_columns.sql',
+      '0022_agent_failure_diagnostics.sql',
+      '0023_pending_interactions.sql',
+      '0024_pending_interaction_resolution_decision.sql',
     ]);
 
     for (const migration of migrations) {

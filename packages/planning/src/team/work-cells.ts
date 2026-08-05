@@ -3,6 +3,7 @@ import {
   BudgetPlanRequestSchemaV1,
   BudgetScenarioComparisonSchemaV1,
   BudgetScenarioRequestSchemaV1,
+  BudgetingIntakeRequestSchemaV1,
   BudgetingWorkResultSchemaV1,
   CashFlowAnalysisOutputSchemaV1,
   CashFlowAnalysisRequestSchemaV1,
@@ -31,6 +32,28 @@ const clarificationAware: WorkCellDefinition['evaluateStopCondition'] = ({ maker
     reason: 'Checker accepted the exact checked output.',
     outstanding: [],
   };
+};
+
+export const budgetingIntakeWorkCell: WorkCellDefinition = {
+  workCellId: 'budgeting-intake',
+  maker: byName('budget-maker') as WorkCellDefinition['maker'],
+  checker: byName('budget-checker') as WorkCellDefinition['checker'],
+  makerInputSchema: BudgetingIntakeRequestSchemaV1,
+  makerOutputSchema: PlanningClarificationSchemaV1,
+  inputSchemaIdentity: { schemaName: 'budgeting-intake-request', schemaVersion: 1 },
+  outputSchemaIdentity: { schemaName: 'planning-clarification', schemaVersion: 1 },
+  effectPolicy: { kind: 'none' },
+  checkerRubric: {
+    rubricName: 'budgeting-intake-rubric',
+    rubricVersion: 1,
+    instructions: [
+      'Verify the clarification asks only for user-visible budgeting inputs.',
+      'Verify it does not claim that a budget was created without checked evidence.',
+      'Do not ask for internal household, account, artifact, or system identifiers.',
+    ],
+  },
+  allowedSkillNames: ['budgeting-intake'],
+  evaluateStopCondition: clarificationAware,
 };
 
 export const budgetPlanWorkCell: WorkCellDefinition = {
@@ -155,6 +178,7 @@ export const cashFlowDebtPlanWorkCell = cashFlowMutationCell(
 );
 
 export const budgetingWorkCells = [
+  budgetingIntakeWorkCell,
   budgetPlanWorkCell,
   budgetScenarioWorkCell,
 ] as const;

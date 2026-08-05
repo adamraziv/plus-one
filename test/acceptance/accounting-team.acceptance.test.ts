@@ -35,6 +35,7 @@ import {
   TeamExecutionCoordinator,
   TeamExecutor,
   TeamLeadPlanner,
+  TeamLeadSupervisor,
   TeamResultAssembler,
   VerificationRuntime,
   type ArtifactRepository,
@@ -45,7 +46,8 @@ import {
 import { createAgentSystem } from '../../apps/engine/src/agent-catalog.js';
 import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js';
 import type { OrchestratorTeamRuntime } from '../../apps/engine/src/tools/delegate-team.js';
-import { submitContractResult } from '../helpers/contract-agent-test-double.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
+import { submitOrchestratorFinalResponse } from '../helpers/orchestrator-agent-test-double.js';
 
 const householdId = 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K';
 const bookId = 'book_01JNZQ4A9B8C7D6E5F4G3H2J1K';
@@ -225,7 +227,7 @@ async function runAccountingScenario(input: {
     generate: vi.fn(async (messages: readonly { content: string }[], options: unknown) => {
       calls.push(agentId);
       if (agentId === 'accounting-lead') {
-        return submitContractResult(options, TeamLeadPlanSchemaV1.parse({
+        return submitContractResult(options, teamLeadPlanDraft(TeamLeadPlanSchemaV1.parse({
           schemaName: 'team-lead-plan',
           schemaVersion: 1,
           recommendedStrategyName: 'single-maker-checker',
@@ -233,7 +235,7 @@ async function runAccountingScenario(input: {
             missingPaymentAccount: input.missingPaymentAccount === true,
           }) }],
           stopCondition: { code: 'accounting-result', description: 'Return one checked accounting result.' },
-        }));
+        })));
       }
       if (agentId.endsWith('-maker')) return submitContractResult(options, makerOutputs.shift()!);
       const verificationTask = JSON.parse(messages[0]!.content) as {
@@ -272,6 +274,8 @@ async function runAccountingScenario(input: {
           'run_01JNZQ4A9B8C7D6E5F4G3H2J3K',
           'run_01JNZQ4A9B8C7D6E5F4G3H2J4K',
           'run_01JNZQ4A9B8C7D6E5F4G3H2J5K',
+          'run_01JNZQ4A9B8C7D6E5F4G3H2J6K',
+          'run_01JNZQ4A9B8C7D6E5F4G3H2J7K',
         ];
         return () => ids.shift()!;
       })(),
@@ -307,43 +311,66 @@ async function runAccountingScenario(input: {
   const teamRuntime: OrchestratorTeamRuntime = {
     runTeamLead: vi.fn(async (runtimeInput) => {
       const leadSkill = accountingSkills.find((skill) => skill.identity.skillName === 'accounting-lead-routing')!.identity;
-      const plan = await planner.plan({
-        householdId,
+      const taskIds = [
         taskId,
-        team: accountingTeamDefinition,
-        selectedSkill: leadSkill,
-        request: runtimeInput.request,
-        policyLabels: ['personalized_finance'],
-        abortSignal: runtimeInput.signal,
-      });
-      const workCell = accountingTeamDefinition.workCells.find((cell) => cell.workCellId === plan.work[0]!.workCellId)!;
-      const selectedSkill = skillFor(workCell.allowedSkillNames[0]!);
-      return coordinator.execute({
-        team: accountingTeamDefinition,
-        strategyName: plan.recommendedStrategyName,
-        selectedSkill: selectedSkill.identity,
-        resultTaskId,
-        work: [{
+        'task_01JNZQ4A9B8C7D6E5F4G3H2J3K',
+      ];
+      return new TeamLeadSupervisor().run({
+        attemptLimit: 2,
+        plan: (executionState, executionOrdinal) => planner.plan({
           householdId,
-          taskId,
-          team: 'accounting',
-          workCell,
-          selectedSkill: selectedSkill.identity,
-          makerInput: plan.work[0]!.makerInput,
-          permittedEvidence: [],
+          taskId: taskIds[executionOrdinal - 1]!,
+          team: accountingTeamDefinition,
+          selectedSkill: leadSkill,
+          request: runtimeInput.request,
           policyLabels: ['personalized_finance'],
-          stopCondition: plan.stopCondition,
-          strategyName: plan.recommendedStrategyName,
+          executionState,
           abortSignal: runtimeInput.signal,
-        }],
-        stopCondition: plan.stopCondition,
+        }),
+        execute: async (plan, executionOrdinal) => {
+          const workCell = accountingTeamDefinition.workCells.find(
+            (cell) => cell.workCellId === plan.work[0]!.workCellId,
+          )!;
+          const selectedSkill = skillFor(workCell.allowedSkillNames[0]!);
+          const execution = await coordinator.executeWithDetails({
+            team: accountingTeamDefinition,
+            strategyName: plan.recommendedStrategyName,
+            selectedSkill: selectedSkill.identity,
+            resultTaskId,
+            work: [{
+              householdId,
+              taskId: taskIds[executionOrdinal - 1]!,
+              team: 'accounting',
+              workCell,
+              selectedSkill: selectedSkill.identity,
+              makerInput: plan.work[0]!.makerInput,
+              permittedEvidence: [],
+              policyLabels: ['personalized_finance'],
+              stopCondition: plan.stopCondition,
+              strategyName: plan.recommendedStrategyName,
+              abortSignal: runtimeInput.signal,
+            }],
+            stopCondition: plan.stopCondition,
+          });
+          return {
+            result: execution.result,
+            work: execution.work.map((result) => ({
+              taskId: result.taskId,
+              workCellId: workCell.workCellId,
+              role: workCell.maker.identity,
+              status: result.status,
+              ...(result.failure === undefined ? {} : { failure: result.failure }),
+            })),
+          };
+        },
       });
     }),
     resumePendingMutation: async () => { throw new Error('Unexpected mutation resume'); },
     cancelPendingMutation: async () => { throw new Error('Unexpected mutation cancellation'); },
   };
   let teamResult: TeamResultEnvelopeV2 | undefined;
-  const generate = vi.fn(async () => {
+  const generate = vi.fn(async (_prompt: unknown, rawOptions: unknown) => {
+    const options = rawOptions as Record<string, unknown>;
     if (teamResult === undefined) {
       teamResult = await executeDelegate(orchestrator.agentTools.delegateTeam, {
         team: 'accounting',
@@ -356,16 +383,16 @@ async function runAccountingScenario(input: {
       });
     }
     if (teamResult.status === 'verified') {
-      return {
-        text: 'The accounting request is ready.'
-          + (input.workCellId === 'chart-of-accounts' ? ' External confirmation is required before it is saved.' : ''),
-      };
+      const body = input.workCellId === 'chart-of-accounts'
+        ? 'I’ll add Groceries as a new expense account with a normal debit balance in USD. Would you like me to proceed?'
+        : 'The accounting request is ready.';
+      return submitOrchestratorFinalResponse(options, body);
     }
     if (teamResult.status === 'insufficient_evidence') {
       const question = teamResult.outstanding.find((value) => value.includes('?'));
-      return { text: question ?? 'What additional details can you provide?' };
+      return submitOrchestratorFinalResponse(options, question ?? 'What additional details can you provide?');
     }
-    return { text: 'I could not complete that request safely. Please try again.' };
+    return submitOrchestratorFinalResponse(options, 'I could not complete that request safely. Please try again.');
   });
   const orchestrator = new OrchestratorAgent({
     model: models.orchestrator,

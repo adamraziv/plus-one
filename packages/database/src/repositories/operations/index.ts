@@ -4,4 +4,5 @@ export * from './delivery-scheduler.js';
 export * from './channel-pairing.js';
 export * from './mutation-errors.js';
 export * from './mutation-command-repository.js';
+export * from './pending-interactions.js';
 export * from './verification-ledger.js';

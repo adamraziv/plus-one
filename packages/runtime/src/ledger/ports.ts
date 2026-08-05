@@ -1,5 +1,6 @@
 import type {
   CheckerVerdictV1,
+  RetryDirectiveV1,
   RuntimePolicyV1,
   TaskStatusV1,
 } from '@plus-one/contracts';
@@ -73,6 +74,8 @@ export interface VerificationLedgerPort {
     runId: string,
     status: 'succeeded' | 'failed' | 'cancelled' | 'timed_out',
     failureCategory?: string,
+    failureCode?: string,
+    retryDirective?: RetryDirectiveV1,
   ): Promise<void>;
   startAttempt(input: {
     householdId: string;
@@ -96,6 +99,8 @@ export interface VerificationLedgerPort {
       | 'timed_out'
       | 'cancelled';
     retryCategory?: string;
+    failureCode?: string;
+    retryDirective?: RetryDirectiveV1;
     resumable: boolean;
   }): Promise<void>;
   findLatestVerdict(

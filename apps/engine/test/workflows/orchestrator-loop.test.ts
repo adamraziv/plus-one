@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   InboundChannelMessageSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  PendingInteractionSchemaV1,
   PendingWorkingMemoryMutationSchema,
+  PlusOneError,
+  type PendingInteractionV1,
 } from '@plus-one/contracts';
 import { pendingChartResultFixture as pendingTeamResult } from '../helpers/pending-chart-result.js';
 import {
@@ -65,8 +68,8 @@ const pendingWorkingMemoryMutation = PendingWorkingMemoryMutationSchema.parse({
     },
   },
   basedOnRevision: 'a'.repeat(64),
-  createdAt: '2026-07-06T00:00:00.000Z',
-  expiresAt: '2026-07-06T00:15:00.000Z',
+  createdAt: '2026-12-06T00:00:00.000Z',
+  expiresAt: '2026-12-06T00:15:00.000Z',
 });
 
 describe('orchestrator workflow loop', () => {
@@ -130,8 +133,9 @@ describe('orchestrator workflow loop', () => {
     }));
   });
 
-  it('stores a Working Memory proposal in the durable suspend payload and resolves that proposal', async () => {
+  it('persists a Working Memory proposal without suspending the workflow', async () => {
     const suspend = vi.fn();
+    const pendingInteractions = pendingInteractionRepository();
     const orchestrator = {
       runTurn: vi.fn().mockResolvedValue({
         kind: 'ask-user',
@@ -140,19 +144,124 @@ describe('orchestrator workflow loop', () => {
       }),
       resolvePendingMutation: vi.fn(),
       resolvePendingWorkingMemoryMutation: vi.fn().mockResolvedValue({
-        kind: 'final',
+        status: 'applied',
+        code: 'working_memory_mutation_succeeded',
         response: persistedResponse,
       }),
+      classifyPendingWorkingMemoryInput: vi.fn(),
+      finalizePendingWorkingMemoryResolution: vi.fn(),
     };
-    const workflow = createOrchestratorLoopWorkflow(orchestrator as never);
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
     const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
 
     await step.execute({ inputData: message, suspend, abortSignal } as never);
-    expect(suspend).toHaveBeenCalledWith({
-      kind: 'working_memory_confirmation',
-      response: expect.objectContaining({ body: 'I can save that goal. Would you like me to proceed?' }),
+    expect(suspend).not.toHaveBeenCalled();
+    expect(pendingInteractions.create).toHaveBeenCalledWith(expect.objectContaining({
+      interactionId: pendingWorkingMemoryMutation.proposalId,
+      status: 'pending',
       pendingWorkingMemoryMutation,
+    }));
+  });
+
+  it('reuses the open interaction after an asynchronous scope conflict', async () => {
+    const pendingInteractions = pendingInteractionRepository();
+    const conflict = new PlusOneError({
+      category: 'serialization_conflict',
+      code: 'pending_interaction_scope_conflict',
+      message: 'An open Working Memory confirmation already exists.',
+      retry: 'after_state_resolution',
+      receiptLookupRequired: true,
     });
+    pendingInteractions.create.mockRejectedValueOnce(conflict);
+    pendingInteractions.findOpen.mockResolvedValueOnce(pendingInteraction());
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+      synthesizePendingWorkingMemoryConfirmation: vi.fn(),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+
+    await workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]?.execute({
+      inputData: message,
+      suspend: vi.fn(),
+      abortSignal,
+    } as never);
+
+    expect(pendingInteractions.findOpen).toHaveBeenCalledWith({
+      householdId: pendingWorkingMemoryMutation.householdId,
+      conversationId: pendingWorkingMemoryMutation.conversationId,
+      speakerPrincipalRef: pendingWorkingMemoryMutation.speakerPrincipalRef,
+    });
+    expect(orchestrator.synthesizePendingWorkingMemoryConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('propagates non-conflict persistence failures without looking for an open interaction', async () => {
+    const pendingInteractions = pendingInteractionRepository();
+    const failure = new Error('database unavailable');
+    pendingInteractions.create.mockRejectedValueOnce(failure);
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+
+    await expect(workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]?.execute({
+      inputData: message,
+      suspend: vi.fn(),
+      abortSignal,
+    } as never)).rejects.toBe(failure);
+    expect(pendingInteractions.findOpen).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a scope conflict when the open interaction cannot be recovered', async () => {
+    const pendingInteractions = pendingInteractionRepository();
+    const conflict = new PlusOneError({
+      category: 'serialization_conflict',
+      code: 'pending_interaction_scope_conflict',
+      message: 'An open Working Memory confirmation already exists.',
+      retry: 'after_state_resolution',
+      receiptLookupRequired: true,
+    });
+    pendingInteractions.create.mockRejectedValueOnce(conflict);
+    pendingInteractions.findOpen.mockResolvedValueOnce(undefined);
+    const orchestrator = {
+      runTurn: vi.fn().mockResolvedValue({
+        kind: 'ask-user',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      }),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+
+    await expect(workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]?.execute({
+      inputData: message,
+      suspend: vi.fn(),
+      abortSignal,
+    } as never)).rejects.toBe(conflict);
+  });
+
+  it('imports a legacy Working Memory suspension and resolves it through the typed router', async () => {
+    const suspend = vi.fn();
+    const pendingInteractions = pendingInteractionRepository();
+    const orchestrator = {
+      runTurn: vi.fn(),
+      resolvePendingMutation: vi.fn(),
+      classifyPendingWorkingMemoryInput: vi.fn().mockResolvedValue('approve'),
+      resolvePendingWorkingMemoryMutation: vi.fn().mockResolvedValue({
+        status: 'applied',
+        code: 'working_memory_mutation_succeeded',
+        response: persistedResponse,
+      }),
+      finalizePendingWorkingMemoryResolution: vi.fn(),
+    };
+    const workflow = createOrchestratorLoopWorkflow(orchestrator as never, pendingInteractions as never);
+    const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
 
     const confirmationMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
@@ -162,15 +271,26 @@ describe('orchestrator workflow loop', () => {
     await step.execute({
       inputData: message,
       resumeData: confirmationMessage,
-      suspendData: suspend.mock.calls[0]![0],
+      suspendData: {
+        kind: 'working_memory_confirmation',
+        response: response('I can save that goal. Would you like me to proceed?'),
+        pendingWorkingMemoryMutation,
+      },
       suspend,
       abortSignal,
     } as never);
     expect(orchestrator.resolvePendingWorkingMemoryMutation).toHaveBeenCalledWith({
       message: confirmationMessage,
       pending: pendingWorkingMemoryMutation,
+      decision: 'approve',
       signal: abortSignal,
     });
+    expect(suspend).not.toHaveBeenCalled();
+    expect((await pendingInteractions.findOpen({
+      householdId: message.householdId,
+      conversationId: message.conversationId,
+      speakerPrincipalRef: message.speaker.principalRef,
+    }))).toBeUndefined();
   });
 
   it('persists transaction continuation through clarification suspension and resume', async () => {
@@ -235,6 +355,17 @@ describe('orchestrator workflow loop', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('preserves the underlying workflow provider error for route classification', async () => {
+    const providerError = Object.assign(new Error('Rate limit exceeded'), { statusCode: 429 });
+    const workflow = workflowWithRun({
+      start: vi.fn(async () => ({ status: 'failed', error: providerError })),
+      resume: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+    });
+
+    await expect(runOrchestratorLoop({ workflow, message })).rejects.toBe(providerError);
+  });
+
   it('does not start a workflow run when the channel signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort(new DOMException('Timed out', 'TimeoutError'));
@@ -262,4 +393,97 @@ function workflowWithRun(run: {
     listWorkflowRuns: vi.fn(async () => ({ runs: [] })),
     createRun: vi.fn(async () => run),
   } as never;
+}
+
+function pendingInteractionRepository() {
+  let stored: PendingInteractionV1 | undefined;
+  const repository = {
+    create: vi.fn(async (candidate: PendingInteractionV1) => {
+      stored = PendingInteractionSchemaV1.parse(candidate);
+      return stored;
+    }),
+    findOpen: vi.fn(async (input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) => {
+      void input;
+      return stored !== undefined
+        && (stored.status === 'pending' || stored.status === 'resolving')
+        && Date.parse(stored.expiresAt) > Date.now()
+        ? stored
+        : undefined;
+    }),
+    findExpired: vi.fn(async (input: { householdId: string; conversationId: string; speakerPrincipalRef: string }) => {
+      void input;
+      return stored !== undefined
+        && (stored.status === 'pending' || stored.status === 'resolving')
+        && Date.parse(stored.expiresAt) <= Date.now()
+        ? stored
+        : undefined;
+    }),
+    findById: vi.fn(async () => stored),
+    findByResolutionMessage: vi.fn(async ({ externalMessageId }: { externalMessageId: string }) =>
+      stored?.resolutionExternalMessageId === externalMessageId ? stored : undefined),
+    claim: vi.fn(async ({ externalMessageId, decision }: { externalMessageId: string; decision: 'approve' | 'reject' }) => {
+      if (stored === undefined) throw new Error('missing interaction');
+      stored = PendingInteractionSchemaV1.parse({
+        ...stored,
+        status: 'resolving',
+        version: stored.version + 1,
+        resolutionExternalMessageId: externalMessageId,
+        resolutionDecision: decision,
+      });
+      return { kind: 'claimed' as const, interaction: stored };
+    }),
+    complete: vi.fn(async (input: {
+      status: 'applied' | 'rejected' | 'expired' | 'stale' | 'failed';
+      resolutionCode: string;
+      resolutionResponse: ReturnType<typeof response>;
+      resolvedAt: string;
+    }) => {
+      if (stored === undefined) throw new Error('missing interaction');
+      stored = PendingInteractionSchemaV1.parse({
+        ...stored,
+        status: input.status,
+        version: stored.version + 1,
+        resolutionCode: input.resolutionCode,
+        resolutionResponse: input.resolutionResponse,
+        resolvedAt: input.resolvedAt,
+      });
+      return stored;
+    }),
+    expire: vi.fn(async (input: {
+      externalMessageId: string;
+      resolutionCode: string;
+      resolutionResponse: ReturnType<typeof response>;
+      resolvedAt: string;
+    }) => {
+      if (stored === undefined) throw new Error('missing interaction');
+      stored = PendingInteractionSchemaV1.parse({
+        ...stored,
+        status: 'expired',
+        version: stored.version + 1,
+        resolutionExternalMessageId: stored.resolutionExternalMessageId ?? input.externalMessageId,
+        resolutionCode: input.resolutionCode,
+        resolutionResponse: input.resolutionResponse,
+        resolvedAt: input.resolvedAt,
+      });
+      return stored;
+    }),
+  };
+  return repository;
+}
+
+function pendingInteraction() {
+  return PendingInteractionSchemaV1.parse({
+    schemaName: 'pending-interaction',
+    schemaVersion: 1,
+    interactionId: pendingWorkingMemoryMutation.proposalId,
+    kind: 'working_memory_confirmation',
+    householdId: pendingWorkingMemoryMutation.householdId,
+    conversationId: pendingWorkingMemoryMutation.conversationId,
+    speakerPrincipalRef: pendingWorkingMemoryMutation.speakerPrincipalRef,
+    pendingWorkingMemoryMutation,
+    status: 'pending',
+    version: 0,
+    createdAt: pendingWorkingMemoryMutation.createdAt,
+    expiresAt: pendingWorkingMemoryMutation.expiresAt,
+  });
 }

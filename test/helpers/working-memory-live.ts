@@ -64,6 +64,7 @@ export async function startWorkingMemoryLiveHarness(
       env: {
         ...databaseEnvironment(context),
         ...models,
+        ORCHESTRATOR_TURN_TIMEOUT_MS: environment.ORCHESTRATOR_TURN_TIMEOUT_MS ?? '300000',
         TELEGRAM_BOT_TOKEN: undefined,
         TELEGRAM_WEBHOOK_URL: undefined,
         TELEGRAM_WEBHOOK_SECRET: undefined,

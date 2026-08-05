@@ -154,7 +154,7 @@ async function runTelegramPairingCommand(
     if (pools !== undefined) {
       await (dependencies.closePools ?? closeDatabasePools)(pools);
     }
-    logging.close();
+    await logging.close();
   }
 }
 

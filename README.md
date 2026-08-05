@@ -8,8 +8,6 @@ Plus One is an open-source, self-hosted household finance agent for couples. The
 
 Agents can analyze and propose, but deterministic services and PostgreSQL constraints decide what is committed.
 
-Latest release: [Plus One v0.1.0](https://github.com/adamraziv/plus-one/releases/tag/v0.1.0).
-
 ## Current Scope
 
 The implemented agent surface includes:
@@ -100,30 +98,73 @@ pnpm dev:mastra
 
 ## Logging
 
-The runtime writes human-readable, rotating diagnostic logs under `~/.plus-one/logs`:
+The runtime writes rotating operational logs under `~/.plus-one/logs`:
 
 ```text
 ~/.plus-one/logs/agent.log
 ~/.plus-one/logs/errors.log
 ~/.plus-one/logs/gateway.log
+~/.plus-one/logs/launcher.log
 ```
+
+Every active file is newline-delimited JSON (NDJSON), with one canonical
+`LogEnvelopeV1` event per line. `agent.log` contains all enabled events,
+`errors.log` contains `WARN` and `ERROR` events, `gateway.log` contains gateway
+runtime and channel events, and `launcher.log` contains background launcher
+events. The `plus-one logs gateway` view merges the gateway and launcher
+streams chronologically. Raw detached-process fallback output is kept
+separately in `launcher-console.log` and is not an operational log stream.
 
 Configure the location and rotation with:
 
 - `PLUS_ONE_HOME`: Plus One home directory; logs are written in its `logs/` subdirectory
-- `PLUS_ONE_LOG_LEVEL`: `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default `INFO`)
+- `PLUS_ONE_LOG_LEVEL`: `DEBUG`, `INFO`, `WARN`, or `ERROR` (default `INFO`);
+  `WARNING` is accepted as a configuration alias for `WARN`
 - `PLUS_ONE_LOG_MAX_SIZE_MB`: rotating `agent.log` and `gateway.log` size (default `5`)
 - `PLUS_ONE_LOG_BACKUP_COUNT`: rotating backup count for `agent.log` and `gateway.log` (default `3`)
+- `PLUS_ONE_LOG_STDOUT=true`: mirror canonical NDJSON to stdout in foreground
+  gateway mode for collection by a service manager; it defaults to false
 
-Inspect logs from the CLI:
+`plus-one logs` renders concise human-readable output by default. With no
+arguments it is an alias for `plus-one logs agent --lines 50`.
 
 ```bash
-pnpm plus-one logs
-pnpm plus-one logs gateway --follow
-pnpm plus-one logs --conversation conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K
+plus-one logs
+plus-one logs agent --lines 50
+plus-one logs gateway --follow
+plus-one logs errors --level WARN --since 1h
+plus-one logs --event working_memory. --component runtime.memory
+plus-one logs --conversation conversation_01JNZQ4A9B8C7D6E5F4G3H2J1K \
+  --household hh_01JNZQ4A9B8C7D6E5F4G3H2J1K --request request_example
+plus-one logs gateway --json
+plus-one logs errors --stack
 ```
 
-Diagnostics contain lifecycle metadata and correlation IDs, not message bodies, prompts, model responses, financial payloads, tool arguments, or transport destinations. PostgreSQL transcript, audit, and operational records remain separate authoritative stores.
+Filters can be combined before the final `--lines` limit. Available filters are
+`--level`, `--since`, `--component`, `--event`, and the correlation filters
+`--request`, `--conversation`, `--household`, `--task`, `--run`, and
+`--delivery`. `--json` emits canonical NDJSON, `--stack` includes a sanitized
+stack in human output, and `--follow` continues across rotation. `--stack`
+cannot be combined with `--json`.
+
+Operational logs contain allowlisted lifecycle metadata, safe categories,
+aggregate counts, and correlation IDs. They exclude message bodies, prompts,
+model responses, Working Memory contents, financial amounts, account
+descriptions, SQL, credentials, connection strings, tool arguments, raw
+destinations, external principal identifiers, and raw provider or database
+errors. These records are diagnostic, not security, compliance, or
+tamper-evident audit logs; audit logging is explicitly deferred.
+
+To roll back to an older binary, first stop the gateway and launcher and verify
+that no log writer remains. Atomically rename the entire active `logs`
+directory to a sibling named `logs.rollback-<timestamp>`, then create a fresh
+owner-only `logs` directory at the configured path before starting the older
+binary. Keep the rollback directory intact: after re-upgrade, the current
+reader includes sibling `logs.rollback-*` directories in chronological
+queries. If the rename or fresh-directory creation fails, do not start the
+older binary. Never perform this procedure while a writer is active, and do
+not delete individual active, rotated, legacy, mixed, corrupt, or partial
+files.
 
 This uses the workspace-installed Mastra CLI and starts the local development HTTP server. It does not activate Telegram polling or register the production webhook. By default, Mastra serves Studio at `http://localhost:4111`.
 

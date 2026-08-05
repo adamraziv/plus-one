@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChannelCommandResultSchemaV1, InboundChannelMessageSchemaV1 } from '@plus-one/contracts';
+import {
+  ChannelCommandResultSchemaV1,
+  InboundChannelMessageSchemaV1,
+  OrchestratorFinalResponseSchemaV1,
+} from '@plus-one/contracts';
 import { createRuntimeRoutes } from '../src/runtime-routes.js';
 
 const message = InboundChannelMessageSchemaV1.parse({
@@ -63,5 +67,92 @@ describe('runtime routes', () => {
     });
     expect(handle).toHaveBeenCalledWith(message);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('returns a retryable status when the configured model is temporarily unavailable', async () => {
+    const run = vi.fn(async () => {
+      throw Object.assign(new Error('Rate limit exceeded'), { statusCode: 429 });
+    });
+    const [route] = createRuntimeRoutes({
+      config,
+      agentSystem: { teams: [] } as never,
+      teamRuntime: {} as never,
+      orchestrator: { run } as never,
+    });
+    const json = vi.fn((body: unknown, status?: number) => ({ body, status }));
+    const handler = (route as unknown as { handler(context: unknown): Promise<unknown> }).handler;
+
+    await expect(handler({
+      req: { json: vi.fn(async () => ({ ...message, body: 'hello' })) },
+      json,
+    } as never)).resolves.toEqual({
+      body: { error: 'model_temporarily_unavailable', retryable: true },
+      status: 503,
+    });
+  });
+
+  it('returns a safe 200 clarification when pending classification fails', async () => {
+    const response = OrchestratorFinalResponseSchemaV1.parse({
+      schemaName: 'orchestrator-final-response',
+      schemaVersion: 1,
+      responseId: 'response-pending-classifier-failure',
+      householdId: message.householdId,
+      conversationId: message.conversationId,
+      body: 'I still need your confirmation before making that change.',
+      policyBoundary: 'operational',
+      citations: [{ label: 'pending confirmation' }],
+      assumptions: [],
+      freshness: ['current conversation'],
+      disclaimer: 'No change was made.',
+      unsupportedCapabilities: [],
+      recommendationActions: [],
+      delivery: {
+        channel: 'telegram',
+        destination: { chatId: 'telegram-chat-42' },
+        format: 'plain_text',
+      },
+      responseHash: 'a'.repeat(64),
+      createdAt: '2026-06-30T00:01:00.000Z',
+    });
+    const classify = vi.fn(async () => {
+      throw new Error('semantic provider unavailable');
+    });
+    const resolve = vi.fn(async (input: { decision: string }) => {
+      expect(input.decision).toBe('ambiguous');
+      return { status: 'pending', response };
+    });
+    const findOpen = vi.fn(async () => ({
+      householdId: message.householdId,
+      interactionId: 'interaction-pending-classifier-failure',
+      version: 1,
+      status: 'pending',
+      pendingWorkingMemoryMutation: {},
+    }));
+    const claim = vi.fn();
+    const [route] = createRuntimeRoutes({
+      config,
+      agentSystem: { teams: [] } as never,
+      teamRuntime: {} as never,
+      orchestrator: {
+        classifyPendingWorkingMemoryInput: classify,
+        resolvePendingWorkingMemoryMutation: resolve,
+      } as never,
+      pendingInteractions: {
+        findByResolutionMessage: vi.fn(async () => undefined),
+        findOpen,
+        claim,
+      } as never,
+    });
+    const json = vi.fn((body: unknown, status?: number) => ({ body, status }));
+    const handler = (route as unknown as { handler(context: unknown): Promise<unknown> }).handler;
+
+    await expect(handler({
+      req: { json: vi.fn(async () => ({ ...message, body: 'Ya, silakan simpan.' })) },
+      json,
+    } as never)).resolves.toEqual({ body: response, status: undefined });
+    expect(classify).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(claim).not.toHaveBeenCalled();
+    expect(findOpen).toHaveBeenCalledOnce();
   });
 });

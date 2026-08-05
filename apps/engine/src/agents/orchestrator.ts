@@ -4,17 +4,17 @@ import type { Mastra } from '@mastra/core';
 import { Agent, type MastraDBMessage, type ToolsInput } from '@mastra/core/agent';
 import { TokenLimiter } from '@mastra/core/processors';
 import { RequestContext } from '@mastra/core/request-context';
-import { ZodError } from 'zod';
-import {
-  AccountingJournalMutationProposalSchemaV1,
-  ChartOfAccountsProposalSchemaV1,
-} from '@plus-one/accounting';
+import { ZodError, type z } from 'zod';
+import { ChartOfAccountsProposalSchemaV1 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
-  MakerArtifactSchemaV1,
   OrchestratorFinalResponseSchemaV1,
+  PendingInteractionDispositionSchemaV1,
   PendingWorkingMemoryMutationSchema,
   TeamResultEnvelopeSchemaV2,
+  WorkingMemoryReplyCheckSchemaV1,
+  WorkingMemoryReplySchemaV1,
+  type WorkingMemoryResolutionStatusV1,
   PlusOneError,
   type ChannelKindV1,
   type ErrorCategoryV1,
@@ -23,17 +23,24 @@ import {
   type RetryDirectiveV1,
   type TeamResultEnvelopeV2,
   type PendingWorkingMemoryMutation,
+  type PendingInteractionDispositionV1,
+  type WorkingMemoryReplySpeechActV1,
 } from '@plus-one/contracts';
 import {
+  AgentRegistry,
   createTransientModelRetryProcessor,
   getLogger,
   internalImplementationDetailMatchCategory,
+  isTransientModelError,
   modelResultEndedOnRetry,
   ModelTemporarilyUnavailableError,
   stopAfterSemanticModelSteps,
   targetFromInboundMessage,
   type ChannelEventSink,
+  type CatalogLogger,
   type InternalImplementationDetailMatchCategory,
+  MastraStructuredAgentAdapter,
+  type StructuredAgentPort,
   type TeamDefinition,
   withLogContext,
 } from '@plus-one/runtime';
@@ -53,8 +60,6 @@ import {
   createDelegateTeamTool,
   finalSynthesisTeamResultView,
   MAX_DELEGATIONS_PER_TURN,
-  userFacingText,
-  type FinalSynthesisTeamResultView,
   type OrchestratorTeamRuntime,
 } from '../tools/delegate-team.js';
 import { requestForRuntime } from '../tools/delegate-team-schemas.js';
@@ -67,6 +72,16 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
+import {
+  createFinalResponseSubmissionSession,
+  finalResponseRepairError,
+  orchestratorResponseNotSubmittedError,
+  SubmitFinalResponseToolId,
+  type FinalResponseSubmission,
+} from './orchestrator-final-response.js';
+import {
+  pendingInteractionDispositionPrompt,
+} from './pending-interaction-disposition.js';
 
 const orchestratorInstructions = [
   'You are the Orchestrator for a household finance agent system.',
@@ -84,7 +99,16 @@ const orchestratorInstructions = [
   'Do not refuse internal ledger capture as an external financial action; the accounting team will return a checked proposal or clarification without posting externally.',
   'Never ask the user for internal household, book, account, or other system identifiers; runtime context and team lookups own those identifiers.',
   'Never ask for, expose, repeat, quote, or include internal household, book, account, or system identifiers in any user-facing response; use user-visible names or safe clarifying questions instead.',
-  'For query, pass request as query-lead-request-draft unless a full EvidenceRequestV1 is already available.',
+  'For budgeting, call delegateTeam with exactly a budgeting-lead-request containing a nested budget-plan-request-draft or budget-scenario-request-draft; for a plan use intent budget_plan and request fields instruction, scopeKey, and known, while comparisons use intent budget_scenarios and request fields instruction, scenarioCount, and known. The only budgeting intents are budget_plan and budget_scenarios, and the nested key is request.',
+  'For budgeting, copy only explicit user-owned facts into request.known: priorities, timeframe start/end, targetAmount amount/currency, and category names/target amounts. Use known:{} when the user did not provide a fact; never guess values.',
+  'For budgeting, every fact copied from the current message into request.known must include known.evidence entries with a semantic path, the exact sourceQuote, and zero-based start/end offsets into the current user message. The runtime verifies each quote; never invent offsets or quote text.',
+  'A budgeting follow-up that supplies the requested details in phrases such as "monthly", "prepare it", "set it up", or "go ahead" is still an explicit budget request: preserve those facts and delegate immediately instead of answering directly or waiting for another confirmation.',
+  'Preserve the user’s budgeting instruction and user-visible scope, and never invent household identifiers or evidence packages; the budgeting runtime owns authenticated context and checked evidence requirements.',
+  'If budgeting returns a planning clarification, carry the user’s answers forward into known on the next delegation instead of repeating an empty draft.',
+  'For cash-flow analysis, call delegateTeam with exactly {"team":"cash-flow","request":{"intent":"analysis","request":{"objective":"preserve the complete user objective","analysisMode":"single","timeframe":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}}}}. Other exact cash-flow intents are obligation, savings_goal, and debt_plan. Never invent household ids or evidence packages.',
+  'For investment or retirement education, use team investments-retirement with exact intent investment_education or retirement_education and nested request {"question":"preserve the complete user question"}.',
+  'For checked records facts, use team records-reporting with exact intent records_facts and nested request {"focus":"preserve the complete requested scope"}.',
+  'For query, call delegateTeam with exactly {"team":"query","request":{"businessQuestion":"preserve the complete finance question","coverage":["one exact governed coverage label"],"desiredGrain":["household"]}} unless a full EvidenceRequestV1 is already available. Query request is flat: do not add intent or a nested request.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
   'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
   'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
@@ -95,7 +119,7 @@ const orchestratorInstructions = [
   'For categorized transaction query rows, direction is the ledger posting direction for that exact row and account; never invert or transfer it to another account.',
   'If the user did not ask about ledger debit or credit direction, omit debit and credit wording from the reply.',
   'Account creation and chart changes always require checked specialist work; call delegateTeam instead of answering directly or collecting fields yourself.',
-  'For account creation or chart changes, use the accounting team with intent chart_of_accounts and a nested chart-work-request-draft.',
+  'For account creation or chart changes, call delegateTeam with exactly {"team":"accounting","request":{"intent":"chart_of_accounts","request":{"action":"create_account","instruction":"preserve the complete user request","known":{"accountName":"visible name","accountingClass":"asset","normalBalance":"debit","nativeCurrency":"USD","purpose":"visible purpose"}}}}. Use the user-stated action and values; omit unknown known-fields.',
   'For a new account, set action to create_account, preserve user-stated details in known, and leave missing details unresolved for the accounting team to clarify.',
   'For accounting transaction capture, pass request as AccountingLeadRequestV1 with intent transaction_capture and nested transaction-capture-request-draft JSON.',
   'In transaction-capture-request-draft.known, include user-stated amount, currency, and occurredOn; preserve user-stated account/category names as paymentAccountName and categoryName, never as internal ids.',
@@ -122,7 +146,10 @@ const orchestratorInstructions = [
   'Never describe a Working Memory change as proposed, pending, or ready for approval unless a Working Memory tool returned confirmation_required in this turn.',
   'Treat authenticated principal context as internal authorization context. Never expose or ask for principal, household, thread, or other system identifiers.',
   'When an internal memory-operation event says Working Memory failed, explain the failure naturally, do not claim the information was saved or cleared, and continue with only information that remains verified.',
-  'Return only the user-facing reply text when you are not calling a tool.',
+  'Finish every user-facing turn by calling submitFinalResponse exactly once with the complete reply body.',
+  'Never return the reply as ordinary assistant text, JSON text, XML tool markup, or a fenced block.',
+  'Do not call submitFinalResponse until all required domain-tool work for the turn is complete.',
+  'If a submitFinalResponse call is rejected, use the rejection feedback to repair the reply and call it again.',
 ].join('\n');
 
 const ORCHESTRATOR_INPUT_TOKEN_LIMIT = 24_000;
@@ -165,6 +192,7 @@ type OrchestratorInvocation = {
   memoryFailures: OrchestratorMemoryFailure[];
   delegationCount: number;
   delegationFailed: boolean;
+  delegationValidationFailed: boolean;
   transactionCaptureContinuation?: TransactionCaptureContinuationV1;
   workingMemoryInspection?: WorkingMemoryInspectionContext;
   pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
@@ -173,7 +201,7 @@ type OrchestratorInvocation = {
 
 type WorkingMemorySynthesisEvent = {
   kind: 'confirmation' | 'applied' | 'rejected' | 'failed';
-  operation: WorkingMemoryMutationOperation;
+  operation: WorkingMemoryMutationOperation | WorkingMemoryOperation;
   summary: string;
   directive: string;
 };
@@ -188,22 +216,16 @@ export type OrchestratorTurnResult =
       transactionContinuation?: TransactionCaptureContinuationV1;
     };
 
-export type ConfirmationDecision = 'approve' | 'reject' | 'unclear';
-
-export function confirmationDecision(body: string): ConfirmationDecision {
-  const normalized = body.trim().toLowerCase().replace(/[^a-z0-9']+/g, ' ').trim().replace(/\s+/g, ' ');
-  if (/^(?:please )?(?:no|n|cancel|stop|reject|never mind|nevermind|not now)(?:\b|$)/.test(normalized)
-    || /\b(do not|don't)\b/.test(normalized)) return 'reject';
-  const affirmative = '(?:yes|y|yeah|yep|yup|ok|okay|sure|absolutely|certainly|confirm|confirmed|approve|approved)';
-  const action = '(?:go ahead|proceed|do it|do so|go for it)';
-  if (new RegExp(`^(?:${affirmative}(?: please)?(?: (?:please )?${action})?(?: please)?|(?:please )?${action}(?: please)?|please do|sounds good|that works)$`)
-    .test(normalized)) return 'approve';
-  return 'unclear';
+export interface WorkingMemoryResolutionResult {
+  status: WorkingMemoryResolutionStatusV1;
+  code: string;
+  response: OrchestratorFinalResponseV1;
 }
 
 export class OrchestratorAgent {
   private readonly teams: Map<string, TeamDefinition>;
   private readonly activeInvocation = new AsyncLocalStorage<OrchestratorInvocation>();
+  private readonly structuredAgent: StructuredAgentPort;
   readonly agent: OrchestratorAgentInstance;
   readonly agentTools: {
     delegateTeam: ReturnType<typeof createDelegateTeamTool>;
@@ -250,7 +272,7 @@ export class OrchestratorAgent {
             throw active.signal.reason ?? new DOMException('Delegated team work aborted.', 'AbortError');
           }
           active?.teamResults.push(result);
-          logger.info('orchestrator.delegate.completed', {
+          logger.info('orchestrator.delegation.completed', {
             fields: {
               team: input.team.team,
               status: result.status,
@@ -266,7 +288,7 @@ export class OrchestratorAgent {
           }, active?.signal);
           return result;
         } catch (error) {
-          logger.warn('orchestrator.delegate.failed', {
+          logger.warn('orchestrator.delegation.failed', {
             fields: {
               team: input.team.team,
               durationMs: Date.now() - startedAt,
@@ -408,6 +430,84 @@ export class OrchestratorAgent {
       };
     }
     this.agent = (dependencies.agentFactory ?? ((config) => new Agent(config)))(agentConfig);
+    const semanticAgents = new AgentRegistry();
+    semanticAgents.register({
+      agentId: 'orchestrator-semantic',
+      modelId: dependencies.model.id,
+      roleKind: 'checker',
+      memoryEnabled: false,
+      agent: this.agent as never,
+    });
+    this.structuredAgent = new MastraStructuredAgentAdapter(semanticAgents);
+  }
+
+  async classifyPendingInteractionInput(input: {
+    message: InboundChannelMessageV1;
+    pending?: PendingWorkingMemoryMutation;
+    subject: 'working_memory' | 'checked_mutation';
+    changeSummary?: string;
+    signal?: AbortSignal;
+  }): Promise<PendingInteractionDispositionV1> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      const prompt = pendingInteractionDispositionPrompt({
+        message: input.message,
+        ...(input.pending === undefined ? {} : { pending: input.pending }),
+        subject: input.subject,
+        ...(input.changeSummary === undefined ? {} : { changeSummary: input.changeSummary }),
+        role: 'primary',
+      });
+      const checkerPrompt = pendingInteractionDispositionPrompt({
+        message: input.message,
+        ...(input.pending === undefined ? {} : { pending: input.pending }),
+        subject: input.subject,
+        ...(input.changeSummary === undefined ? {} : { changeSummary: input.changeSummary }),
+        role: 'checker',
+      });
+      const generateDisposition = async (runId: string, semanticPrompt: string): Promise<PendingInteractionDispositionV1 | undefined> => {
+        try {
+          return await this.generateSemanticContract({
+            runId,
+            message: input.message,
+            prompt: semanticPrompt,
+            outputSchema: PendingInteractionDispositionSchemaV1,
+            signal,
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return undefined;
+        }
+      };
+      const primary = await generateDisposition(
+        `pending-disposition:${input.message.externalMessageId}:primary`,
+        prompt,
+      );
+      if (primary === undefined) {
+        return { kind: 'ambiguous' };
+      }
+      if (primary.kind === 'new_intent') return primary;
+      const checker = await generateDisposition(
+        `pending-disposition:${input.message.externalMessageId}:checker`,
+        checkerPrompt,
+      );
+      if (checker === undefined) return { kind: 'ambiguous' };
+      return adjudicatePendingDisposition(primary, checker);
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  async classifyPendingWorkingMemoryInput(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal?: AbortSignal;
+  }): Promise<'approve' | 'reject' | 'new_intent' | 'ambiguous'> {
+    const disposition = await this.classifyPendingInteractionInput({
+      ...input,
+      subject: 'working_memory',
+    });
+    return pendingDispositionForWorkingMemoryRouter(disposition);
   }
 
   async run(input: { message: InboundChannelMessageV1; signal?: AbortSignal }): Promise<OrchestratorFinalResponseV1> {
@@ -415,11 +515,48 @@ export class OrchestratorAgent {
     return result.response;
   }
 
+  private generateSemanticContract<Output>(input: {
+    runId: string;
+    message: InboundChannelMessageV1;
+    prompt: string;
+    outputSchema: z.ZodType<Output>;
+    signal: AbortSignal;
+  }): Promise<Output> {
+    return this.structuredAgent.generate({
+      runId: input.runId,
+      agentId: 'orchestrator-semantic',
+      modelId: this.dependencies.model.id,
+      roleKind: 'checker',
+      memoryContext: {
+        threadId: input.message.conversationId,
+        resourceId: input.message.householdId,
+      },
+      systemPrompt: [
+        'You are an independent semantic contract agent inside Plus One.',
+        'Use the complete user message and the supplied task instructions as your only input.',
+        'Return only the requested structured contract.',
+        'Do not use memory, hidden context, tools, or unstated assumptions.',
+      ].join('\n'),
+      messages: [{ role: 'user', content: input.prompt }],
+      parentMessages: [],
+      memoryEnabled: false,
+      activeTools: [],
+      toolHistory: [],
+      outputSchema: input.outputSchema,
+      maxSteps: 2,
+      maxRetries: 2,
+      maxToolConcurrency: 1,
+      maxProcessorRetries: 2,
+      maxOutputBytes: 16_000,
+      abortSignal: input.signal,
+    });
+  }
+
   async runScheduledWorkingMemoryReview(input: {
     message: InboundChannelMessageV1;
   }): Promise<OrchestratorFinalResponseV1> {
     const memory = this.dependencies.sessionMemory;
-    if (memory === undefined) return responseFromText(input.message, 'I could not review saved context right now.');
+    if (memory === undefined) return responseFromTrustedBody(input.message, 'I could not review saved context right now.');
     const result = await memory.reviewWorkingMemory({
       threadId: input.message.conversationId,
       resourceId: input.message.householdId,
@@ -427,11 +564,11 @@ export class OrchestratorAgent {
       requestedBy: 'scheduled_review',
       now: new Date(),
     });
-    if (result.status === 'failed') return responseFromText(input.message, 'I could not complete the saved-context review right now.');
+    if (result.status === 'failed') return responseFromTrustedBody(input.message, 'I could not complete the saved-context review right now.');
     const body = result.report.findings.length === 0
       ? 'I checked the household’s saved context and found nothing that needs attention. No changes were made.'
       : `I found ${result.report.findings.length} saved-context item${result.report.findings.length === 1 ? '' : 's'} that may need your review. Nothing was changed.`;
-    return responseFromText(input.message, body);
+    return responseFromTrustedBody(input.message, body);
   }
 
   async resolvePendingMutation(input: {
@@ -440,10 +577,19 @@ export class OrchestratorAgent {
     transactionContinuation?: TransactionCaptureContinuationV1;
     signal?: AbortSignal;
   }): Promise<OrchestratorTurnResult> {
-    const decision = confirmationDecision(input.message.body);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
     const signal = input.signal ?? timeoutSignal!.signal;
     try {
+      const changeSummary = checkedMutationClassificationContext(input);
+      const disposition = changeSummary === undefined
+        ? { kind: 'ambiguous' as const }
+        : await this.classifyPendingInteractionInput({
+            message: input.message,
+            subject: 'checked_mutation',
+            changeSummary,
+            signal,
+          });
+      const decision = disposition.kind === 'resolve' ? disposition.decision : 'ambiguous';
       if (decision === 'approve') {
         const result = await this.dependencies.teamRuntime.resumePendingMutation({
           message: input.message,
@@ -452,7 +598,18 @@ export class OrchestratorAgent {
         });
         if (input.transactionContinuation !== undefined && isCreateTransactionCategoryProposal(input.pending)) {
           if (result.status !== 'verified' || result.effect.state !== 'persisted') {
-            return turnFromTeamResults(input.message, [result], undefined, input.transactionContinuation);
+            const body = await this.synthesizeTeamResults(
+              input.message,
+              [result],
+              signal,
+              (submittedBody) => this.assertTeamResultResponse(
+                input.message,
+                [result],
+                submittedBody,
+                input.transactionContinuation,
+              ),
+            );
+            return turnFromTeamResults(input.message, [result], body, input.transactionContinuation);
           }
           const transaction = await this.continueTransactionCapture({
             message: input.message,
@@ -461,16 +618,34 @@ export class OrchestratorAgent {
             signal,
           });
           if (transaction.status !== 'verified' || transaction.effect.state === 'unresolved') {
-            return turnFromTeamResults(input.message, [result, transaction], undefined, input.transactionContinuation);
+            const body = await this.synthesizeTeamResults(
+              input.message,
+              [result, transaction],
+              signal,
+              (submittedBody) => this.assertTeamResultResponse(
+                input.message,
+                [result, transaction],
+                submittedBody,
+                input.transactionContinuation,
+              ),
+            );
+            return turnFromTeamResults(input.message, [result, transaction], body, input.transactionContinuation);
           }
-          const body = categoryTransactionCompletionBody(
-            input.pending,
-            transaction,
-            input.transactionContinuation,
-          ) ?? await this.synthesizeTeamResults(input.message, [result, transaction], signal);
+          const body = await this.synthesizeTeamResults(
+            input.message,
+            [result, transaction],
+            signal,
+            (submittedBody) => this.assertTeamResultResponse(
+              input.message,
+              [result, transaction],
+              submittedBody,
+              input.transactionContinuation,
+            ),
+          );
           return turnFromTeamResults(input.message, [result, transaction], body, input.transactionContinuation);
         }
-        return turnFromTeamResults(input.message, [result]);
+        const body = await this.synthesizeTeamResults(input.message, [result], signal);
+        return turnFromTeamResults(input.message, [result], body);
       }
       if (decision === 'reject') {
         await this.dependencies.teamRuntime.cancelPendingMutation({
@@ -479,23 +654,36 @@ export class OrchestratorAgent {
         });
         return {
           kind: 'final',
-          response: responseFromText(input.message, "Okay, I won’t make that change."),
+          response: responseFromTrustedBody(input.message, "Okay, I won’t make that change."),
         };
       }
-      let body = await this.synthesizeTeamResults(input.message, [input.pending], signal);
-      if (!confirmationResponseIsSafe(body, input.pending, input.transactionContinuation)) {
-        body = confirmationFallback(input.pending, input.transactionContinuation);
-      }
+      const body = await this.synthesizeTeamResults(
+        input.message,
+        [input.pending],
+        signal,
+        (submittedBody) => this.assertTeamResultResponse(
+          input.message,
+          [input.pending],
+          submittedBody,
+          input.transactionContinuation,
+        ),
+      );
       return turnFromTeamResults(input.message, [input.pending], body, input.transactionContinuation);
     } catch (error) {
       if (signal.aborted) throw error;
       if (input.transactionContinuation !== undefined && isCreateTransactionCategoryProposal(input.pending)) {
-        return turnFromTeamResults(
+        const body = await this.synthesizeTeamResults(
           input.message,
           [input.pending],
-          'I couldn’t complete that safely yet. The category confirmation is still pending. Would you like me to retry?',
-          input.transactionContinuation,
+          signal,
+          (submittedBody) => this.assertTeamResultResponse(
+            input.message,
+            [input.pending],
+            submittedBody,
+            input.transactionContinuation,
+          ),
         );
+        return turnFromTeamResults(input.message, [input.pending], body, input.transactionContinuation);
       }
       throw error;
     } finally {
@@ -506,9 +694,10 @@ export class OrchestratorAgent {
   async resolvePendingWorkingMemoryMutation(input: {
     message: InboundChannelMessageV1;
     pending: PendingWorkingMemoryMutation;
+    decision: 'approve' | 'reject' | 'ambiguous';
     transactionContinuation?: TransactionCaptureContinuationV1;
     signal?: AbortSignal;
-  }): Promise<OrchestratorTurnResult> {
+  }): Promise<WorkingMemoryResolutionResult> {
     void input.transactionContinuation;
     const pending = PendingWorkingMemoryMutationSchema.parse(input.pending);
     const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
@@ -532,57 +721,74 @@ export class OrchestratorAgent {
           event: workingMemoryEvent(pending, 'failed', 'The proposal expired before it was approved.'),
           signal,
         });
-        return { kind: 'final', response };
+        return { status: 'expired', code: 'working_memory_proposal_expired', response };
       }
 
-      const decision = confirmationDecision(input.message.body);
-      if (decision === 'reject') {
+      if (input.decision === 'reject') {
         const response = await this.synthesizeWorkingMemoryOutcome({
           message: input.message,
           event: workingMemoryEvent(pending, 'rejected', 'Do not make this change.'),
           signal,
         });
-        return { kind: 'final', response };
+        return { status: 'rejected', code: 'working_memory_mutation_rejected', response };
       }
-      if (decision === 'unclear') {
+      if (input.decision === 'ambiguous') {
         const response = await this.synthesizeWorkingMemoryOutcome({
           message: input.message,
           event: workingMemoryConfirmationEvent(pending),
           signal,
         });
-        return {
-          kind: 'ask-user',
-          response,
-          pendingWorkingMemoryMutation: pending,
-        };
+        return { status: 'pending', code: 'working_memory_confirmation_required', response };
       }
 
       const memory = this.dependencies.sessionMemory;
       if (memory === undefined) {
-        const response = await this.synthesizeWorkingMemoryOutcome({
+        return this.failedWorkingMemoryResolution({
           message: input.message,
-          event: workingMemoryEvent(pending, 'failed', 'The change could not be stored.'),
+          pending,
           signal,
+          code: 'working_memory_storage_unavailable',
+          directive: 'The change could not be stored. Do not say it was completed.',
         });
-        return { kind: 'final', response };
       }
-      const applied = await memory.applyWorkingMemoryMutation({
-        threadId: input.message.conversationId,
-        resourceId: input.message.householdId,
-        principalRef: input.message.speaker.principalRef,
-        basedOnRevision: pending.basedOnRevision,
-        mutation: pending.mutation,
-      });
-      if (applied.status === 'failed') {
-        const directive = applied.code === 'working_memory_revision_stale'
-          ? 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.'
-          : 'Do not say the change was completed because storage did not verify it.';
-        const response = await this.synthesizeWorkingMemoryOutcome({
-          message: input.message,
-          event: workingMemoryEvent(pending, 'failed', directive),
-          signal,
+
+      let applied: Awaited<ReturnType<typeof memory.applyWorkingMemoryMutation>>;
+      try {
+        applied = await memory.applyWorkingMemoryMutation({
+          threadId: input.message.conversationId,
+          resourceId: input.message.householdId,
+          principalRef: input.message.speaker.principalRef,
+          basedOnRevision: pending.basedOnRevision,
+          mutation: pending.mutation,
         });
-        return { kind: 'final', response };
+      } catch (error) {
+        const code = error instanceof PlusOneError ? error.code : 'working_memory_mutation_failed';
+        return this.failedWorkingMemoryResolution({
+          message: input.message,
+          pending,
+          signal,
+          code,
+          directive: 'The change could not be verified. Do not say it was completed.',
+        });
+      }
+      if (applied.status === 'failed') {
+        if (applied.code === 'working_memory_revision_stale') {
+          return this.failedWorkingMemoryResolution({
+            message: input.message,
+            pending,
+            signal,
+            status: 'stale',
+            code: 'working_memory_revision_stale',
+            directive: 'The context changed before approval. Do not say the change was completed; ask the user to request a fresh review.',
+          });
+        }
+        return this.failedWorkingMemoryResolution({
+          message: input.message,
+          pending,
+          signal,
+          code: applied.code,
+          directive: 'Do not say the change was completed because storage did not verify it.',
+        });
       }
       const reviewDue = memory.noteWorkingMemoryMutationSuccess({ resourceId: input.message.householdId }).reviewDue;
       if (reviewDue) {
@@ -599,10 +805,73 @@ export class OrchestratorAgent {
         event: workingMemoryEvent(pending, 'applied', 'Confirm that the change was verified and completed.'),
         signal,
       });
-      return { kind: 'final', response };
+      return { status: 'applied', code: 'working_memory_mutation_succeeded', response };
     } finally {
       timeoutSignal?.clear();
     }
+  }
+
+  async finalizePendingWorkingMemoryResolution(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    status: Exclude<WorkingMemoryResolutionStatusV1, 'pending'>;
+    code: string;
+    directive: string;
+    signal?: AbortSignal;
+  }): Promise<WorkingMemoryResolutionResult> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      const eventKind = input.status === 'applied'
+        ? 'applied' as const
+        : input.status === 'rejected'
+          ? 'rejected' as const
+          : 'failed' as const;
+      const response = await this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryEvent(input.pending, eventKind, input.directive),
+        signal,
+      });
+      return { status: input.status, code: input.code, response };
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  async synthesizePendingWorkingMemoryConfirmation(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal?: AbortSignal;
+  }): Promise<OrchestratorFinalResponseV1> {
+    const timeoutSignal = input.signal === undefined ? createAbortTimeoutSignal(60_000) : undefined;
+    const signal = input.signal ?? timeoutSignal!.signal;
+    try {
+      return await this.synthesizeWorkingMemoryOutcome({
+        message: input.message,
+        event: workingMemoryConfirmationEvent(input.pending),
+        signal,
+      });
+    } finally {
+      timeoutSignal?.clear();
+    }
+  }
+
+  private async failedWorkingMemoryResolution(input: {
+    message: InboundChannelMessageV1;
+    pending: PendingWorkingMemoryMutation;
+    signal: AbortSignal;
+    status?: 'stale' | 'failed';
+    code: string;
+    directive: string;
+  }): Promise<WorkingMemoryResolutionResult> {
+    return this.finalizePendingWorkingMemoryResolution({
+      message: input.message,
+      pending: input.pending,
+      status: input.status ?? 'failed',
+      code: input.code,
+      directive: input.directive,
+      signal: input.signal,
+    });
   }
 
   private async synthesizeWorkingMemoryOutcome(input: {
@@ -610,31 +879,65 @@ export class OrchestratorAgent {
     event: WorkingMemorySynthesisEvent;
     signal: AbortSignal;
   }): Promise<OrchestratorFinalResponseV1> {
-    let candidate: string | undefined;
-    try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const result = await abortable(this.agent.generate(
-          workingMemorySynthesisPrompt(input.message, input.event, candidate),
-          {
-            ...this.orchestratorGenerateOptions(input.message),
-            stopWhen: stopAfterSemanticModelSteps(1),
-            toolChoice: 'none',
-            prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-            abortSignal: input.signal,
-          },
-        ), input.signal);
-        candidate = finalStepResponseText(result);
-        if (candidate === undefined && isRecord(result)) {
-          candidate = nonEmptyResponseText(result.text);
-        }
-        if (workingMemorySynthesisResponseIsSafe(candidate, input.event)) {
-          return responseFromText(input.message, candidate);
-        }
+    const reply = await this.generateWorkingMemoryReply({
+      message: input.message,
+      event: input.event,
+      signal: input.signal,
+    });
+    return responseFromTrustedBody(input.message, reply);
+  }
+
+  private async generateWorkingMemoryReply(input: {
+    message: InboundChannelMessageV1;
+    event: WorkingMemorySynthesisEvent;
+    signal: AbortSignal;
+    draft?: string;
+  }): Promise<string> {
+    const expectedSpeechAct = speechActForWorkingMemoryEvent(input.event);
+    const basePrompt = workingMemorySynthesisPrompt(
+      input.message,
+      input.event,
+      input.draft,
+      expectedSpeechAct,
+    );
+    let candidate: z.infer<typeof WorkingMemoryReplySchemaV1> | undefined;
+    for (const attempt of ['initial', 'repair'] as const) {
+      try {
+        candidate = await this.generateSemanticContract({
+          runId: `working-memory-reply:${input.message.externalMessageId}:${attempt}`,
+          message: input.message,
+          prompt: attempt === 'initial'
+            ? basePrompt
+            : `${basePrompt}\nThe previous response did not satisfy the independent event check. Produce a new response with the required speech act.`,
+          outputSchema: WorkingMemoryReplySchemaV1,
+          signal: input.signal,
+        });
+      } catch (error) {
+        if (input.signal.aborted) throw error;
+        candidate = undefined;
       }
-    } catch (error) {
-      if (input.signal.aborted) throw error;
+      if (candidate?.speechAct !== expectedSpeechAct) continue;
+      try {
+        assertUserSafeResponseBody(candidate.body);
+        const check = await this.generateSemanticContract({
+          runId: `working-memory-reply-check:${input.message.externalMessageId}:${attempt}`,
+          message: input.message,
+          prompt: [
+            'Check one generated Working Memory response against the typed event contract.',
+            `Expected speech act: ${expectedSpeechAct}.`,
+            `Required event directive: ${input.event.directive}`,
+            `Generated response: ${candidate.body}`,
+            'Return valid true only when the response expresses the expected event, does not claim a different event, and is suitable for the user. Judge meaning across languages without requiring a particular phrase or punctuation mark.',
+          ].join('\n'),
+          outputSchema: WorkingMemoryReplyCheckSchemaV1,
+          signal: input.signal,
+        });
+        if (check.valid) return candidate.body;
+      } catch (error) {
+        if (input.signal.aborted) throw error;
+      }
     }
-    return responseFromText(input.message, workingMemoryOutcomeFallback(input.event));
+    return workingMemoryFallbackBody(input.event);
   }
 
   private async continueTransactionCapture(input: {
@@ -702,6 +1005,7 @@ export class OrchestratorAgent {
       memoryFailures: memoryState.memoryFailures,
       delegationCount: 0,
       delegationFailed: false,
+      delegationValidationFailed: false,
       ...(input.transactionContinuation === undefined
         ? {}
         : { transactionCaptureContinuation: input.transactionContinuation }),
@@ -725,12 +1029,22 @@ export class OrchestratorAgent {
               messageCount: Array.isArray(prompt) ? prompt.length : 1,
             },
           });
+          const recoverTeamResults = async (): Promise<OrchestratorTurnResult | undefined> => {
+            if (invocation.teamResults.length === 0) return undefined;
+            const body = await this.synthesizeTeamResults(
+              message,
+              invocation.teamResults,
+              signal,
+              (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
+            );
+            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
+          };
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          let result: Awaited<ReturnType<typeof this.agent.generate>>;
+          let generated: Awaited<ReturnType<typeof this.generateOrchestratorTurn>>;
           try {
-            result = await abortable(this.generateOrchestratorTurn(prompt, message, invocation, signal, {
+            generated = await abortable(this.generateOrchestratorTurn(prompt, message, invocation, signal, {
               nextStep: () => ++stepOrdinal,
               getStepStartedAt: () => stepStartedAt,
               setStepStartedAt: (value) => { stepStartedAt = value; },
@@ -742,7 +1056,7 @@ export class OrchestratorAgent {
               this.recordMemoryOutcome(memoryOutcomeFromError(error));
               const retryPrompt = await abortable(this.orchestratorInput(message, invocation), signal);
               try {
-                result = await abortable(this.generateOrchestratorTurn(retryPrompt, message, invocation, signal, {
+                generated = await abortable(this.generateOrchestratorTurn(retryPrompt, message, invocation, signal, {
                   nextStep: () => ++stepOrdinal,
                   getStepStartedAt: () => stepStartedAt,
                   setStepStartedAt: (value) => { stepStartedAt = value; },
@@ -750,33 +1064,46 @@ export class OrchestratorAgent {
                 }), signal);
               } catch (retryError) {
                 if (isWorkingMemoryFailure(retryError)) this.recordMemoryOutcome(memoryOutcomeFromError(retryError));
+                if (!signal.aborted
+                  && retryError instanceof PlusOneError
+                  && retryError.code === 'orchestrator_response_not_submitted'
+                  && invocation.teamResults.length !== 0) {
+                  const recovered = await recoverTeamResults();
+                  if (recovered !== undefined) return recovered;
+                }
                 throw retryError;
               }
             } else {
               if (isWorkingMemoryFailure(error)) this.recordMemoryOutcome(memoryOutcomeFromError(error));
-              if (
-                !signal.aborted
-                && invocation.memoryFailures.length === 0
-                && !invocation.delegationFailed
-                && invocation.teamResults.length !== 0
-              ) {
-                return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
+              if (error instanceof PlusOneError && error.code === 'orchestrator_response_not_submitted') {
+                if (!signal.aborted) {
+                  const recovered = await recoverTeamResults();
+                  if (recovered !== undefined) return recovered;
+                }
+                throw error;
+              }
+              if (!signal.aborted && isTransientModelError(error)) {
+                throw error;
+              }
+              if (!signal.aborted) {
+                const recovered = await recoverTeamResults();
+                if (recovered !== undefined) return recovered;
+              }
+              if (!signal.aborted && invocation.delegationFailed) {
+                return delegationFailureTurn(message);
               }
               throw error;
             }
           }
           if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
-          if (modelResultEndedOnRetry(result)) {
-            if (!invocation.delegationFailed && invocation.teamResults.length !== 0) {
-              return turnFromTeamResults(message, invocation.teamResults, undefined, invocation.transactionCaptureContinuation);
-            }
+          if (modelResultEndedOnRetry(generated.result)) {
             throw new ModelTemporarilyUnavailableError();
           }
-          if (invocation.delegationFailed) {
-            throw new Error('Delegated team work failed before producing a checked result.');
+          if (invocation.delegationFailed && invocation.teamResults.length === 0) {
+            return delegationFailureTurn(message);
           }
           if (invocation.delegationCount > 0 && invocation.teamResults.length === 0) {
-            throw new Error('Delegated team did not return a checked result.');
+            return delegationFailureTurn(message);
           }
           if (invocation.pendingWorkingMemoryMutation !== undefined) {
             const response = await this.synthesizeWorkingMemoryOutcome({
@@ -790,65 +1117,23 @@ export class OrchestratorAgent {
               pendingWorkingMemoryMutation: invocation.pendingWorkingMemoryMutation,
             };
           }
-          let body = finalStepResponseText(result);
+          const body = generated.submission.body;
           if (invocation.teamResults.length !== 0) {
-            const selected = selectTeamResult(invocation.teamResults);
-            const canUseInitialBody = selected?.status !== 'insufficient_evidence'
-              && body !== undefined
-              && userFacingSafetyMatchCategory(body) === undefined
-              && selected?.effect.state === 'none'
-              && selected.status === 'verified';
-            if (selected?.status === 'insufficient_evidence'
-              || selected?.status === 'failed'
-              || selected?.status === 'conflicted') {
-              body = responseBody(selected);
-            } else if (!canUseInitialBody) {
-              body = await this.synthesizeTeamResults(message, invocation.teamResults, signal);
-            }
-            if (selected?.effect.state === 'awaiting_confirmation'
-              && !confirmationResponseIsSafe(body, selected, invocation.transactionCaptureContinuation)) {
-              body = confirmationFallback(selected, invocation.transactionCaptureContinuation);
-            }
-            const safeMatchCategory = body === undefined ? undefined : userFacingSafetyMatchCategory(body);
-            const checkedMismatchCategory = body === undefined || selected === undefined
-              ? undefined
-              : checkedResponseMismatchCategory(message, body, selected);
-            if (checkedMismatchCategory !== undefined) {
-              logger.warn('orchestrator.checked_response.withheld', {
-                fields: { matchCategory: checkedMismatchCategory },
-              });
-            }
-            const safeBody = body !== undefined
-              && safeMatchCategory === undefined
-              && checkedMismatchCategory === undefined
+            const safeBody = invocation.memoryFailures.length === 0
               ? body
-              : selected === undefined
-                ? undefined
-                : checkedResultFallback(selected);
-            const memorySafeBody = invocation.memoryFailures.length === 0
-              ? safeBody
-              : await this.ensureMemoryFailureResponse(message, safeBody, invocation, signal);
-            return turnFromTeamResults(message, invocation.teamResults, memorySafeBody, invocation.transactionCaptureContinuation);
-          }
-          if (body === undefined) {
-            if (invocation.memoryFailures.length !== 0) {
-              body = await this.ensureMemoryFailureResponse(message, undefined, invocation, signal);
-            }
-            if (body === undefined) throw new Error('Orchestrator returned an empty response.');
-          }
-          const unsafeMatchCategory = userFacingSafetyMatchCategory(body);
-          if (unsafeMatchCategory !== undefined) {
-            logger.warn('orchestrator.response.withheld', {
-              fields: { matchCategory: unsafeMatchCategory },
-            });
-            body = 'I could not prepare a safe response. Please try again.';
+              : await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+            return turnFromTeamResults(message, invocation.teamResults, safeBody, invocation.transactionCaptureContinuation);
           }
           if (invocation.memoryFailures.length !== 0) {
-            body = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+            const memorySafeBody = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
+            return {
+              kind: 'final',
+              response: responseFromTrustedBody(message, memorySafeBody, invocation.teamResults),
+            };
           }
           return {
             kind: 'final',
-            response: responseFromText(message, body, invocation.teamResults),
+            response: responseFromTrustedBody(message, body, invocation.teamResults),
           };
         });
         if (signal.aborted) throw signal.reason ?? new DOMException('Orchestrator turn aborted.', 'AbortError');
@@ -857,11 +1142,12 @@ export class OrchestratorAgent {
         });
         return turn;
       } catch (error) {
-        logger.warn('turn.failed', {
+        logger.error('turn.failed', {
           fields: {
             failureCategory: turnFailureCategory(error),
             durationMs: Date.now() - startedAt,
           },
+          ...(error instanceof PlusOneError ? { error } : {}),
         });
         throw error;
       } finally {
@@ -880,6 +1166,40 @@ export class OrchestratorAgent {
     active.memoryState.memoryDegraded = true;
   }
 
+  private assertSubmittedResponse(
+    message: InboundChannelMessageV1,
+    invocation: OrchestratorInvocation,
+    body: string,
+  ): void {
+    this.assertTeamResultResponse(
+      message,
+      invocation.teamResults,
+      body,
+      invocation.transactionCaptureContinuation,
+    );
+  }
+
+  private assertTeamResultResponse(
+    message: InboundChannelMessageV1,
+    teamResults: readonly TeamResultEnvelopeV2[],
+    body: string,
+    transactionContinuation?: TransactionCaptureContinuationV1,
+  ): void {
+    if (userFacingSafetyMatchCategory(body) !== undefined) {
+      throw rejectedResponseError('Do not expose internal implementation details or identifiers in the reply.');
+    }
+    assertUserSafeResponseBody(body);
+    const selected = selectTeamResult(teamResults);
+    if (selected === undefined) return;
+    if (checkedResponseMismatchCategory(message, body, selected) !== undefined) {
+      throw rejectedResponseError('Keep the reply consistent with the checked result and the user request.');
+    }
+    if (selected.effect.state === 'awaiting_confirmation'
+      && !confirmationResponseIsSafe(body, selected, transactionContinuation)) {
+      throw rejectedResponseError('Describe the proposed change accurately and ask whether the user wants to proceed; do not claim it already happened.');
+    }
+  }
+
   private async generateOrchestratorTurn(
     prompt: string | MastraDBMessage[],
     message: InboundChannelMessageV1,
@@ -889,12 +1209,23 @@ export class OrchestratorAgent {
       nextStep(): number;
       getStepStartedAt(): number;
       setStepStartedAt(value: number): void;
-      logger: ReturnType<typeof getLogger>;
+      logger: CatalogLogger<'runtime.orchestrator'>;
     },
-  ) {
+  ): Promise<{
+    result: Awaited<ReturnType<OrchestratorAgentInstance['generate']>>;
+    submission: FinalResponseSubmission;
+  }> {
+    const responseSession = createFinalResponseSubmissionSession({
+      validateBody: (body) => this.assertSubmittedResponse(message, invocation, body),
+    });
+    const stopAtStepLimit = stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS);
     const generationOptions = {
       ...this.orchestratorGenerateOptions(message, invocation.requestContext),
-      stopWhen: stopAfterSemanticModelSteps(MAX_ORCHESTRATOR_STEPS),
+      outputProcessors: [responseSession.outputProcessor],
+      stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+        responseSession.hasSubmission()
+        || (invocation.teamResults.length !== 0 && !canDelegateAnotherSubstep(invocation))
+        || stopAtStepLimit({ steps }),
       errorProcessors: [createTransientModelRetryProcessor({
         maxRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
       })],
@@ -902,12 +1233,14 @@ export class OrchestratorAgent {
       toolChoice: 'auto',
       prepareStep: async () => {
         const activeTools = this.orchestratorToolNames(invocation);
-        if (canDelegateAnotherSubstep(invocation)) {
-          return { activeTools, toolChoice: 'auto' as const };
-        }
-        return activeTools.length === 0
-          ? { activeTools: [], toolChoice: 'none' as const }
-          : { activeTools, toolChoice: 'auto' as const };
+        return {
+          tools: {
+            ...Object.fromEntries(Object.entries(this.agentTools).filter(([, tool]) => tool !== undefined)),
+            [SubmitFinalResponseToolId]: responseSession.tool,
+          },
+          activeTools: [...activeTools, SubmitFinalResponseToolId],
+          toolChoice: 'auto' as const,
+        };
       },
       abortSignal: signal,
       onStepFinish: (step: {
@@ -915,7 +1248,7 @@ export class OrchestratorAgent {
         toolCalls?: unknown[];
       }) => {
         const usage = step.usage ?? {};
-        input.logger.info('orchestrator.step.completed', {
+        input.logger.debug('orchestrator.step.completed', {
           fields: {
             step: input.nextStep(),
             durationMs: Date.now() - input.getStepStartedAt(),
@@ -927,7 +1260,18 @@ export class OrchestratorAgent {
         input.setStepStartedAt(Date.now());
       },
     };
-    return this.agent.generate(prompt, generationOptions as never);
+    try {
+      const result = await this.agent.generate(prompt, {
+        ...generationOptions,
+        abortSignal: signal,
+      } as never);
+      return { result, submission: responseSession.requireSubmission() };
+    } catch (error) {
+      if (responseSession.protocolViolationObserved() && isResponseProtocolTripWire(error)) {
+        throw orchestratorResponseNotSubmittedError(error);
+      }
+      throw error;
+    }
   }
 
   private orchestratorToolNames(invocation: OrchestratorInvocation): string[] {
@@ -943,34 +1287,63 @@ export class OrchestratorAgent {
     return names;
   }
 
+  private async generateSubmittedResponse(input: {
+    prompt: string | MastraDBMessage[];
+    message: InboundChannelMessageV1;
+    signal: AbortSignal;
+    requestContext?: OrchestratorRequestContext;
+    validateBody(body: string): void;
+  }): Promise<string> {
+    const responseSession = createFinalResponseSubmissionSession({
+      validateBody: input.validateBody,
+    });
+    const stopAtResponseLimit = stopAfterSemanticModelSteps(2);
+    try {
+      await abortable(this.agent.generate(input.prompt, {
+        ...this.orchestratorGenerateOptions(input.message, input.requestContext),
+        outputProcessors: [responseSession.outputProcessor],
+        stopWhen: ({ steps }: { steps: readonly unknown[] }) =>
+          responseSession.hasSubmission() || stopAtResponseLimit({ steps }),
+        maxProcessorRetries: ORCHESTRATOR_MODEL_STEP_RETRIES,
+        prepareStep: async () => ({
+          tools: { [SubmitFinalResponseToolId]: responseSession.tool },
+          activeTools: [SubmitFinalResponseToolId],
+          toolChoice: 'auto' as const,
+        }),
+        toolChoice: 'auto',
+        abortSignal: input.signal,
+      } as never), input.signal);
+      return responseSession.requireSubmission().body;
+    } catch (error) {
+      if (responseSession.protocolViolationObserved() && isResponseProtocolTripWire(error)) {
+        throw orchestratorResponseNotSubmittedError(error);
+      }
+      throw error;
+    }
+  }
+
   private async ensureMemoryFailureResponse(
     message: InboundChannelMessageV1,
     candidate: string | undefined,
     invocation: OrchestratorInvocation,
     signal: AbortSignal,
   ): Promise<string> {
-    if (memoryFailureResponseIsSafe(candidate)) return candidate!;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await abortable(this.agent.generate(
-        memoryFailureSynthesisPrompt(message, invocation.memoryFailures, candidate),
-        {
-          ...this.orchestratorGenerateOptions(message, invocation.requestContext),
-          stopWhen: stopAfterSemanticModelSteps(1),
-          toolChoice: 'none',
-          prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-          abortSignal: signal,
-        },
-      ), signal);
-      const synthesized = finalStepResponseText(result);
-      if (memoryFailureResponseIsSafe(synthesized)) return synthesized;
-      candidate = synthesized;
-    }
-    throw new PlusOneError({
-      category: 'runtime_failure',
-      code: 'working_memory_response_failed',
-      message: 'Working Memory failure response could not be synthesized.',
-      retry: 'after_backoff',
-      receiptLookupRequired: false,
+    const event: WorkingMemorySynthesisEvent = {
+      kind: 'failed',
+      operation: 'read',
+      summary: 'the requested Working Memory operation',
+      directive: [
+        'Explain what could not be completed.',
+        'Do not claim that a failed save, update, delete, or clear succeeded.',
+        'Continue with verified information from the current turn when it is available.',
+        `Failure events: ${JSON.stringify(invocation.memoryFailures)}`,
+      ].join(' '),
+    };
+    return this.generateWorkingMemoryReply({
+      message,
+      event,
+      signal,
+      ...(candidate === undefined ? {} : { draft: candidate }),
     });
   }
 
@@ -1028,21 +1401,16 @@ export class OrchestratorAgent {
     message: InboundChannelMessageV1,
     teamResults: readonly TeamResultEnvelopeV2[],
     signal: AbortSignal,
-  ): Promise<string | undefined> {
-    try {
-      const active = this.activeInvocation.getStore();
-      const result = await abortable(this.agent.generate(finalSynthesisPrompt(message, teamResults), {
-        ...this.orchestratorGenerateOptions(message, active?.requestContext),
-        stopWhen: stopAfterSemanticModelSteps(1),
-        toolChoice: 'none',
-        prepareStep: async () => ({ activeTools: [], toolChoice: 'none' as const }),
-        abortSignal: signal,
-      }), signal);
-      return finalStepResponseText(result);
-    } catch (error) {
-      if (signal.aborted) throw error;
-      return undefined;
-    }
+    validateBody?: (body: string) => void,
+  ): Promise<string> {
+    const active = this.activeInvocation.getStore();
+    return this.generateSubmittedResponse({
+      prompt: finalSynthesisPrompt(message, teamResults),
+      message,
+      signal,
+      ...(active?.requestContext === undefined ? {} : { requestContext: active.requestContext }),
+      validateBody: validateBody ?? ((body) => this.assertTeamResultResponse(message, teamResults, body)),
+    });
   }
 }
 
@@ -1071,6 +1439,50 @@ function createAbortTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cle
       clearTimeout(timer);
     },
   };
+}
+
+function checkedMutationClassificationContext(input: {
+  pending: TeamResultEnvelopeV2;
+  transactionContinuation?: TransactionCaptureContinuationV1;
+}): string | undefined {
+  if (input.pending.effect.state !== 'awaiting_confirmation') return undefined;
+
+  try {
+    const view = finalSynthesisTeamResultView(input.pending);
+    const context = {
+      commandType: input.pending.effect.command.commandType,
+      payload: input.pending.effect.command.payload,
+      proposalFacts: view.proposalFacts,
+      ...(input.transactionContinuation === undefined
+        ? {}
+        : { transactionContinuationRequest: input.transactionContinuation.request }),
+    };
+    const serialized = JSON.stringify(context);
+    return serialized === undefined ? undefined : serialized;
+  } catch {
+    return undefined;
+  }
+}
+
+function adjudicatePendingDisposition(
+  primary: PendingInteractionDispositionV1,
+  checker: PendingInteractionDispositionV1,
+): PendingInteractionDispositionV1 {
+  if (primary.kind === 'new_intent') return primary;
+  if (primary.kind === 'resolve'
+    && checker.kind === 'resolve'
+    && checker.decision === primary.decision) {
+    return primary;
+  }
+  if (primary.kind === 'ambiguous' && checker.kind === 'new_intent') return checker;
+  return { kind: 'ambiguous' };
+}
+
+function pendingDispositionForWorkingMemoryRouter(
+  disposition: PendingInteractionDispositionV1,
+): 'approve' | 'reject' | 'new_intent' | 'ambiguous' {
+  if (disposition.kind === 'resolve') return disposition.decision;
+  return disposition.kind;
 }
 
 function inboundContextPrompt(message: InboundChannelMessageV1): string {
@@ -1166,25 +1578,6 @@ function memoryFailureMessages(failures: readonly OrchestratorMemoryFailure[]): 
   });
 }
 
-function memoryFailureSynthesisPrompt(
-  message: InboundChannelMessageV1,
-  failures: readonly OrchestratorMemoryFailure[],
-  candidate: string | undefined,
-): string {
-  return [
-    dateContextText(message),
-    `User request: ${message.body}`,
-    `Internal Working Memory outcomes: ${JSON.stringify(failures)}`,
-    candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
-    'Return only a concise user-facing response. Explain what could not be completed, do not claim the failed save or clear succeeded, and continue with verified information. Do not mention internal codes, schemas, tools, or identifiers.',
-  ].filter((part) => part.length > 0).join('\n\n');
-}
-
-function memoryFailureResponseIsSafe(value: string | undefined): value is string {
-  if (value === undefined || !memoryFailureAcknowledges(value) || memoryFailureClaimsSuccess(value)) return false;
-  return userFacingSafetyMatchCategory(value) === undefined;
-}
-
 function workingMemoryConfirmationEvent(
   pending: PendingWorkingMemoryMutation,
 ): WorkingMemorySynthesisEvent {
@@ -1212,13 +1605,58 @@ function workingMemoryMutationSummary(pending: PendingWorkingMemoryMutation): st
   const mutation = pending.mutation;
   if (mutation.operation === 'clear') return 'all Working Memory';
   if (mutation.operation === 'delete') return 'the selected Working Memory entry';
-  return mutation.entry.summary.replace(/\b(?:wme|wmproposal)_[A-Za-z0-9_-]+\b/gi, 'the selected entry');
+  return redactWorkingMemoryOpaqueIdentifiers(mutation.entry.summary);
+}
+
+function redactWorkingMemoryOpaqueIdentifiers(value: string): string {
+  const normalized = value.toLowerCase();
+  const markers = ['wme_', 'wmproposal_'];
+  let output = '';
+  let copiedThrough = 0;
+  let index = 0;
+  while (index < value.length) {
+    const marker = markers.find((candidate) => normalized.startsWith(candidate, index));
+    if (marker === undefined
+      || (index !== 0 && isAsciiWordCharacter(value[index - 1]))) {
+      index += 1;
+      continue;
+    }
+    let end = index + marker.length;
+    while (end < value.length && isOpaqueIdentifierCharacter(value[end])) end += 1;
+    if (end === index + marker.length
+      || !isAsciiWordCharacter(value[end - 1])
+      || (end < value.length && isAsciiWordCharacter(value[end]))) {
+      index += 1;
+      continue;
+    }
+    output += value.slice(copiedThrough, index);
+    output += 'the selected entry';
+    copiedThrough = end;
+    index = end;
+  }
+  return output + value.slice(copiedThrough);
+}
+
+function isOpaqueIdentifierCharacter(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return isAsciiWordCharacter(value) || value === '-';
+}
+
+function isAsciiWordCharacter(value: string | undefined): boolean {
+  if (value === undefined || value.length === 0) return false;
+  const code = value.codePointAt(0);
+  return code !== undefined
+    && ((code >= 48 && code <= 57)
+      || (code >= 65 && code <= 90)
+      || (code >= 97 && code <= 122)
+      || code === 95);
 }
 
 function workingMemorySynthesisPrompt(
   message: InboundChannelMessageV1,
   event: WorkingMemorySynthesisEvent,
   candidate: string | undefined,
+  expectedSpeechAct: WorkingMemoryReplySpeechActV1,
 ): string {
   return [
     dateContextText(message),
@@ -1226,64 +1664,42 @@ function workingMemorySynthesisPrompt(
     `Working Memory operation: ${event.operation}`,
     `Safe change summary: ${event.summary}`,
     `Required response behavior: ${event.directive}`,
+    `Required speech act: ${expectedSpeechAct}`,
     candidate === undefined ? '' : `Draft response to revise: ${candidate}`,
-    'Return only a concise, natural user-facing response. For a completed change, say it is saved, stored, updated, or otherwise in place. For a declined change, say that no change was made. For a failed change, say it was not completed. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
+    'Return a structured Working Memory reply with the required speech act and a concise natural-language body. Express the required event in the user language when possible. Never mention tools, schemas, revisions, proposal IDs, entry IDs, principals, households, conversations, or internal codes.',
   ].filter((part) => part.length > 0).join('\n\n');
 }
 
-function workingMemorySynthesisResponseIsSafe(
-  value: string | undefined,
+function speechActForWorkingMemoryEvent(
   event: WorkingMemorySynthesisEvent,
-): value is string {
-  if (value === undefined || userFacingSafetyMatchCategory(value) !== undefined) return false;
-  if (event.kind === 'confirmation') {
-    return value.includes('?') && !workingMemoryClaimsSuccess(value) && !workingMemoryClaimsFailure(value);
-  }
-  if (event.kind === 'applied') {
-    return value.trim().length > 0 && !workingMemoryClaimsFailure(value);
-  }
-  if (event.kind === 'rejected') {
-    return value.trim().length > 0 && !workingMemoryClaimsSuccess(value);
-  }
-  return workingMemoryClaimsFailure(value) && !workingMemoryClaimsSuccess(value);
+): WorkingMemoryReplySpeechActV1 {
+  if (event.kind === 'confirmation') return 'request_confirmation';
+  if (event.kind === 'applied') return 'confirm_applied';
+  if (event.kind === 'rejected') return 'confirm_rejected';
+  return 'report_failure';
 }
 
-function workingMemoryOutcomeFallback(event: WorkingMemorySynthesisEvent): string {
-  if (event.kind === 'confirmation') return `I can make that change to ${event.summary}. Would you like me to proceed?`;
-  if (event.kind === 'applied') return `Done — I verified that ${event.summary} is in place.`;
-  if (event.kind === 'rejected') return `Okay — I left ${event.summary} unchanged.`;
-  return `I couldn't complete the change to ${event.summary}, so nothing was updated.`;
-}
-
-function workingMemoryClaimsFailure(value: string): boolean {
-  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|expired|stale|changed|no changes?|nothing changed|changes? were not made|left .* unchanged|kept .* unchanged|not completed|not complete|didn['’]t|did not|didn['’]t go through|did not go through|cannot|can['’]t|won['’]t|will not|not make|not applied|not stored|not saved|not updated)\b/i.test(value);
-}
-
-function workingMemoryClaimsSuccess(value: string): boolean {
-  if (workingMemoryClaimsFailure(value)) return false;
-  return memoryFailureClaimsSuccess(value)
-    || /\b(?:saved|stored|updated|remembered|applied|cleared|completed|complete|done|set|in place|all set|taken care of|in (?:your )?memory)\b/i.test(value);
-}
-
-function memoryFailureAcknowledges(value: string): boolean {
-  return /\b(?:couldn['’]t|could not|unable to|wasn['’]t able|was not able|failed|failure|not available|unavailable|didn['’]t|did not|cannot|can['’]t|without)\b/i.test(value);
-}
-
-function memoryFailureClaimsSuccess(value: string): boolean {
-  return /\b(?:I|we|Plus One|the system)\s+(?:have\s+|has\s+|did\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value)
-    || /\b(?:is|was|has been)\s+(?:now\s+)?(?:saved|remembered|stored|cleared|forgotten|updated|persisted)\b/i.test(value);
+function workingMemoryFallbackBody(event: WorkingMemorySynthesisEvent): string {
+  const summary = event.summary.endsWith('.') ? event.summary.slice(0, -1) : event.summary;
+  if (event.kind === 'confirmation') return `I can update ${summary}. Would you like me to proceed?`;
+  if (event.kind === 'applied') return `The change to ${summary} is now in place.`;
+  if (event.kind === 'rejected') return `No changes were made to ${summary}.`;
+  return `I could not complete the change to ${summary}. No changes were made.`;
 }
 
 function isWorkingMemoryFailure(error: unknown): boolean {
-  return (error instanceof PlusOneError
-    && (/^working_memory_/.test(error.code) || /^observational_memory_/.test(error.code)))
-    || (error instanceof Error && /input processor error/i.test(error.message));
+  if (error instanceof PlusOneError) {
+    const code = error.code.toLowerCase();
+    if (code.startsWith('working_memory_') || code.startsWith('observational_memory_')) return true;
+  }
+  return error instanceof Error && error.message.toLowerCase().includes('input processor error');
 }
 
 function memoryOperationFromCode(code: string): WorkingMemoryOperation {
-  if (/clear/i.test(code)) return 'clear';
-  if (/update|write/i.test(code)) return 'update';
-  if (/observation/i.test(code)) return 'observation';
+  const normalized = code.toLowerCase();
+  if (normalized.includes('clear')) return 'clear';
+  if (normalized.includes('update') || normalized.includes('write')) return 'update';
+  if (normalized.includes('observation')) return 'observation';
   return 'read';
 }
 
@@ -1332,19 +1748,18 @@ function memoryFailureFromOutcome(outcome: WorkingMemoryOperationOutcome): Orche
 function responseFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV2[],
-  synthesizedBody?: string,
+  synthesizedBody: string,
   transactionContinuation?: TransactionCaptureContinuationV1,
 ): OrchestratorFinalResponseV1 {
   const teamResult = selectTurnTeamResult(teamResults, transactionContinuation);
-  if (teamResult === undefined) throw new Error('Missing team result for fallback response');
-  const body = synthesizedBody ?? responseBody(teamResult);
-  return responseFromText(message, body, [teamResult]);
+  if (teamResult === undefined) throw new Error('Missing team result for response envelope.');
+  return responseFromTrustedBody(message, synthesizedBody, [teamResult]);
 }
 
 function turnFromTeamResults(
   message: InboundChannelMessageV1,
   teamResults: readonly TeamResultEnvelopeV2[],
-  synthesizedBody?: string,
+  synthesizedBody: string,
   transactionContinuation?: TransactionCaptureContinuationV1,
 ): OrchestratorTurnResult {
   const response = responseFromTeamResults(message, teamResults, synthesizedBody, transactionContinuation);
@@ -1366,7 +1781,18 @@ function turnFromTeamResults(
   return { kind: 'final', response };
 }
 
-function responseFromText(
+function delegationFailureTurn(message: InboundChannelMessageV1): OrchestratorTurnResult {
+  return {
+    kind: 'final',
+    response: responseFromTrustedBody(
+      message,
+      'I could not complete the specialist check, so I cannot give you a checked answer yet. '
+        + 'No changes were made. Please try again.',
+    ),
+  };
+}
+
+function responseFromTrustedBody(
   message: InboundChannelMessageV1,
   body: string,
   teamResults: readonly TeamResultEnvelopeV2[] = [],
@@ -1401,32 +1827,13 @@ function responseFromText(
   });
 }
 
-function nonEmptyResponseText(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const body = value.trim();
-  return body.length === 0 ? undefined : body;
+function rejectedResponseError(message: string): PlusOneError {
+  return finalResponseRepairError(message);
 }
 
-function finalStepResponseText(result: unknown): string | undefined {
-  if (!isRecord(result)) return undefined;
-  if (!Array.isArray(result.steps) || result.steps.length === 0) {
-    return nonEmptyResponseText(result.text);
-  }
-  let lastToolStep = -1;
-  for (let index = 0; index < result.steps.length; index += 1) {
-    if (hasToolCalls(result.steps[index])) lastToolStep = index;
-  }
-  for (let index = result.steps.length - 1; index > lastToolStep; index -= 1) {
-    const step = result.steps[index];
-    if (hasToolCalls(step) || !isRecord(step)) continue;
-    const body = nonEmptyResponseText(step.text);
-    if (body !== undefined) return body;
-  }
-  return lastToolStep === -1 ? nonEmptyResponseText(result.text) : undefined;
-}
-
-function hasToolCalls(step: unknown): boolean {
-  return isRecord(step) && Array.isArray(step.toolCalls) && step.toolCalls.length > 0;
+function isResponseProtocolTripWire(error: unknown): boolean {
+  if (!isRecord(error) || error.processorId !== 'orchestrator-final-response-protocol') return false;
+  return isRecord(error.options) && error.options.retry === true;
 }
 
 function delegationCommentary(team: string, request: unknown): string {
@@ -1470,38 +1877,13 @@ function statusRank(status: TeamResultEnvelopeV2['status']): number {
   return 4;
 }
 
-function responseBody(teamResult: TeamResultEnvelopeV2): string {
-  if (teamResult.status === 'insufficient_evidence') {
-    const questions = clarificationQuestions(teamResult);
-    return questions.length === 0
-      ? 'What additional details can you provide?'
-      : questions.join('\n\n');
-  }
-  if (teamResult.status === 'verified') {
-    const view = finalSynthesisTeamResultView(teamResult);
-    if (view.effectState === 'persisted') {
-      const change = view.proposedChange;
-      if (change?.action === 'create_account'
-        && change.accountName !== undefined
-        && change.accountingClass !== undefined
-        && change.normalBalance !== undefined
-        && change.nativeCurrency !== undefined) {
-        return `I added ${change.accountName} as an ${change.nativeCurrency} ${change.accountingClass} account with a normal ${change.normalBalance} balance.`;
-      }
-      return 'I completed the requested change and verified it.';
-    }
-    return 'I found the requested information, but I could not safely summarize it. Please try again.';
-  }
-  return 'I could not complete that request safely. Please try again.';
-}
-
 function confirmationResponseIsSafe(
   body: string | undefined,
   teamResult: TeamResultEnvelopeV2,
   transactionContinuation?: TransactionCaptureContinuationV1,
 ): boolean {
   if (body === undefined || !body.includes('?')) return false;
-  if (/\b(created|saved|added|applied|recorded|completed|succeeded)\b/i.test(body)) return false;
+  if (containsAnyWord(body, ['created', 'saved', 'added', 'applied', 'recorded', 'completed', 'succeeded'])) return false;
   const proposedChange = finalSynthesisTeamResultView(teamResult).proposedChange;
   if (proposedChange?.action !== 'create_account') return true;
   const requiredDetails = [
@@ -1526,47 +1908,64 @@ function confirmationResponseIsSafe(
     && requiredTransactionDetails.every((detail) => normalizedBody.includes(detail.toLowerCase()));
 }
 
+function containsAnyWord(value: string, words: readonly string[]): boolean {
+  return words.some((word) => containsWord(value, word));
+}
+
+function containsWord(value: string, word: string): boolean {
+  const normalized = value.toLowerCase();
+  const target = word.toLowerCase();
+  let index = normalized.indexOf(target);
+  while (index !== -1) {
+    const before = index === 0 ? undefined : normalized[index - 1];
+    const afterIndex = index + target.length;
+    const after = afterIndex >= normalized.length ? undefined : normalized[afterIndex];
+    if (!isAsciiWordCharacter(before) && !isAsciiWordCharacter(after)) return true;
+    index = normalized.indexOf(target, afterIndex);
+  }
+  return false;
+}
+
+function containsAnyPhrase(value: string, phrases: readonly string[]): boolean {
+  const normalized = value.toLowerCase();
+  return phrases.some((phrase) => normalized.includes(phrase.toLowerCase()));
+}
+
+function containsPhraseWithin(
+  value: string,
+  first: string,
+  seconds: readonly string[],
+  maxGap: number,
+): boolean {
+  const normalized = value.toLowerCase();
+  const firstNormalized = first.toLowerCase();
+  let firstIndex = normalized.indexOf(firstNormalized);
+  while (firstIndex !== -1) {
+    const afterFirst = firstIndex + firstNormalized.length;
+    if (seconds.some((second) => {
+      const secondIndex = normalized.indexOf(second.toLowerCase(), afterFirst);
+      return secondIndex !== -1 && secondIndex - afterFirst <= maxGap;
+    })) return true;
+    firstIndex = normalized.indexOf(firstNormalized, afterFirst);
+  }
+  return false;
+}
+
 function canDelegateAnotherSubstep(input: {
   delegationCount: number;
   delegationFailed: boolean;
   teamResults: readonly TeamResultEnvelopeV2[];
+  transactionCaptureContinuation?: TransactionCaptureContinuationV1;
 }): boolean {
   if (input.delegationFailed || input.delegationCount >= MAX_DELEGATIONS_PER_TURN) return false;
   return !input.teamResults.some((result) =>
-    result.effect.state === 'awaiting_confirmation'
+    result.status === 'failed'
+    || result.status === 'conflicted'
+    || (result.status === 'insufficient_evidence'
+      && input.transactionCaptureContinuation === undefined)
+    || result.effect.state === 'awaiting_confirmation'
     || result.effect.state === 'persisted'
     || result.effect.state === 'unresolved');
-}
-
-function confirmationFallback(
-  teamResult: TeamResultEnvelopeV2,
-  transactionContinuation?: TransactionCaptureContinuationV1,
-): string {
-  const proposedChange = finalSynthesisTeamResultView(teamResult).proposedChange;
-  if (proposedChange?.action === 'create_account'
-    && proposedChange.accountName !== undefined
-    && proposedChange.accountingClass !== undefined
-    && proposedChange.normalBalance !== undefined
-    && proposedChange.nativeCurrency !== undefined) {
-    if (transactionContinuation !== undefined) {
-      const known = transactionContinuation.request.known;
-      const transactionDetails = [
-        known.amount === undefined || known.currency === undefined ? undefined : `${known.currency} ${known.amount}`,
-        known.paymentAccountName === undefined
-          ? undefined
-          : `${proposedChange.accountingClass === 'income' ? 'into' : 'from'} ${known.paymentAccountName}`,
-        known.occurredOn === undefined ? undefined : `dated ${known.occurredOn}`,
-      ].filter((detail): detail is string => detail !== undefined).join(' ');
-      const categoryKind = proposedChange.accountingClass === 'income'
-        ? 'income category'
-        : proposedChange.accountingClass === 'expense'
-          ? 'spending category'
-          : `${proposedChange.accountingClass} account`;
-      return `I’ll add ${proposedChange.accountName} as a new ${categoryKind} in ${proposedChange.nativeCurrency}, then record ${transactionDetails} under ${proposedChange.accountName}. Would you like me to proceed?`;
-    }
-    return `I’ll add ${proposedChange.accountName} as an ${proposedChange.nativeCurrency} ${proposedChange.accountingClass} account with a normal ${proposedChange.normalBalance} balance. Would you like me to proceed?`;
-  }
-  return 'I have a checked proposal ready. Would you like me to proceed?';
 }
 
 function isCreateTransactionCategoryProposal(
@@ -1578,33 +1977,6 @@ function isCreateTransactionCategoryProposal(
   const proposal = ChartOfAccountsProposalSchemaV1.safeParse(result.effect.command.payload);
   return proposal.success && proposal.data.action === 'create_account'
     && (proposal.data.accountingClass === 'expense' || proposal.data.accountingClass === 'income');
-}
-
-function categoryTransactionCompletionBody(
-  pending: TeamResultEnvelopeV2,
-  transaction: TeamResultEnvelopeV2,
-  continuation: TransactionCaptureContinuationV1,
-): string | undefined {
-  if (!isCreateTransactionCategoryProposal(pending)
-    || transaction.status !== 'verified'
-    || transaction.effect.state !== 'persisted') return undefined;
-  const category = ChartOfAccountsProposalSchemaV1.safeParse(pending.effect.command.payload);
-  if (!category.success || category.data.action !== 'create_account') return undefined;
-  const proposalArtifactId = transaction.effect.proposal.artifactId;
-  const artifact = transaction.makerArtifacts.find((candidate) =>
-    candidate.artifactId === proposalArtifactId);
-  if (artifact === undefined) return undefined;
-  const maker = MakerArtifactSchemaV1.safeParse(artifact.payload);
-  if (!maker.success) return undefined;
-  const proposal = AccountingJournalMutationProposalSchemaV1.safeParse(maker.data.output);
-  if (!proposal.success || proposal.data.operation !== 'post') return undefined;
-  const journal = proposal.data.draft.journal;
-  const amount = journal.postings[0]?.transactionAmount;
-  const paymentAccountName = continuation.request.known.paymentAccountName;
-  if (amount === undefined || paymentAccountName === undefined) return undefined;
-  const categoryKind = category.data.accountingClass === 'income' ? 'income category' : 'spending category';
-  const accountPreposition = category.data.accountingClass === 'income' ? 'into' : 'from';
-  return `I added ${category.data.name} as a new ${categoryKind} and recorded ${journal.transactionCurrency} ${amount} ${accountPreposition} ${paymentAccountName} on ${journal.occurredOn} under ${category.data.name}.`;
 }
 
 class InternalIdentifierResponseError extends Error {
@@ -1636,82 +2008,18 @@ function checkedResponseMismatchCategory(
   result: TeamResultEnvelopeV2,
 ): CheckedResponseMismatchCategory | undefined {
   if (result.team !== 'query' || result.effect.state !== 'none') return undefined;
-  if (/\bwould you like\b[\s\S]{0,160}\b(?:proceed|create|record|capture|set up)\b/i.test(body)
-    || /\b(?:being|still)\s+(?:created|recorded|captured|set up)\b/i.test(body)
-    || /\bproceed with\s+(?:capturing|recording|creating|setting up)\b/i.test(body)) {
+  if (containsPhraseWithin(body, 'would you like', ['proceed', 'create', 'record', 'capture', 'set up'], 160)
+    || containsAnyPhrase(body, ['being created', 'being recorded', 'being captured', 'being set up', 'still created', 'still recorded', 'still captured', 'still set up'])
+    || containsAnyPhrase(body, ['proceed with capturing', 'proceed with recording', 'proceed with creating', 'proceed with setting up'])) {
     return 'query_mutation_state_conflict';
   }
-  const directionRequested = /\b(?:debit(?:ed)?|credit(?:ed)?|ledger direction|posting direction)\b/i
-    .test(message.body);
-  const directionClaimed = /\b(?:debited|credited)\b|\b(?:debit|credit)\s+(?:posting|entry|direction)\b/i
-    .test(body);
+  const directionRequested = containsAnyWord(message.body, ['debit', 'debited', 'credit', 'credited'])
+    || containsAnyPhrase(message.body, ['ledger direction', 'posting direction']);
+  const directionClaimed = containsAnyWord(body, ['debited', 'credited'])
+    || containsAnyPhrase(body, ['debit posting', 'debit entry', 'debit direction', 'credit posting', 'credit entry', 'credit direction']);
   return !directionRequested && directionClaimed
     ? 'query_unrequested_posting_direction'
     : undefined;
-}
-
-function checkedResultFallback(result: TeamResultEnvelopeV2): string | undefined {
-  if (result.team !== 'query' || result.status !== 'verified' || result.effect.state !== 'none') {
-    return undefined;
-  }
-  return categorizedTransactionFallback(finalSynthesisTeamResultView(result));
-}
-
-function categorizedTransactionFallback(view: FinalSynthesisTeamResultView): string | undefined {
-  const rows = view.checkedData.flatMap((data) => data.rows);
-  const categories = rows.filter((row) => {
-    const accountingClass = queryRowText(row, 'accounting class');
-    return accountingClass === 'expense' || accountingClass === 'income';
-  });
-  const descriptions = categories.flatMap((category) => {
-    const amount = queryRowText(category, 'account native amount');
-    const currency = queryRowText(category, 'account native currency');
-    const date = queryRowText(category, 'effective on');
-    const categoryName = queryRowText(category, 'account name');
-    if (amount === undefined || currency === undefined || date === undefined || categoryName === undefined) return [];
-    const payment = rows.find((candidate) => {
-      const accountingClass = queryRowText(candidate, 'accounting class');
-      return (accountingClass === 'asset' || accountingClass === 'liability')
-        && queryRowText(candidate, 'effective on') === date
-        && queryRowText(candidate, 'account native amount') === amount
-        && queryRowText(candidate, 'account native currency') === currency
-        && queryRowText(candidate, 'description') === queryRowText(category, 'description');
-    });
-    const paymentName = payment === undefined ? undefined : queryRowText(payment, 'account name');
-    return [`${currency} ${displayDecimalAmount(amount)} transaction on ${date} under ${categoryName}${paymentName === undefined ? '' : `, using ${paymentName}`}`];
-  });
-  if (descriptions.length === 0) return undefined;
-  if (descriptions.length === 1) return `I found a ${descriptions[0]}.`;
-  return `I found these transactions:\n${descriptions.map((description) => `- ${description}`).join('\n')}`;
-}
-
-function queryRowText(
-  row: Record<string, string | number | boolean | null>,
-  key: string,
-): string | undefined {
-  const value = row[key];
-  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
-}
-
-function displayDecimalAmount(value: string): string {
-  if (!/^-?\d+(?:\.\d+)?$/.test(value)) return value;
-  return value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
-}
-
-function clarificationQuestions(teamResult: TeamResultEnvelopeV2): string[] {
-  const acceptedArtifactIds = new Set(teamResult.checkerVerdicts.flatMap((verdict) =>
-    verdict.verdict === 'accepted' ? [verdict.coveredArtifactId] : []));
-  return teamResult.makerArtifacts.flatMap((artifact) => {
-    if (!acceptedArtifactIds.has(artifact.artifactId)) return [];
-    const maker = isRecord(artifact.payload) ? artifact.payload : undefined;
-    const output = maker !== undefined && isRecord(maker.output) ? maker.output : undefined;
-    if (output === undefined || !Array.isArray(output.questions)) return [];
-    return output.questions.flatMap((question) => {
-      if (typeof question !== 'string') return [];
-      const safeQuestion = userFacingText(question);
-      return safeQuestion === undefined ? [] : [safeQuestion];
-    });
-  });
 }
 
 function finalSynthesisPrompt(

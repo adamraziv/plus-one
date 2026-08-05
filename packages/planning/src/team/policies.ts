@@ -20,7 +20,7 @@ export function createPlanningRuntimePolicies(models: {
       maxModelRequestRetries: 1,
       maxProcessorRetries: 0,
       maxSandboxReproductions: 0,
-      callDeadlineMs: 20_000,
+      callDeadlineMs: 30_000,
       teamDeadlineMs: 60_000,
       endToEndDeadlineMs: 90_000,
       maxOutputBytes: 128_000,

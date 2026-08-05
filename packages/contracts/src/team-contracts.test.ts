@@ -141,13 +141,47 @@ describe('team execution contracts', () => {
   });
 
   it('keeps lead recommendations typed and non-authoritative', () => {
+    const suggestedPlan = TeamLeadPlanSchemaV1.parse({
+      schemaName: 'team-lead-plan', schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{ workCellId: 'lookup', makerInput: { question: 'Compare two checked views.' } }],
+      stopCondition: { code: 'checked-comparison', description: 'Return checked comparison inputs.' },
+    });
     const invocation = TeamLeadInvocationSchemaV1.parse({
       schemaName: 'team-lead-invocation', schemaVersion: 1, ...identity, team: 'query',
       role: { roleName: 'query-lead', roleVersion: 1 }, selectedSkill: skill,
       request: { question: 'Compare two checked views.' },
       availableWorkCellIds: ['lookup'], availableStrategyNames: ['parallel-independent-makers'],
       policyLabels: ['financial-data'],
+      suggestedPlan,
+      executionState: {
+        schemaName: 'team-lead-execution-state',
+        schemaVersion: 1,
+        remainingAttempts: 1,
+        executions: [{
+          executionOrdinal: 1,
+          plan: suggestedPlan,
+          outcome: 'failed',
+          status: 'failed',
+          work: [{
+            taskId: identity.taskId,
+            workCellId: 'lookup',
+            outcome: 'failed',
+            status: 'failed',
+            failure: {
+              phase: 'maker_generation',
+              role: { roleName: 'query-maker', roleVersion: 1 },
+              category: 'validation_rejected',
+              code: 'structured_result_not_submitted',
+              retry: 'safe',
+            },
+          }],
+        }],
+      },
     });
+    expect(invocation.suggestedPlan).toEqual(suggestedPlan);
+    expect(invocation.executionState.executions[0]?.work[0]?.failure?.code)
+      .toBe('structured_result_not_submitted');
     expect(TeamLeadPlanSchemaV1.parse({
       schemaName: 'team-lead-plan', schemaVersion: 1,
       recommendedStrategyName: invocation.availableStrategyNames[0],

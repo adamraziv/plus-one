@@ -14,6 +14,7 @@ export * from './json.js';
 export * from './money.js';
 export * from './mutations.js';
 export * from './opaque-identifiers.js';
+export * from './pending-interaction.js';
 export * from './planning.js';
 export {
   AnalystCalculationArtifactSchemaV1,
@@ -27,3 +28,4 @@ export * from './runtime.js';
 export * from './team-results.js';
 export * from './time.js';
 export * from './working-memory.js';
+export * from './working-memory-response.js';

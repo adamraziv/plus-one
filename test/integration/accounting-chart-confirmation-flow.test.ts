@@ -27,6 +27,7 @@ import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 import { seedAccountingProposal } from '../helpers/accounting-team.js';
 import { createExecutor } from '../helpers/checked-mutation.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
 
 const ids = {
   householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
@@ -200,7 +201,7 @@ function confirmationMessage(body: string) {
 }
 
 describe('accounting chart confirmation flow', () => {
-  it('creates test2 through the deterministic checked path without role-model calls', async () => {
+  it('creates test2 after the accounting lead accepts the deterministic suggestion', async () => {
     context = await createPostgresTestContext('accounting_chart_deterministic_flow');
     owner = new Pool({ connectionString: context.migratorUrl });
     const household = await owner.query<{ id: string }>(
@@ -213,8 +214,17 @@ describe('accounting chart confirmation flow', () => {
        VALUES ($1,$2,'Household Book')`,
       [ids.bookId, household.rows[0]!.id],
     );
-    const modelGenerate = vi.fn(async () => {
-      throw new Error('role model should not be called');
+    let leadInvocation: Record<string, unknown> | undefined;
+    const modelGenerate = vi.fn(async (
+      messages: readonly { content: string }[],
+      options: unknown,
+    ) => {
+      const invocation = JSON.parse(messages[0]?.content ?? '{}') as Record<string, unknown>;
+      if (invocation.schemaName !== 'team-lead-invocation') {
+        throw new Error('Only the accounting lead should be called for the deterministic chart path.');
+      }
+      leadInvocation = invocation;
+      return submitContractResult(options, teamLeadPlanDraft(invocation.suggestedPlan));
     });
     const pools = createDatabasePools(context.roleUrls);
     close = () => closeDatabasePools(pools);
@@ -255,7 +265,14 @@ describe('accounting chart confirmation flow', () => {
       signal: new AbortController().signal,
     });
 
-    expect(modelGenerate).not.toHaveBeenCalled();
+    expect(modelGenerate).toHaveBeenCalledTimes(1);
+    expect(leadInvocation).toMatchObject({
+      team: 'accounting',
+      suggestedPlan: {
+        work: [{ workCellId: 'chart-of-accounts' }],
+      },
+      executionState: { executions: [] },
+    });
     expect(pending).toMatchObject({
       status: 'partial',
       claims: [{

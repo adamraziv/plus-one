@@ -56,6 +56,7 @@ describe('planning team registrations', () => {
 
   it('exposes the budgeting and cash-flow work-cell catalogs', () => {
     expect(budgetingTeamDefinition.workCells.map((cell) => cell.workCellId)).toEqual([
+      'budgeting-intake',
       'budget-plan',
       'budget-scenarios',
     ]);
@@ -80,6 +81,43 @@ describe('planning team registrations', () => {
       work: [{ workCellId: 'budget-plan', makerInput: {} }],
       stopCondition: { code: 'checked-budget-plan', description: 'Return one checked budget proposal.' },
     }).work[0]!.workCellId).toBe('budget-plan');
+  });
+
+  it('routes materialized budgeting drafts only to checked intake', () => {
+    expect(validateBudgetingLeadPlan({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budgeting-intake-request',
+        schemaVersion: 1,
+        householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+        intent: 'budget_plan',
+        instruction: 'Help me create a budget.',
+        scopeKey: 'monthly',
+        known: {},
+      },
+    }, {
+      schemaName: 'team-lead-plan',
+      schemaVersion: 1,
+      recommendedStrategyName: 'single-maker-checker',
+      work: [{
+        workCellId: 'budgeting-intake',
+        makerInput: {
+          schemaName: 'budgeting-intake-request',
+          schemaVersion: 1,
+          householdId: 'hh_01JNZQ4A9B8C7D6E5F4G3H2J1K',
+          intent: 'budget_plan',
+          instruction: 'Help me create a budget.',
+          scopeKey: 'monthly',
+          known: {},
+        },
+      }],
+      stopCondition: {
+        code: 'budgeting-intake',
+        description: 'Return one checked budgeting clarification.',
+      },
+    }).work[0]!.workCellId).toBe('budgeting-intake');
   });
 
   it('allows cash-flow analysis to use repeated parallel analysis cells only', () => {

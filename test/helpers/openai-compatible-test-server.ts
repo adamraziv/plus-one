@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { teamLeadPlanDraft } from './contract-agent-test-double.js';
 
 const Provider = 'openai';
 const Model = 'plus-one-test-model';
@@ -95,6 +96,7 @@ async function handleRequest(
   }
   const submitResult = findFunctionTool(body, 'submitResult');
   if (submitResult !== undefined) {
+    const suggestedPlan = suggestedTeamLeadPlan(body);
     sendCompletion(response, {
       role: 'assistant',
       content: null,
@@ -103,7 +105,9 @@ async function handleRequest(
         type: 'function',
         function: {
           name: 'submitResult',
-          arguments: JSON.stringify(exampleForSchema(asRecord(submitResult.parameters))),
+          arguments: JSON.stringify(
+            suggestedPlan ?? exampleForSchema(asRecord(submitResult.parameters)),
+          ),
         },
       }],
     }, 'tool_calls');
@@ -114,6 +118,25 @@ async function handleRequest(
     role: 'assistant',
     content: 'Test model reply.',
   }, 'stop');
+}
+
+function suggestedTeamLeadPlan(body: Record<string, unknown>): unknown | undefined {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  for (const rawMessage of [...messages].reverse()) {
+    const message = asRecord(rawMessage);
+    if (message.role !== 'user' || typeof message.content !== 'string') continue;
+    try {
+      const invocation = asRecord(JSON.parse(message.content));
+      if (invocation.schemaName === 'team-lead-invocation'
+        && invocation.suggestedPlan !== null
+        && invocation.suggestedPlan !== undefined) {
+        return teamLeadPlanDraft(invocation.suggestedPlan);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

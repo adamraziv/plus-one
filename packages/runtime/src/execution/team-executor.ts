@@ -9,9 +9,15 @@ import type { AgentInvocationRunner } from './agent-invocation-runner.js';
 import type { RoleContextBuilder } from '../context/role-context-builder.js';
 import type { RuntimePolicyRegistry } from '../runtime-policy.js';
 import type { VerificationRuntime } from '../verification-runtime.js';
+import { normalizeCheckerFailure, normalizeExecutionFailure } from './execution-failure.js';
 import {
   assertMakerOutputSchemaIdentity, type CheckedWorkCellResult, type WorkCellDefinition,
 } from '../teams/definitions.js';
+
+const CheckerDecisionSchemaV1 = CheckerVerdictSchemaV1.pick({
+  verdict: true,
+  findings: true,
+}).strip();
 
 export interface TeamExecutionIdGenerator {
   nextArtifactId(): string;
@@ -47,7 +53,7 @@ export class TeamExecutor {
     }
     const makerPolicy = this.dependencies.policies.resolve(input.workCell.maker.runtimePolicy);
     const checkerPolicy = this.dependencies.policies.resolve(input.workCell.checker.runtimePolicy);
-    const attemptLimit = Math.min(makerPolicy.maxAttempts, checkerPolicy.maxAttempts);
+    const attemptLimit = 1;
     const deadlineAt = new Date(Date.now()
       + Math.min(makerPolicy.teamDeadlineMs, checkerPolicy.teamDeadlineMs)).toISOString();
     const teamAbortSignal = AbortSignal.any([
@@ -71,8 +77,6 @@ export class TeamExecutor {
     let makerOrdinal = 0;
     let checkerOrdinal = 0;
     let firstRound = true;
-    const rejectedArtifactHashes = new Set<string>();
-
     while (makerOrdinal < attemptLimit) {
       if (firstRound) {
         await this.dependencies.runtime.beginMaker(input);
@@ -87,6 +91,7 @@ export class TeamExecutor {
         }).strict(),
         output: input.workCell.makerOutputSchema as z.ZodType<JsonValue>,
       });
+      let makerFailurePhase: 'maker_generation' | 'maker_validation' = 'maker_generation';
       try {
         const invocation = MakerInvocationSchemaV1.parse({
           schemaName: 'maker-invocation', schemaVersion: 1,
@@ -106,7 +111,11 @@ export class TeamExecutor {
           }),
           outputSchema: makerArtifactSchema, abortSignal: teamAbortSignal,
         });
-        makerOutput = synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName);
+        makerFailurePhase = 'maker_validation';
+        makerOutput = retainPermittedMakerClaimEvidence(
+          synthesizeClaimsIfNeeded(makerOutput, input.workCell.outputSchemaIdentity.schemaName),
+          input.permittedEvidence,
+        );
         assertMakerOutputSchemaIdentity(makerOutput.outputSchema,
           input.workCell.outputSchemaIdentity);
         input.workCell.makerOutputSchema.parse(makerOutput.output);
@@ -117,10 +126,10 @@ export class TeamExecutor {
             expectedFrom: 'maker_running', failureCategory: 'cancelled', resumable: false });
           throw error;
         }
-        if (makerOrdinal < attemptLimit) continue;
         await this.dependencies.runtime.fail({ householdId: input.householdId, taskId: input.taskId,
           expectedFrom: 'maker_running', failureCategory: 'runtime_failure', resumable: false });
-        return failedResult(input, makerArtifacts, checkerVerdicts, error);
+        return failedResult(input, makerArtifacts, checkerVerdicts, error, makerFailurePhase,
+          input.workCell.maker.identity);
       }
 
       const makerArtifact = await this.dependencies.runtime.validateMaker({
@@ -129,24 +138,6 @@ export class TeamExecutor {
         schema: { schemaName: 'maker-artifact', schemaVersion: 1 }, payload: makerOutput,
       });
       makerArtifacts.push(makerArtifact);
-      if (rejectedArtifactHashes.has(makerArtifact.artifactHash)) {
-        const error = new PlusOneError({
-          category: 'checker_rejected',
-          code: 'revision_no_progress',
-          message: 'Revision reproduced the previously rejected maker artifact.',
-          retry: 'never',
-          receiptLookupRequired: false,
-          details: { taskId: input.taskId },
-        });
-        await this.dependencies.runtime.fail({
-          householdId: input.householdId,
-          taskId: input.taskId,
-          expectedFrom: 'maker_validated',
-          failureCategory: 'checker_rejected',
-          resumable: false,
-        });
-        return failedResult(input, makerArtifacts, checkerVerdicts, error);
-      }
       await this.dependencies.runtime.beginChecker(input);
 
       let verdict: CheckerVerdictV1 | undefined;
@@ -162,14 +153,19 @@ export class TeamExecutor {
           requiredOutputSchema: { schemaName: 'checker-verdict', schemaVersion: 1 },
         });
         try {
-          verdict = await this.dependencies.runner.run({
+          const decision = await this.dependencies.runner.run({
             householdId: input.householdId, taskId: input.taskId, role: input.workCell.checker,
             attemptOrdinal: checkerOrdinal,
             context: this.dependencies.contexts.forChecker({
               team: input.team, role: input.workCell.checker.identity,
               selectedSkill: input.selectedSkill, verificationTask,
             }),
-            outputSchema: CheckerVerdictSchemaV1, abortSignal: teamAbortSignal,
+            outputSchema: CheckerDecisionSchemaV1, abortSignal: teamAbortSignal,
+          });
+          verdict = CheckerVerdictSchemaV1.parse({
+            ...decision,
+            coveredArtifactId: makerArtifact.artifactId,
+            coveredArtifactHash: makerArtifact.artifactHash,
           });
         } catch (error) {
           if (error instanceof PlusOneError && error.code === 'agent_call_cancelled') {
@@ -177,10 +173,10 @@ export class TeamExecutor {
               expectedFrom: 'checker_running', failureCategory: 'cancelled', resumable: false });
             throw error;
           }
-          if (checkerOrdinal < attemptLimit) continue;
           await this.dependencies.runtime.fail({ householdId: input.householdId, taskId: input.taskId,
             expectedFrom: 'checker_running', failureCategory: 'runtime_failure', resumable: false });
-          return failedResult(input, makerArtifacts, checkerVerdicts, error);
+          return failedResult(input, makerArtifacts, checkerVerdicts, error, 'checker_generation',
+            input.workCell.checker.identity);
         }
       }
       if (verdict === undefined) throw new Error('Checker attempt accounting failed');
@@ -198,12 +194,6 @@ export class TeamExecutor {
       });
       checkerVerdicts.push(verdict);
 
-      if (verdict.verdict === 'revision_requested' && makerOrdinal < attemptLimit) {
-        rejectedArtifactHashes.add(makerArtifact.artifactHash);
-        await this.dependencies.runtime.requestRevision(input);
-        await this.dependencies.runtime.beginMaker(input);
-        continue;
-      }
       let terminal: { status: 'verified' | 'partial' | 'insufficient_evidence' | 'conflicted' | 'failed';
         reason: string; outstanding: string[] };
       try {
@@ -248,6 +238,9 @@ export class TeamExecutor {
         workCellId: input.workCell.workCellId, status: terminal.status, completionState,
         effectRequirement,
         makerArtifacts, checkerVerdicts,
+        ...(terminal.status === 'failed'
+          ? { failure: normalizeCheckerFailure({ verdict, role: input.workCell.checker.identity }) }
+          : {}),
         completionReason: terminal.reason, outstanding: terminal.outstanding,
         ...(verdict.verdict === 'accepted' ? { acceptedMaker: makerOutput } : {}),
       };
@@ -320,6 +313,8 @@ function failedResult(
   makerArtifacts: readonly ArtifactEnvelopeV1[],
   checkerVerdicts: readonly CheckerVerdictV1[],
   error: unknown,
+  phase: 'maker_generation' | 'maker_validation' | 'checker_generation' | 'checker_validation' | 'execution',
+  role: WorkCellDefinition['maker']['identity'],
 ): CheckedWorkCellResult {
   const plusOne = error instanceof PlusOneError ? error : undefined;
   return {
@@ -332,6 +327,7 @@ function failedResult(
     effectRequirement: { kind: 'none' },
     makerArtifacts,
     checkerVerdicts,
+    failure: normalizeExecutionFailure({ error, phase, role }),
     completionReason: plusOne?.message ?? 'Work cell execution failed.',
     outstanding: plusOne === undefined ? [] : [plusOne.code],
   };
@@ -377,4 +373,19 @@ function assertMakerClaimsUsePermittedEvidence(
     receiptLookupRequired: false,
     details: { taskId, artifactIds: [...new Set(invalid)].join(',') },
   });
+}
+
+function retainPermittedMakerClaimEvidence(
+  makerOutput: MakerArtifactV1,
+  permittedEvidence: readonly ArtifactEnvelopeV1[],
+): MakerArtifactV1 {
+  const permitted = new Set(permittedEvidence.map((artifact) => artifact.artifactId));
+  return {
+    ...makerOutput,
+    claims: makerOutput.claims.map((claim) => ({
+      ...claim,
+      evidenceArtifactIds: claim.evidenceArtifactIds.filter((artifactId) =>
+        permitted.has(artifactId)),
+    })),
+  };
 }

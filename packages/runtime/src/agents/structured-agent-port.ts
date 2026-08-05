@@ -7,6 +7,10 @@ export interface StructuredAgentCall<Output> extends ContractualRoleContext {
   agentId: string;
   modelId: string;
   roleKind: TeamRoleKind;
+  memoryContext?: {
+    threadId: string;
+    resourceId: string;
+  };
   outputSchema: z.ZodType<Output>;
   maxSteps: number;
   maxRetries: number;

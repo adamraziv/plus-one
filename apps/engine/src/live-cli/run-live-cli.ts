@@ -79,7 +79,7 @@ export async function runLiveCli(dependencies: RunLiveCliDependencies = {}): Pro
       await closeDatabasePools(pools);
     }
   } finally {
-    logging.close();
+    await logging.close();
   }
 }
 

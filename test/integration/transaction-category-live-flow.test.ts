@@ -5,6 +5,7 @@ import {
 } from '@plus-one/accounting';
 import {
   InboundChannelMessageSchemaV1,
+  TeamLeadInvocationSchemaV1,
   TeamResultEnvelopeSchemaV2,
   type JsonValue,
 } from '@plus-one/contracts';
@@ -14,6 +15,8 @@ import { OrchestratorAgent } from '../../apps/engine/src/agents/orchestrator.js'
 import { createMastra } from '../../apps/engine/src/mastra.js';
 import { createOrchestratorLoopWorkflow, runOrchestratorLoop } from '../../apps/engine/src/workflows/orchestrator-loop.js';
 import { createTeamRuntime } from '../../apps/engine/src/team-runtime.js';
+import { submitContractResult, teamLeadPlanDraft } from '../helpers/contract-agent-test-double.js';
+import { submitOrchestratorFinalResponse } from '../helpers/orchestrator-agent-test-double.js';
 import { createPostgresTestContext, type PostgresTestContext } from '../helpers/postgres.js';
 
 const ids = {
@@ -46,6 +49,15 @@ describe('transaction category live flow', () => {
     await seedPrerequisites(owner);
     pools = createDatabasePools(context.roleUrls);
 
+    const accountingLeadGenerate = vi.fn(async (
+      messages: readonly { content: string }[],
+      options: unknown,
+    ) => {
+      const invocation = TeamLeadInvocationSchemaV1.parse(
+        JSON.parse(messages[0]?.content ?? '{}'),
+      );
+      return submitContractResult(options, teamLeadPlanDraft(invocation.suggestedPlan));
+    });
     const agentSystem = createAgentSystem({
       models: {
         lead: { id: 'provider/lead', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -55,30 +67,44 @@ describe('transaction category live flow', () => {
       },
       queryTools: {},
       queryAgentFactory: () => ({ generate: vi.fn() } as never),
-      accountingAgentFactory: () => ({ generate: vi.fn() } as never),
+      accountingAgentFactory: (config) => ({
+        ...config,
+        generate: config.id === 'accounting-lead' ? accountingLeadGenerate : vi.fn(),
+      } as never),
       agentFactory: () => ({ generate: vi.fn() } as never),
     });
     const teamRuntime = createTeamRuntime({ pools, agentSystem });
-    const generate = vi.fn(async (prompt: unknown, options?: { toolChoice?: unknown }) => {
-      if (options?.toolChoice === 'none') {
-        const text = typeof prompt === 'string' && prompt.includes('Eating Out')
-          ? 'I recorded IDR 50000 from Bank ABC on 2026-07-16 under Eating Out.'
-          : 'I have a checked result ready.';
-        return { text };
+    const generate = vi.fn(async (prompt: unknown, rawOptions: unknown) => {
+      const options = rawOptions as Record<string, unknown>;
+      if (Array.isArray(options.activeTools) && options.activeTools.length === 0) {
+        const prepareStep = options.prepareStep as ((input: { stepNumber: number }) => Promise<{
+          tools: Record<string, { execute?: (input: unknown, context: unknown) => Promise<unknown> }>;
+        }>);
+        const prepared = await prepareStep({ stepNumber: 0 });
+        const submitResult = prepared.tools.submitResult;
+        if (submitResult?.execute === undefined) throw new Error('Expected the structured semantic result tool.');
+        await submitResult.execute({ result: { kind: 'resolve', decision: 'approve' } }, {});
+        return { steps: [{ finishReason: 'stop' }] };
       }
-      const body = typeof prompt === 'string' ? prompt.toLowerCase() : '';
+      if (typeof prompt === 'string' && prompt.endsWith('\nReturn only the user-facing reply text.')) {
+        const text = prompt.includes('"effectState":"persisted"')
+          ? 'I added Eating Out as a new spending category and recorded IDR 50000 from Bank ABC on 2026-07-16 under Eating Out.'
+          : 'I’ll add Eating Out as a new expense category with a normal debit balance in IDR, then record IDR 50000 from Bank ABC dated yesterday under Eating Out. Would you like me to proceed?';
+        return submitOrchestratorFinalResponse(options, text);
+      }
+      const body = JSON.stringify(prompt).toLowerCase();
       if (body.includes('add a transaction to bank abc')) {
-        await executeDelegate(orchestrator, {
+        const result = TeamResultEnvelopeSchemaV2.parse(await executeDelegate(orchestrator, {
           team: 'accounting',
           request: transactionDraft(
             'Add a transaction to Bank ABC.',
             { paymentAccountName: 'Bank ABC' },
           ),
-        });
-        return { text: 'I need the transaction details.' };
+        }));
+        return submitOrchestratorFinalResponse(options, result.outstanding.join('\n\n'));
       }
       if (body.includes('50k idr')) {
-        await executeDelegate(orchestrator, {
+        const result = TeamResultEnvelopeSchemaV2.parse(await executeDelegate(orchestrator, {
           team: 'accounting',
           request: transactionDraft(
             'Record IDR 50000 from Bank ABC under eating out yesterday.',
@@ -89,11 +115,11 @@ describe('transaction category live flow', () => {
               categoryName: 'eating out',
             },
           ),
-        });
-        return { text: 'I found the transaction details.' };
+        }));
+        return submitOrchestratorFinalResponse(options, result.outstanding.join('\n\n'));
       }
       await executeDelegate(orchestrator, { team: 'accounting', request: chartDraft() });
-      return { text: 'I have a category change ready.' };
+      return submitOrchestratorFinalResponse(options, 'I’ll add Eating Out as a new expense category with a normal debit balance in IDR, then record IDR 50000 from Bank ABC dated yesterday under Eating Out. Would you like me to proceed?');
     });
     const orchestrator = new OrchestratorAgent({
       model: { id: 'provider/orchestrator', endpoint: 'https://llm.example.test/v1', apiKey: 'test-api-key' },
@@ -149,6 +175,7 @@ describe('transaction category live flow', () => {
        WHERE household_id = (SELECT id FROM operations.households WHERE household_id = $1)`,
       [ids.householdId],
     )).rows).toEqual([{ count: '2' }]);
+    expect(accountingLeadGenerate).toHaveBeenCalledTimes(4);
 
     console.info(`\n${transcript.join('\n\n')}\n`);
   });

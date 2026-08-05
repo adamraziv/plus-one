@@ -11,6 +11,7 @@ import {
   decodeStoredWorkingMemory,
   proposalExpired,
   resolveWorkingMemoryMutation,
+  workingMemoryMutationEffectIsPresent,
   verifyWorkingMemoryReadback,
   visibleWorkingMemoryEntries,
   workingMemoryRevision,
@@ -273,6 +274,60 @@ describe('working memory document', () => {
       principalRef,
     });
     expect(cleared).toEqual({ status: 'succeeded', document: { version: 1, entries: {} } });
+  });
+
+  it('recognizes every mutation effect target state without the pre-mutation document', () => {
+    const empty = FlexibleWorkingMemorySchema.parse({ version: 1, entries: {} });
+    const createMutation: ResolvedWorkingMemoryMutation = {
+      operation: 'create',
+      entryId: nextId,
+      entry: {
+        kind: 'goal',
+        summary: 'Build a six-month emergency fund.',
+        scope: 'household',
+        value: { target: 'six months' },
+      },
+    };
+    const created = applyResolvedWorkingMemoryMutation({
+      document: empty,
+      mutation: createMutation,
+      principalRef,
+    });
+    expect(created.status).toBe('succeeded');
+    if (created.status !== 'succeeded') throw new Error('Expected create application');
+    expect(workingMemoryMutationEffectIsPresent({ document: created.document, mutation: createMutation })).toBe(true);
+
+    const replaceMutation: ResolvedWorkingMemoryMutation = {
+      operation: 'replace',
+      entryId: goalId,
+      entry: {
+        kind: 'goal',
+        summary: 'Buy a BMW X7 within two years.',
+        scope: 'household',
+        value: { goal: 'BMW X7' },
+      },
+    };
+    const replaced = applyResolvedWorkingMemoryMutation({
+      document: documentFixture(),
+      mutation: replaceMutation,
+      principalRef,
+    });
+    expect(replaced.status).toBe('succeeded');
+    if (replaced.status !== 'succeeded') throw new Error('Expected replace application');
+    expect(workingMemoryMutationEffectIsPresent({ document: replaced.document, mutation: replaceMutation })).toBe(true);
+
+    const deleteMutation: ResolvedWorkingMemoryMutation = { operation: 'delete', entryId: goalId };
+    const deleted = applyResolvedWorkingMemoryMutation({
+      document: documentFixture(),
+      mutation: deleteMutation,
+      principalRef,
+    });
+    expect(deleted.status).toBe('succeeded');
+    if (deleted.status !== 'succeeded') throw new Error('Expected delete application');
+    expect(workingMemoryMutationEffectIsPresent({ document: deleted.document, mutation: deleteMutation })).toBe(true);
+
+    const clearMutation: ResolvedWorkingMemoryMutation = { operation: 'clear' };
+    expect(workingMemoryMutationEffectIsPresent({ document: empty, mutation: clearMutation })).toBe(true);
   });
 
   it('rejects stale, unknown, invalid, unauthorized, and expired mutations without a document', () => {
