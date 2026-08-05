@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/github/license/adamraziv/plus-one)](LICENSE)
 [![Contributing](https://img.shields.io/badge/contributing-guide-blue)](CONTRIBUTING.md)
 
-Plus One is an open-source, self-hosted household finance agent for couples. The v0.1.0 production channel is Telegram; channel boundaries are designed for additional integrations.
+Plus One is an open-source, self-hosted household finance agent for couples. The v0.3.0 production channel is Telegram; channel boundaries are designed for additional integrations.
 
 Agents can analyze and propose, but deterministic services and PostgreSQL constraints decide what is committed.
 
@@ -240,6 +240,6 @@ plus-one live
 
 ## Release Status
 
-v0.1.0 is the first public development release. It provides a working self-hosted Telegram finance flow, while APIs, configuration, and operational behavior may still change before 1.0.
+v0.3.0 is the current public development release. It provides a working self-hosted Telegram finance flow, while APIs, configuration, and operational behavior may still change before 1.0.
 
 If you are new to the codebase, start with `apps/engine`, `packages/runtime`, `packages/database`, `packages/query`, and `packages/accounting`.
