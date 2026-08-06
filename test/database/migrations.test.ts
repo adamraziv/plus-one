@@ -48,6 +48,7 @@ describe('platform migrations', () => {
       '0022_agent_failure_diagnostics.sql',
       '0023_pending_interactions.sql',
       '0024_pending_interaction_resolution_decision.sql',
+      '0025_allow_overlapping_budget_versions.sql',
     ]);
     expect(await runMigrations(options)).toEqual([]);
     await expect(verifyMigrations(options)).resolves.toBeUndefined();
