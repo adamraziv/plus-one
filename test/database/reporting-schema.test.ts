@@ -56,6 +56,36 @@ describe('reporting schema', () => {
       expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.category_spend_monthly');
       expect(metadata.rows).toHaveLength(14);
 
+      const budgetVarianceColumns = await owner.query<{ column_name: string }>(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema='reporting' AND table_name='budget_variance'
+         ORDER BY ordinal_position`,
+      );
+      expect(budgetVarianceColumns.rows.map((row) => row.column_name)).toEqual([
+        'household_id',
+        'scope_key',
+        'category_key',
+        'period_start',
+        'period_end',
+        'planned_amount',
+        'planned_currency',
+        'actual_amount',
+        'budget_version_id',
+        'budget_name',
+      ]);
+
+      const budgetVarianceMetadata = await owner.query<{ grain: string[] }>(
+        `SELECT grain FROM reporting.relation_metadata
+         WHERE relation_name='reporting.budget_variance'`,
+      );
+      expect(budgetVarianceMetadata.rows[0]?.grain).toEqual([
+        'household',
+        'budget version',
+        'budget category',
+        'period',
+      ]);
+
       const currentBalanceHousehold = await owner.query<{ data_type: string }>(
         `SELECT data_type FROM information_schema.columns
          WHERE table_schema='reporting' AND table_name='current_balances' AND column_name='household_id'`,

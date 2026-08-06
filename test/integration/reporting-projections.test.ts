@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
+import { ActivateBudgetProposalSchemaV1 } from '@plus-one/contracts';
 import { createAccountingJournalMutationHandler } from '@plus-one/accounting';
+import { BudgetRepository } from '@plus-one/planning';
 import {
   ProjectionFinalizer,
   ProjectionHealthRepository,
@@ -51,6 +53,96 @@ describe('reporting projections', () => {
       await client.query('ROLLBACK');
       throw error;
     }
+  });
+
+  it('keeps overlapping budget variance rows distinct', async () => {
+    context = await createPostgresTestContext('reporting_budget_overlap');
+    owner = new Pool({ connectionString: context.migratorUrl });
+    const seeded = await seedPostedJournalInput(owner);
+    accounting = new Pool({ connectionString: context.roleUrls.accounting });
+    client = await accounting.connect();
+    const handler = createAccountingJournalMutationHandler({
+      posting: seeded.postingService(new ProjectionWriter()),
+    });
+
+    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+    await handler.execute(client, seeded.workResult, seeded.commandContext);
+    await client.query('COMMIT');
+    client.release();
+    client = undefined;
+
+    const foodAccount = await owner.query<{ id: string }>(
+      `SELECT id::text
+       FROM accounting.accounts
+       WHERE household_id=$1 AND account_id=$2`,
+      [seeded.householdDbId, seeded.foodAccountId],
+    );
+    const foodAccountDbId = foodAccount.rows[0]?.id;
+    if (foodAccountDbId === undefined) throw new Error('Food account was not seeded');
+
+    const budgetClient = await owner.connect();
+    try {
+      await budgetClient.query('BEGIN');
+      const budgets = new BudgetRepository();
+      await budgets.activate(budgetClient, ActivateBudgetProposalSchemaV1.parse({
+        schemaName: 'activate-budget-proposal',
+        schemaVersion: 1,
+        householdId: seeded.householdId,
+        scopeKey: 'monthly',
+        name: 'Base budget',
+        validFrom: '2026-06-01',
+        validTo: '2026-06-30',
+        categories: [{ categoryKey: 'food', name: 'Food' }],
+        allocations: [{
+          categoryKey: 'food',
+          periodStart: '2026-06-01',
+          periodEnd: '2026-06-30',
+          amount: { amount: '800.00', currency: 'USD' },
+        }],
+        mappings: [{ categoryKey: 'food', accountId: foodAccountDbId, direction: 'expense', validFrom: '2026-06-01' }],
+      }), seeded.commandContext);
+      await budgets.activate(budgetClient, ActivateBudgetProposalSchemaV1.parse({
+        schemaName: 'activate-budget-proposal',
+        schemaVersion: 1,
+        householdId: seeded.householdId,
+        scopeKey: 'monthly',
+        name: 'Alternative budget',
+        validFrom: '2026-06-15',
+        validTo: '2026-06-30',
+        categories: [{ categoryKey: 'food', name: 'Food' }],
+        allocations: [{
+          categoryKey: 'food',
+          periodStart: '2026-06-15',
+          periodEnd: '2026-06-30',
+          amount: { amount: '600.00', currency: 'USD' },
+        }],
+        mappings: [{ categoryKey: 'food', accountId: foodAccountDbId, direction: 'expense', validFrom: '2026-06-01' }],
+      }), seeded.commandContext);
+      await budgetClient.query('COMMIT');
+    } catch (error) {
+      await budgetClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      budgetClient.release();
+    }
+
+    const rows = await owner.query<{
+      budget_version_id: string;
+      budget_name: string;
+      planned_amount: string;
+      actual_amount: string;
+    }>(
+      `SELECT budget_version_id, budget_name, planned_amount::text, actual_amount
+       FROM reporting.budget_variance
+       WHERE household_id=$1
+       ORDER BY budget_name`,
+      [seeded.householdId],
+    );
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows.map((row) => row.budget_name)).toEqual(['Alternative budget', 'Base budget']);
+    expect(new Set(rows.rows.map((row) => row.budget_version_id)).size).toBe(2);
+    expect(rows.rows.map((row) => Number(row.planned_amount))).toEqual([600, 800]);
+    expect(rows.rows.map((row) => Number(row.actual_amount))).toEqual([20, 20]);
   });
 
   it('rolls back journal posting when projection write fails', async () => {
