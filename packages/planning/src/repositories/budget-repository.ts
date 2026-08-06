@@ -59,11 +59,30 @@ export class BudgetRepository {
       );
     }
     for (const mapping of input.mappings) {
+      const categoryId = categoryIds.get(mapping.categoryKey);
+      await client.query(
+        `SELECT id
+         FROM planning.budget_categories
+         WHERE household_id = $1 AND id = $2 AND archived_at IS NULL
+         FOR UPDATE`,
+        [householdId, categoryId],
+      );
       await client.query(
         `INSERT INTO planning.budget_category_account_mappings
          (household_id, category_id, account_id, direction, valid_from, valid_to)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [householdId, categoryIds.get(mapping.categoryKey), mapping.accountId, mapping.direction, mapping.validFrom, mapping.validTo ?? null],
+         SELECT $1,$2,$3,$4,$5,$6
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM planning.budget_category_account_mappings existing
+           WHERE existing.household_id = $1
+             AND existing.category_id = $2
+             AND existing.account_id = $3
+             AND existing.direction = $4
+             AND existing.valid_from = $5
+             AND existing.valid_to IS NOT DISTINCT FROM $6
+             AND existing.archived_at IS NULL
+         )`,
+        [householdId, categoryId, mapping.accountId, mapping.direction, mapping.validFrom, mapping.validTo ?? null],
       );
     }
     const auditRecordId = await audit(client, householdId, 'planning.budget_versions', version.rows[0]!.id, 'created', context, input);

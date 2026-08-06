@@ -554,7 +554,7 @@ async function materializeCashFlowLeadRequest(
   const draft = CashFlowRequestDraftSchemaV1.parse(parsed.request);
   const evidencePackage = await buildRuntimeEvidencePackage(pools, message, {
     relationName: 'reporting.budget_variance',
-    selectList: 'scope_key, category_key, period_start, period_end, planned_amount, planned_currency, actual_amount',
+    selectList: 'budget_version_id, budget_name, scope_key, category_key, period_start, period_end, planned_amount, planned_currency, actual_amount',
     businessQuestion: draft.objective,
     intendedUse: 'cash_flow_analysis',
     coverage: 'budget variance',

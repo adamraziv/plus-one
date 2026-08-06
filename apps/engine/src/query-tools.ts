@@ -74,11 +74,13 @@ const queryToolDefinitions: readonly QueryToolDefinitionWithUserFacingFields[] =
   {
     toolName: 'budget_variance',
     relationNames: ['reporting.budget_variance'],
-    sql: 'SELECT scope_key, category_key, period_start, period_end, planned_amount, planned_currency, actual_amount FROM reporting.budget_variance WHERE household_id = $1 LIMIT 100',
+    sql: 'SELECT budget_version_id, budget_name, scope_key, category_key, period_start, period_end, planned_amount, planned_currency, actual_amount FROM reporting.budget_variance WHERE household_id = $1 LIMIT 100',
     parameters: ['$1'],
     limit: 100,
     description: 'Read budget variance.',
     userFacingFields: [
+      'budget_version_id',
+      'budget_name',
       'scope_key',
       'category_key',
       'period_start',
