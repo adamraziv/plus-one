@@ -116,7 +116,12 @@ export function budgetingEvidenceCoversPaths(
 function requiredBudgetEvidencePaths(known: BudgetingKnownInputsV1): string[] {
   return [
     ...(known.priorities?.map((_priority, index) => `priorities[${index}]`) ?? []),
-    ...(known.timeframe === undefined ? [] : ['timeframe.start', 'timeframe.end']),
+    ...(known.timeframe === undefined
+      ? []
+      : [
+          'timeframe.start',
+          ...(known.timeframe.end === undefined ? [] : ['timeframe.end']),
+        ]),
     ...(known.targetAmount === undefined ? [] : ['targetAmount']),
     ...(known.categories?.map((_category, index) => `categories[${index}]`) ?? []),
   ];
@@ -148,7 +153,10 @@ function changedBudgetFactPaths(
     if (retained.timeframe === undefined || retained.timeframe.start !== current.timeframe.start) {
       paths.push('timeframe.start');
     }
-    if (retained.timeframe === undefined || retained.timeframe.end !== current.timeframe.end) {
+    if (
+      current.timeframe.end !== undefined
+      && (retained.timeframe === undefined || retained.timeframe.end !== current.timeframe.end)
+    ) {
       paths.push('timeframe.end');
     }
   }
@@ -178,7 +186,12 @@ function mergeBudgetFacts(
       : { priorities: mergeIndexedValues(retained.priorities, current.priorities) }),
     ...(current.timeframe === undefined
       ? (retained.timeframe === undefined ? {} : { timeframe: retained.timeframe })
-      : { timeframe: current.timeframe }),
+      : {
+          timeframe: {
+            ...retained.timeframe,
+            ...current.timeframe,
+          },
+        }),
     ...(current.targetAmount === undefined
       ? (retained.targetAmount === undefined ? {} : { targetAmount: retained.targetAmount })
       : { targetAmount: current.targetAmount }),

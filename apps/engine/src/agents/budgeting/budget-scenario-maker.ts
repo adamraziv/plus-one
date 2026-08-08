@@ -66,7 +66,9 @@ function deterministicScenarioArtifact(
   const { known } = request.data;
   const timeframe = known.timeframe === undefined
     ? 'the requested timeframe'
-    : `${known.timeframe.start} through ${known.timeframe.end}`;
+    : known.timeframe.end === undefined
+      ? `${known.timeframe.start} onward`
+      : `${known.timeframe.start} through ${known.timeframe.end}`;
   const priorities = known.priorities?.join(', ') ?? 'the stated priorities';
   const target = known.targetAmount === undefined
     ? ''

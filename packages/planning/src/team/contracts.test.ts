@@ -117,6 +117,12 @@ describe('planning team workflow contracts', () => {
     }).categories?.[0]?.name).toBe('Rent');
   });
 
+  it('accepts an open-ended budgeting timeframe', () => {
+    expect(BudgetingKnownInputsSchemaV1.parse({
+      timeframe: { start: '2026-08-01' },
+    }).timeframe).toEqual({ start: '2026-08-01' });
+  });
+
   it('separates clarification from executable or advisory outputs', () => {
     expect(PlanningClarificationSchemaV1.parse({
       schemaName: 'planning-clarification',

@@ -1423,6 +1423,68 @@ describe('budgetingIntakeForDraft', () => {
     });
   });
 
+  it('accepts a grounded open-ended timeframe after a budgeting clarification', () => {
+    const priorMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'savings, monthly, 2500000 idr, savings',
+    });
+    const priorRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: priorMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['savings'],
+          targetAmount: { amount: '2500000', currency: 'IDR' },
+          categories: [{ name: 'savings' }],
+          evidence: [
+            { path: 'priorities[0]', sourceQuote: 'savings', start: 0, end: 7 },
+            { path: 'targetAmount', sourceQuote: '2500000 idr', start: 18, end: 29 },
+            { path: 'categories[0]', sourceQuote: 'savings', start: 31, end: 38 },
+          ],
+        },
+      },
+    });
+    const continuation = budgetingContinuation(prepareBudgetingDraft(priorMessage, priorRequest));
+    const timeframeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'start this month until indefinitely',
+    });
+    const timeframeRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: timeframeMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          timeframe: { start: '2026-08-01' },
+          priorities: ['savings'],
+          targetAmount: { amount: '2500000', currency: 'IDR' },
+          categories: [{ name: 'savings' }],
+          evidence: [
+            { path: 'timeframe.start', sourceQuote: 'this month', start: 6, end: 16 },
+          ],
+        },
+      },
+    });
+
+    expect(prepareBudgetingDraft(timeframeMessage, timeframeRequest, continuation).request.known)
+      .toEqual({
+        timeframe: { start: '2026-08-01' },
+        priorities: ['savings'],
+        targetAmount: { amount: '2500000', currency: 'IDR' },
+        categories: [{ name: 'savings' }],
+      });
+    expect(budgetingIntakeForDraft(timeframeMessage, timeframeRequest, continuation)).toBeUndefined();
+  });
+
   it('rejects an ungrounded changed budget fact while retaining the canonical value', () => {
     const priorMessage = InboundChannelMessageSchemaV1.parse({
       ...message,
