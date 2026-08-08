@@ -72,6 +72,7 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
+import type { BudgetingContinuationV1 } from '../budgeting/budgeting-continuation.js';
 import {
   createFinalResponseSubmissionSession,
   finalResponseRepairError,
@@ -194,6 +195,7 @@ type OrchestratorInvocation = {
   delegationFailed: boolean;
   delegationValidationFailed: boolean;
   transactionCaptureContinuation?: TransactionCaptureContinuationV1;
+  budgetingContinuation?: BudgetingContinuationV1;
   workingMemoryInspection?: WorkingMemoryInspectionContext;
   pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
   channelEvents?: ChannelEventSink;
@@ -214,6 +216,7 @@ export type OrchestratorTurnResult =
       pendingMutation?: TeamResultEnvelopeV2;
       pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
       transactionContinuation?: TransactionCaptureContinuationV1;
+      budgetingContinuation?: BudgetingContinuationV1;
     };
 
 export interface WorkingMemoryResolutionResult {
@@ -983,6 +986,7 @@ export class OrchestratorAgent {
   async runTurn(input: {
     message: InboundChannelMessageV1;
     transactionContinuation?: TransactionCaptureContinuationV1;
+    budgetingContinuation?: BudgetingContinuationV1;
     signal?: AbortSignal;
   }): Promise<OrchestratorTurnResult> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
@@ -1009,6 +1013,9 @@ export class OrchestratorAgent {
       ...(input.transactionContinuation === undefined
         ? {}
         : { transactionCaptureContinuation: input.transactionContinuation }),
+      ...(input.budgetingContinuation === undefined
+        ? {}
+        : { budgetingContinuation: input.budgetingContinuation }),
       ...(this.dependencies.channelEvents === undefined ? {} : { channelEvents: this.dependencies.channelEvents }),
     };
     const logger = getLogger('runtime.orchestrator');
@@ -1037,7 +1044,13 @@ export class OrchestratorAgent {
               signal,
               (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
             );
-            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
+            return turnFromTeamResults(
+              message,
+              invocation.teamResults,
+              body,
+              invocation.transactionCaptureContinuation,
+              invocation.budgetingContinuation,
+            );
           };
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
@@ -1122,7 +1135,13 @@ export class OrchestratorAgent {
             const safeBody = invocation.memoryFailures.length === 0
               ? body
               : await this.ensureMemoryFailureResponse(message, body, invocation, signal);
-            return turnFromTeamResults(message, invocation.teamResults, safeBody, invocation.transactionCaptureContinuation);
+            return turnFromTeamResults(
+              message,
+              invocation.teamResults,
+              safeBody,
+              invocation.transactionCaptureContinuation,
+              invocation.budgetingContinuation,
+            );
           }
           if (invocation.memoryFailures.length !== 0) {
             const memorySafeBody = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
@@ -1761,6 +1780,7 @@ function turnFromTeamResults(
   teamResults: readonly TeamResultEnvelopeV2[],
   synthesizedBody: string,
   transactionContinuation?: TransactionCaptureContinuationV1,
+  budgetingContinuation?: BudgetingContinuationV1,
 ): OrchestratorTurnResult {
   const response = responseFromTeamResults(message, teamResults, synthesizedBody, transactionContinuation);
   const teamResult = selectTurnTeamResult(teamResults, transactionContinuation);
@@ -1776,6 +1796,9 @@ function turnFromTeamResults(
           kind: 'ask-user',
           response,
           ...(transactionContinuation === undefined ? {} : { transactionContinuation }),
+          ...(teamResult.team === 'budgeting' && budgetingContinuation !== undefined
+            ? { budgetingContinuation }
+            : {}),
         };
   }
   return { kind: 'final', response };

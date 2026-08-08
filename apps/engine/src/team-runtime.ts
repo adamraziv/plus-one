@@ -100,7 +100,10 @@ import {
 } from './tools/delegate-team-schemas.js';
 import { DefaultChartMutationRuntime } from './accounting/chart-mutation-runtime.js';
 import { withDefaultEvidenceHandle } from './query-tools.js';
-import { canonicalBudgetingDraft } from './budgeting/budgeting-request.js';
+import {
+  prepareBudgetingDraft,
+} from './budgeting/budgeting-request.js';
+import type { BudgetingContinuationV1 } from './budgeting/budgeting-continuation.js';
 
 const skills = [
   ...querySkills,
@@ -205,6 +208,7 @@ export function createTeamRuntime(input: {
               input.pools,
               runtimeInput.message,
               runtimeInput.request,
+              runtimeInput.budgetingContinuation,
             )
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
@@ -426,8 +430,9 @@ export async function normalizeAccountingLeadRequest(
 export function budgetingIntakeForDraft(
   message: InboundChannelMessageV1,
   request: BudgetingDelegateRequestV1,
+  continuation?: BudgetingContinuationV1,
 ) {
-  return budgetingIntakeForCanonicalDraft(message, canonicalBudgetingDraft(message, request));
+  return budgetingIntakeForCanonicalDraft(message, prepareBudgetingDraft(message, request, continuation));
 }
 
 function budgetingIntakeForCanonicalDraft(
@@ -463,9 +468,10 @@ export async function materializeBudgetingLeadRequest(
   pools: DatabasePools,
   message: InboundChannelMessageV1,
   request: JsonValue,
+  continuation?: BudgetingContinuationV1,
 ): Promise<JsonValue> {
   const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
-  const canonical = canonicalBudgetingDraft(message, parsed);
+  const canonical = prepareBudgetingDraft(message, parsed, continuation);
   const intake = budgetingIntakeForCanonicalDraft(message, canonical);
   if (intake !== undefined) {
     return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({

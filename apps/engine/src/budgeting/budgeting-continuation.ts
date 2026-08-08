@@ -59,9 +59,10 @@ export function budgetingContinuationIsCompatible(
   const parsed = BudgetingDelegateRequestSchemaV1.safeParse(request);
   if (!parsed.success || parsed.data.intent !== continuation.intent) return false;
   if (parsed.data.request.schemaName !== continuation.requestSchemaName) return false;
-  return parsed.data.intent === 'budget_plan'
-    ? parsed.data.request.scopeKey === continuation.scopeKey
-    : parsed.data.request.scenarioCount === continuation.scenarioCount;
+  return 'scopeKey' in continuation
+    ? parsed.data.intent === 'budget_plan' && parsed.data.request.scopeKey === continuation.scopeKey
+    : parsed.data.intent === 'budget_scenarios'
+      && parsed.data.request.scenarioCount === continuation.scenarioCount;
 }
 
 export function budgetingKnownInputs(
