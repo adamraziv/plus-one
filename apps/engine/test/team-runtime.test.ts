@@ -28,6 +28,7 @@ import { createChartMakerAgent } from '../src/agents/accounting/index.js';
 import {
   makerInputForLeadWorkItem,
   budgetingIntakeForDraft,
+  budgetingIntakeForPreparedDraft,
   normalizeAccountingLeadRequest,
   normalizeQueryLeadRequest,
   suggestedLeadPlanForRequest,
@@ -1475,7 +1476,8 @@ describe('budgetingIntakeForDraft', () => {
       },
     });
 
-    expect(prepareBudgetingDraft(timeframeMessage, timeframeRequest, continuation).request.known)
+    const prepared = prepareBudgetingDraft(timeframeMessage, timeframeRequest, continuation);
+    expect(prepared.request.known)
       .toEqual({
         timeframe: { start: '2026-08-01' },
         priorities: ['savings'],
@@ -1483,6 +1485,7 @@ describe('budgetingIntakeForDraft', () => {
         categories: [{ name: 'savings' }],
       });
     expect(budgetingIntakeForDraft(timeframeMessage, timeframeRequest, continuation)).toBeUndefined();
+    expect(budgetingIntakeForPreparedDraft(timeframeMessage, prepared)).toBeUndefined();
   });
 
   it('rejects an ungrounded changed budget fact while retaining the canonical value', () => {

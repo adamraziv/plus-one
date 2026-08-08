@@ -208,7 +208,6 @@ export function createTeamRuntime(input: {
               input.pools,
               runtimeInput.message,
               runtimeInput.request,
-              runtimeInput.budgetingContinuation,
             )
         : runtimeInput.team.team === 'query'
           ? await normalizeQueryLeadRequest(input.pools, runtimeInput.message, runtimeInput.request)
@@ -435,6 +434,13 @@ export function budgetingIntakeForDraft(
   return budgetingIntakeForCanonicalDraft(message, prepareBudgetingDraft(message, request, continuation));
 }
 
+export function budgetingIntakeForPreparedDraft(
+  message: InboundChannelMessageV1,
+  request: BudgetingDelegateRequestV1,
+) {
+  return budgetingIntakeForCanonicalDraft(message, request);
+}
+
 function budgetingIntakeForCanonicalDraft(
   message: InboundChannelMessageV1,
   request: BudgetingDelegateRequestV1,
@@ -468,11 +474,10 @@ export async function materializeBudgetingLeadRequest(
   pools: DatabasePools,
   message: InboundChannelMessageV1,
   request: JsonValue,
-  continuation?: BudgetingContinuationV1,
 ): Promise<JsonValue> {
   const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
-  const canonical = prepareBudgetingDraft(message, parsed, continuation);
-  const intake = budgetingIntakeForCanonicalDraft(message, canonical);
+  const canonical = parsed;
+  const intake = budgetingIntakeForPreparedDraft(message, canonical);
   if (intake !== undefined) {
     return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
       ...canonical,
