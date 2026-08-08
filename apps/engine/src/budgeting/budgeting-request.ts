@@ -6,7 +6,6 @@ import {
 } from '@plus-one/planning';
 import type { InboundChannelMessageV1 } from '@plus-one/contracts';
 import {
-  budgetingContinuation,
   budgetingContinuationIsCompatible,
   budgetingKnownInputs,
   type BudgetingContinuationV1,

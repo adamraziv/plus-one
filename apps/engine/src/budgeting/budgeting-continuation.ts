@@ -39,7 +39,8 @@ export function budgetingContinuation(
   request: BudgetingDelegateRequestV1,
 ): BudgetingContinuationV1 {
   const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
-  const { evidence: _evidence, ...known } = parsed.request.known;
+  const known = { ...parsed.request.known };
+  delete known.evidence;
   return BudgetingContinuationSchemaV1.parse({
     schemaName: 'budgeting-continuation',
     schemaVersion: 1,
