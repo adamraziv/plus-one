@@ -159,12 +159,12 @@ export function createOrchestratorLoopWorkflow(
       } else {
         result = await abortable(orchestrator.runTurn({
           message,
-            ...(suspended?.transactionContinuation === undefined
-              ? {}
-              : { transactionContinuation: suspended.transactionContinuation }),
-            ...(suspended?.budgetingContinuation === undefined
-              ? {}
-              : { budgetingContinuation: suspended.budgetingContinuation }),
+          ...(suspended?.transactionContinuation === undefined
+            ? {}
+            : { transactionContinuation: suspended.transactionContinuation }),
+          ...(suspended?.budgetingContinuation === undefined
+            ? {}
+            : { budgetingContinuation: suspended.budgetingContinuation }),
           ...optionalSignal(abortSignal),
         }), abortSignal) as OrchestratorTurnResult;
       }
