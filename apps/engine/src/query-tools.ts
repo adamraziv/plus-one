@@ -91,6 +91,15 @@ const queryToolDefinitions: readonly QueryToolDefinitionWithUserFacingFields[] =
     ],
   },
   {
+    toolName: 'budget_list',
+    relationNames: ['reporting.budget_list'],
+    sql: 'SELECT budget_version_id, budget_name, scope_key, valid_from, valid_to FROM reporting.budget_list WHERE household_id = $1 ORDER BY valid_from DESC, budget_version_id DESC LIMIT 100',
+    parameters: ['$1'],
+    limit: 100,
+    description: 'List active household budgets.',
+    userFacingFields: ['budget_name', 'scope_key', 'valid_from', 'valid_to'],
+  },
+  {
     toolName: 'savings_goal_progress',
     relationNames: ['reporting.savings_goal_progress'],
     sql: 'SELECT goal_key, current_amount, target_amount, target_date FROM reporting.savings_goal_progress WHERE household_id = $1 LIMIT 100',

@@ -13,6 +13,8 @@ const routes: Readonly<Record<string, QueryCoverageRoute>> = {
   'reporting.categorized_transactions': { relationName: 'reporting.categorized_transactions', toolName: 'categorized_transactions' },
   'category spend monthly': { relationName: 'reporting.category_spend_monthly', toolName: 'category_spend_monthly' },
   'reporting.category_spend_monthly': { relationName: 'reporting.category_spend_monthly', toolName: 'category_spend_monthly' },
+  'budget list': { relationName: 'reporting.budget_list', toolName: 'budget_list' },
+  'reporting.budget_list': { relationName: 'reporting.budget_list', toolName: 'budget_list' },
   'budget variance': { relationName: 'reporting.budget_variance', toolName: 'budget_variance' },
   'reporting.budget_variance': { relationName: 'reporting.budget_variance', toolName: 'budget_variance' },
   'savings goal progress': { relationName: 'reporting.savings_goal_progress', toolName: 'savings_goal_progress' },
