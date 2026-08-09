@@ -72,6 +72,7 @@ import {
   type WorkingMemoryInspectionContext,
 } from '../tools/working-memory.js';
 import type { TransactionCaptureContinuationV1 } from '../accounting/transaction-capture-continuation.js';
+import type { BudgetingContinuationV1 } from '../budgeting/budgeting-continuation.js';
 import {
   createFinalResponseSubmissionSession,
   finalResponseRepairError,
@@ -110,7 +111,7 @@ const orchestratorInstructions = [
   'For checked records facts, use team records-reporting with exact intent records_facts and nested request {"focus":"preserve the complete requested scope"}.',
   'For query, call delegateTeam with exactly {"team":"query","request":{"businessQuestion":"preserve the complete finance question","coverage":["one exact governed coverage label"],"desiredGrain":["household"]}} unless a full EvidenceRequestV1 is already available. Query request is flat: do not add intent or a nested request.',
   'When delegating query, include exact governed coverage, desiredGrain, and timeframe whenever they can be inferred from the user request.',
-  'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
+      'Coverage map: account lists -> account list; current balance questions -> balance snapshot; top expenses or spend by category this month -> category spend monthly; transaction-level spend history -> categorized transactions; budget lists -> budget list; budget vs actual -> budget variance; savings goals -> savings goal progress; debts -> debt progress; reconciliation -> reconciliation status; source sync freshness -> source freshness.',
   'Coverage labels must be copied verbatim from the coverage map as lowercase space-separated governed strings and must never be converted to underscore aliases; use "balance snapshot", never "balance_snapshot".',
   'Account existence or account inventory questions use account list coverage.',
   'Examples such as "show my accounts", "check my accounts", and "which accounts do I have" mean account list, even when phrased as a check.',
@@ -194,6 +195,7 @@ type OrchestratorInvocation = {
   delegationFailed: boolean;
   delegationValidationFailed: boolean;
   transactionCaptureContinuation?: TransactionCaptureContinuationV1;
+  budgetingContinuation?: BudgetingContinuationV1;
   workingMemoryInspection?: WorkingMemoryInspectionContext;
   pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
   channelEvents?: ChannelEventSink;
@@ -214,6 +216,7 @@ export type OrchestratorTurnResult =
       pendingMutation?: TeamResultEnvelopeV2;
       pendingWorkingMemoryMutation?: PendingWorkingMemoryMutation;
       transactionContinuation?: TransactionCaptureContinuationV1;
+      budgetingContinuation?: BudgetingContinuationV1;
     };
 
 export interface WorkingMemoryResolutionResult {
@@ -983,6 +986,7 @@ export class OrchestratorAgent {
   async runTurn(input: {
     message: InboundChannelMessageV1;
     transactionContinuation?: TransactionCaptureContinuationV1;
+    budgetingContinuation?: BudgetingContinuationV1;
     signal?: AbortSignal;
   }): Promise<OrchestratorTurnResult> {
     const message = InboundChannelMessageSchemaV1.parse(input.message);
@@ -1009,6 +1013,9 @@ export class OrchestratorAgent {
       ...(input.transactionContinuation === undefined
         ? {}
         : { transactionCaptureContinuation: input.transactionContinuation }),
+      ...(input.budgetingContinuation === undefined
+        ? {}
+        : { budgetingContinuation: input.budgetingContinuation }),
       ...(this.dependencies.channelEvents === undefined ? {} : { channelEvents: this.dependencies.channelEvents }),
     };
     const logger = getLogger('runtime.orchestrator');
@@ -1037,7 +1044,13 @@ export class OrchestratorAgent {
               signal,
               (submittedBody) => this.assertSubmittedResponse(message, invocation, submittedBody),
             );
-            return turnFromTeamResults(message, invocation.teamResults, body, invocation.transactionCaptureContinuation);
+            return turnFromTeamResults(
+              message,
+              invocation.teamResults,
+              body,
+              invocation.transactionCaptureContinuation,
+              invocation.budgetingContinuation,
+            );
           };
           let stepOrdinal = 0;
           let stepStartedAt = Date.now();
@@ -1122,7 +1135,13 @@ export class OrchestratorAgent {
             const safeBody = invocation.memoryFailures.length === 0
               ? body
               : await this.ensureMemoryFailureResponse(message, body, invocation, signal);
-            return turnFromTeamResults(message, invocation.teamResults, safeBody, invocation.transactionCaptureContinuation);
+            return turnFromTeamResults(
+              message,
+              invocation.teamResults,
+              safeBody,
+              invocation.transactionCaptureContinuation,
+              invocation.budgetingContinuation,
+            );
           }
           if (invocation.memoryFailures.length !== 0) {
             const memorySafeBody = await this.ensureMemoryFailureResponse(message, body, invocation, signal);
@@ -1761,6 +1780,7 @@ function turnFromTeamResults(
   teamResults: readonly TeamResultEnvelopeV2[],
   synthesizedBody: string,
   transactionContinuation?: TransactionCaptureContinuationV1,
+  budgetingContinuation?: BudgetingContinuationV1,
 ): OrchestratorTurnResult {
   const response = responseFromTeamResults(message, teamResults, synthesizedBody, transactionContinuation);
   const teamResult = selectTurnTeamResult(teamResults, transactionContinuation);
@@ -1776,6 +1796,9 @@ function turnFromTeamResults(
           kind: 'ask-user',
           response,
           ...(transactionContinuation === undefined ? {} : { transactionContinuation }),
+          ...(teamResult.team === 'budgeting' && budgetingContinuation !== undefined
+            ? { budgetingContinuation }
+            : {}),
         };
   }
   return { kind: 'final', response };

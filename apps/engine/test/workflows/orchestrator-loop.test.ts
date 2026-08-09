@@ -342,6 +342,53 @@ describe('orchestrator workflow loop', () => {
     }));
   });
 
+  it('persists budgeting continuation through clarification suspension and resume', async () => {
+    const suspend = vi.fn();
+    const budgetingContinuation = {
+      schemaName: 'budgeting-continuation' as const,
+      schemaVersion: 1 as const,
+      intent: 'budget_plan' as const,
+      requestSchemaName: 'budget-plan-request-draft' as const,
+      scopeKey: 'monthly',
+      known: { categories: [{ name: 'Jajan' }] },
+    };
+    const runTurn = vi.fn()
+      .mockResolvedValueOnce({
+        kind: 'ask-user' as const,
+        response: response('Which timeframe should I use?'),
+        budgetingContinuation,
+      })
+      .mockResolvedValueOnce({ kind: 'final' as const, response: response('Done.') });
+    const workflow = createOrchestratorLoopWorkflow({ runTurn } as never);
+    const step = workflow.steps[ORCHESTRATOR_LOOP_STEP_ID]!;
+
+    await step.execute({ inputData: message, suspend, abortSignal } as never);
+    expect(suspend).toHaveBeenCalledWith({
+      kind: 'clarification',
+      response: response('Which timeframe should I use?'),
+      budgetingContinuation,
+    });
+
+    const clarification = suspend.mock.calls[0]![0];
+    const next = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      externalMessageId: 'telegram-budgeting-2',
+      body: '2026-09-01 through 2026-09-30',
+    });
+    await step.execute({
+      inputData: message,
+      resumeData: next,
+      suspendData: clarification,
+      suspend,
+      abortSignal,
+    } as never);
+
+    expect(runTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      message: next,
+      budgetingContinuation,
+    }));
+  });
+
   it('cancels the active workflow run when the channel signal aborts', async () => {
     const controller = new AbortController();
     const cancel = vi.fn(async () => undefined);

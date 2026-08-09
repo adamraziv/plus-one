@@ -28,11 +28,16 @@ import { createChartMakerAgent } from '../src/agents/accounting/index.js';
 import {
   makerInputForLeadWorkItem,
   budgetingIntakeForDraft,
+  budgetingIntakeForPreparedDraft,
   normalizeAccountingLeadRequest,
   normalizeQueryLeadRequest,
   suggestedLeadPlanForRequest,
 } from '../src/team-runtime.js';
-import { budgetingEvidenceIsGrounded } from '../src/budgeting/budgeting-request.js';
+import {
+  budgetingEvidenceIsGrounded,
+  prepareBudgetingDraft,
+} from '../src/budgeting/budgeting-request.js';
+import { budgetingContinuation } from '../src/budgeting/budgeting-continuation.js';
 import {
   accountingRequestMaterializers,
   materializeAccountingLeadRequest,
@@ -1301,6 +1306,239 @@ describe('budgetingIntakeForDraft', () => {
 
     expect(BudgetingIntakeRequestSchemaV1.parse(budgetingIntakeForDraft(continuationMessage, request)).known)
       .toEqual(request.request.known);
+  });
+
+  it('carries the Issue 42 budget facts across clarification turns without reusing old evidence offsets', () => {
+    const firstMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'setup budget for jajan',
+    });
+    const firstRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: firstMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          categories: [{ name: 'Jajan' }],
+          evidence: [{ path: 'categories[0]', sourceQuote: 'jajan', start: 17, end: 22 }],
+        },
+      },
+    });
+    const firstContinuation = budgetingContinuation(prepareBudgetingDraft(firstMessage, firstRequest));
+
+    const secondMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'monthly cap, monthly, 200k idr',
+    });
+    const secondRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: secondMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['monthly cap'],
+          targetAmount: { amount: '200000', currency: 'IDR' },
+          categories: [{ name: 'Jajan' }],
+          evidence: [
+            { path: 'priorities[0]', sourceQuote: 'monthly cap', start: 0, end: 11 },
+            { path: 'targetAmount', sourceQuote: '200k idr', start: 22, end: 31 },
+          ],
+        },
+      },
+    });
+    const secondPrepared = prepareBudgetingDraft(secondMessage, secondRequest, firstContinuation);
+    expect(secondPrepared.request.known).toEqual({
+      priorities: ['monthly cap'],
+      targetAmount: { amount: '200000', currency: 'IDR' },
+      categories: [{ name: 'Jajan' }],
+    });
+    const secondContinuation = budgetingContinuation(secondPrepared);
+
+    const confirmationMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'correct',
+    });
+    const confirmationRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: confirmationMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['monthly cap'],
+          targetAmount: { amount: '200000', currency: 'IDR' },
+          categories: [{ name: 'Jajan' }],
+          evidence: [],
+        },
+      },
+    });
+    const confirmationPrepared = prepareBudgetingDraft(
+      confirmationMessage,
+      confirmationRequest,
+      secondContinuation,
+    );
+    expect(confirmationPrepared.request.known).toEqual(secondPrepared.request.known);
+
+    const timeframeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: '2026-09-01 through 2026-09-30',
+    });
+    const timeframeRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: timeframeMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          timeframe: { start: '2026-09-01', end: '2026-09-30' },
+          priorities: ['monthly cap'],
+          targetAmount: { amount: '200000', currency: 'IDR' },
+          categories: [{ name: 'Jajan' }],
+          evidence: [
+            { path: 'timeframe.start', sourceQuote: '2026-09-01', start: 0, end: 10 },
+            { path: 'timeframe.end', sourceQuote: '2026-09-30', start: 20, end: 30 },
+          ],
+        },
+      },
+    });
+    const complete = prepareBudgetingDraft(timeframeMessage, timeframeRequest, secondContinuation);
+    expect(complete.request.known).toEqual({
+      timeframe: { start: '2026-09-01', end: '2026-09-30' },
+      priorities: ['monthly cap'],
+      targetAmount: { amount: '200000', currency: 'IDR' },
+      categories: [{ name: 'Jajan' }],
+    });
+  });
+
+  it('accepts a grounded open-ended timeframe after a budgeting clarification', () => {
+    const priorMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'savings, monthly, 2500000 idr, savings',
+    });
+    const priorRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: priorMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          priorities: ['savings'],
+          targetAmount: { amount: '2500000', currency: 'IDR' },
+          categories: [{ name: 'savings' }],
+          evidence: [
+            { path: 'priorities[0]', sourceQuote: 'savings', start: 0, end: 7 },
+            { path: 'targetAmount', sourceQuote: '2500000 idr', start: 18, end: 29 },
+            { path: 'categories[0]', sourceQuote: 'savings', start: 31, end: 38 },
+          ],
+        },
+      },
+    });
+    const continuation = budgetingContinuation(prepareBudgetingDraft(priorMessage, priorRequest));
+    const timeframeMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'start this month until indefinitely',
+    });
+    const timeframeRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: timeframeMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          timeframe: { start: '2026-08-01' },
+          priorities: ['savings'],
+          targetAmount: { amount: '2500000', currency: 'IDR' },
+          categories: [{ name: 'savings' }],
+          evidence: [
+            { path: 'timeframe.start', sourceQuote: 'this month', start: 6, end: 16 },
+          ],
+        },
+      },
+    });
+
+    const prepared = prepareBudgetingDraft(timeframeMessage, timeframeRequest, continuation);
+    expect(prepared.request.known)
+      .toEqual({
+        timeframe: { start: '2026-08-01' },
+        priorities: ['savings'],
+        targetAmount: { amount: '2500000', currency: 'IDR' },
+        categories: [{ name: 'savings' }],
+      });
+    expect(budgetingIntakeForDraft(timeframeMessage, timeframeRequest, continuation)).toBeUndefined();
+    expect(budgetingIntakeForPreparedDraft(timeframeMessage, prepared)).toBeUndefined();
+  });
+
+  it('rejects an ungrounded changed budget fact while retaining the canonical value', () => {
+    const priorMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: '200k idr for jajan',
+    });
+    const priorRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: priorMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          targetAmount: { amount: '200000', currency: 'IDR' },
+          categories: [{ name: 'Jajan' }],
+          evidence: [
+            { path: 'targetAmount', sourceQuote: '200k idr', start: 0, end: 8 },
+            { path: 'categories[0]', sourceQuote: 'jajan', start: 14, end: 19 },
+          ],
+        },
+      },
+    });
+    const continuation = budgetingContinuation(prepareBudgetingDraft(priorMessage, priorRequest));
+    const correctionMessage = InboundChannelMessageSchemaV1.parse({
+      ...message,
+      body: 'correct',
+    });
+    const correctionRequest = BudgetingDelegateRequestSchemaV1.parse({
+      schemaName: 'budgeting-lead-request',
+      schemaVersion: 1,
+      intent: 'budget_plan',
+      request: {
+        schemaName: 'budget-plan-request-draft',
+        schemaVersion: 1,
+        instruction: correctionMessage.body,
+        scopeKey: 'monthly',
+        known: {
+          targetAmount: { amount: '250000', currency: 'IDR' },
+          categories: [{ name: 'Jajan' }],
+          evidence: [],
+        },
+      },
+    });
+
+    expect(prepareBudgetingDraft(correctionMessage, correctionRequest, continuation).request.known)
+      .toEqual({
+        targetAmount: { amount: '200000', currency: 'IDR' },
+        categories: [{ name: 'Jajan' }],
+      });
   });
 
   it('rejects budget evidence when the quote or offsets do not match the message', () => {

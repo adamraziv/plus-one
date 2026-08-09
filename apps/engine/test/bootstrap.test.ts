@@ -341,6 +341,7 @@ describe('engine scaffold', () => {
         query_account_list: expect.any(Object),
         query_current_balances: expect.any(Object),
         query_categorized_transactions: expect.any(Object),
+        query_budget_list: expect.any(Object),
         query_budget_variance: expect.any(Object),
         query_savings_goal_progress: expect.any(Object),
         query_debt_progress: expect.any(Object),

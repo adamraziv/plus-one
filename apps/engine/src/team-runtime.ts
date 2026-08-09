@@ -100,7 +100,10 @@ import {
 } from './tools/delegate-team-schemas.js';
 import { DefaultChartMutationRuntime } from './accounting/chart-mutation-runtime.js';
 import { withDefaultEvidenceHandle } from './query-tools.js';
-import { canonicalBudgetingDraft } from './budgeting/budgeting-request.js';
+import {
+  prepareBudgetingDraft,
+} from './budgeting/budgeting-request.js';
+import type { BudgetingContinuationV1 } from './budgeting/budgeting-continuation.js';
 
 const skills = [
   ...querySkills,
@@ -426,8 +429,16 @@ export async function normalizeAccountingLeadRequest(
 export function budgetingIntakeForDraft(
   message: InboundChannelMessageV1,
   request: BudgetingDelegateRequestV1,
+  continuation?: BudgetingContinuationV1,
 ) {
-  return budgetingIntakeForCanonicalDraft(message, canonicalBudgetingDraft(message, request));
+  return budgetingIntakeForCanonicalDraft(message, prepareBudgetingDraft(message, request, continuation));
+}
+
+export function budgetingIntakeForPreparedDraft(
+  message: InboundChannelMessageV1,
+  request: BudgetingDelegateRequestV1,
+) {
+  return budgetingIntakeForCanonicalDraft(message, request);
 }
 
 function budgetingIntakeForCanonicalDraft(
@@ -465,8 +476,8 @@ export async function materializeBudgetingLeadRequest(
   request: JsonValue,
 ): Promise<JsonValue> {
   const parsed = BudgetingDelegateRequestSchemaV1.parse(request);
-  const canonical = canonicalBudgetingDraft(message, parsed);
-  const intake = budgetingIntakeForCanonicalDraft(message, canonical);
+  const canonical = parsed;
+  const intake = budgetingIntakeForPreparedDraft(message, canonical);
   if (intake !== undefined) {
     return JSON.parse(JSON.stringify(MaterializedBudgetingLeadRequestSchemaV1.parse({
       ...canonical,

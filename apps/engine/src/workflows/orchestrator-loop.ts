@@ -20,6 +20,7 @@ import type { PendingInteractionRepository } from '@plus-one/database';
 import {
   TransactionCaptureContinuationSchemaV1,
 } from '../accounting/transaction-capture-continuation.js';
+import { BudgetingContinuationSchemaV1 } from '../budgeting/budgeting-continuation.js';
 import type { OrchestratorSessionMemoryPort } from '../memory/orchestrator-session-memory.js';
 import { runConversationTurn } from './conversation-turn-router.js';
 
@@ -33,6 +34,7 @@ export const OrchestratorSuspendPayloadSchemaV1 = z.discriminatedUnion('kind', [
     kind: z.literal('clarification'),
     response: OrchestratorFinalResponseSchemaV1,
     transactionContinuation: TransactionCaptureContinuationSchemaV1.optional(),
+    budgetingContinuation: BudgetingContinuationSchemaV1.optional(),
   }).strict(),
   z.object({
     kind: z.literal('mutation_confirmation'),
@@ -160,6 +162,9 @@ export function createOrchestratorLoopWorkflow(
           ...(suspended?.transactionContinuation === undefined
             ? {}
             : { transactionContinuation: suspended.transactionContinuation }),
+          ...(suspended?.budgetingContinuation === undefined
+            ? {}
+            : { budgetingContinuation: suspended.budgetingContinuation }),
           ...optionalSignal(abortSignal),
         }), abortSignal) as OrchestratorTurnResult;
       }
@@ -195,6 +200,9 @@ export function createOrchestratorLoopWorkflow(
               ...(result.transactionContinuation === undefined
                 ? {}
                 : { transactionContinuation: result.transactionContinuation }),
+              ...(result.budgetingContinuation === undefined
+                ? {}
+                : { budgetingContinuation: result.budgetingContinuation }),
             }
           : {
               kind: 'mutation_confirmation',

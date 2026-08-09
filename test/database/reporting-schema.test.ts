@@ -42,6 +42,7 @@ describe('reporting schema', () => {
         'categorized_transactions',
         'cash_flow_monthly',
         'obligation_occurrences',
+        'budget_list',
         'budget_variance',
         'savings_goal_progress',
         'debt_progress',
@@ -54,7 +55,22 @@ describe('reporting schema', () => {
       );
       expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.current_balances');
       expect(metadata.rows.map((row) => row.relation_name)).toContain('reporting.category_spend_monthly');
-      expect(metadata.rows).toHaveLength(14);
+      expect(metadata.rows).toHaveLength(15);
+
+      const budgetListColumns = await owner.query<{ column_name: string }>(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema='reporting' AND table_name='budget_list'
+         ORDER BY ordinal_position`,
+      );
+      expect(budgetListColumns.rows.map((row) => row.column_name)).toEqual([
+        'household_id',
+        'budget_version_id',
+        'budget_name',
+        'scope_key',
+        'valid_from',
+        'valid_to',
+      ]);
 
       const budgetVarianceColumns = await owner.query<{ column_name: string }>(
         `SELECT column_name
@@ -101,7 +117,8 @@ describe('reporting schema', () => {
     const owner = new Pool({ connectionString: context.migratorUrl });
     try {
       const privileges = await owner.query<{ can_select: boolean }>(
-        `SELECT has_table_privilege('plus_one_query','reporting.current_balances','SELECT') AS can_select`,
+        `SELECT has_table_privilege('plus_one_query','reporting.current_balances','SELECT')
+          AND has_table_privilege('plus_one_query','reporting.budget_list','SELECT') AS can_select`,
       );
       expect(privileges.rows[0]?.can_select).toBe(true);
     } finally {

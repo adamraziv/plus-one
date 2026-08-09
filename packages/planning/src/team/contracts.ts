@@ -44,7 +44,7 @@ export const BudgetingKnownInputsSchemaV1 = z.object({
   priorities: z.array(budgetText).min(1).max(20).optional(),
   timeframe: z.object({
     start: LocalDateSchema,
-    end: LocalDateSchema,
+    end: LocalDateSchema.optional(),
   }).strict().optional(),
   targetAmount: MoneySchemaV1.optional(),
   categories: z.array(z.object({
