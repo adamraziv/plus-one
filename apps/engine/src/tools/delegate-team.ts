@@ -11,6 +11,7 @@ import {
   type TeamResultEnvelopeV2,
 } from '@plus-one/contracts';
 import { internalImplementationDetailMatchCategory, type TeamDefinition } from '@plus-one/runtime';
+import { BudgetingDelegateRequestSchemaV1 } from '@plus-one/planning';
 import { isUserFacingQueryField } from '../query-tools.js';
 import { internalIdentifierMatchCategory } from '../safety/internal-identifier.js';
 import { AccountingDelegateRequestSchemaV1 } from '../accounting/accounting-lead-contracts.js';
@@ -19,6 +20,11 @@ import {
   type TransactionCaptureContinuationV1,
 } from '../accounting/transaction-capture-continuation.js';
 import type { TransactionCaptureRequestDraftV1 } from '../accounting/accounting-request-drafts.js';
+import {
+  budgetingContinuation,
+  type BudgetingContinuationV1,
+} from '../budgeting/budgeting-continuation.js';
+import { prepareBudgetingDraft } from '../budgeting/budgeting-request.js';
 import {
   DelegateTeamToolInputSchema,
   delegateTeamRequestCorrection,
@@ -32,6 +38,7 @@ export interface OrchestratorTeamRuntime {
     team: TeamDefinition;
     request: JsonValue;
     signal: AbortSignal;
+    budgetingContinuation?: BudgetingContinuationV1;
   }): Promise<TeamResultEnvelopeV2>;
   resumePendingMutation(input: {
     message: InboundChannelMessageV1;
@@ -177,6 +184,7 @@ export function createDelegateTeamTool(input: {
     delegationFailed: boolean;
     delegationValidationFailed: boolean;
     transactionCaptureContinuation?: TransactionCaptureContinuationV1;
+    budgetingContinuation?: BudgetingContinuationV1;
   } | undefined;
 }) {
   const teamCatalog = [...input.teams.values()]
@@ -245,7 +253,9 @@ export function createDelegateTeamTool(input: {
             : 'unknown',
         ), { cause: error });
       }
-      const request = requestWithTransactionContinuation(active, context.request);
+      const request = context.team === 'budgeting'
+        ? requestWithBudgetingContinuation(active, context.request)
+        : requestWithTransactionContinuation(active, context.request);
       active.delegationCount += 1;
       const team = input.teams.get(context.team);
       if (team === undefined) throw new Error(`Unknown team: ${context.team}`);
@@ -258,7 +268,19 @@ export function createDelegateTeamTool(input: {
           team,
           request: requestForRuntime(request),
           signal: active.signal,
+          ...(context.team === 'budgeting' && active.budgetingContinuation === undefined
+            ? {}
+            : context.team === 'budgeting'
+              ? { budgetingContinuation: active.budgetingContinuation }
+              : {}),
         }));
+        if (context.team === 'budgeting' && result.status === 'insufficient_evidence') {
+          const parsed = BudgetingDelegateRequestSchemaV1.safeParse(request);
+          if (parsed.success) active.budgetingContinuation = budgetingContinuation(parsed.data);
+          else delete active.budgetingContinuation;
+        } else {
+          delete active.budgetingContinuation;
+        }
         return result;
       } catch (error) {
         active.delegationFailed = true;
@@ -266,6 +288,21 @@ export function createDelegateTeamTool(input: {
       }
     },
   });
+}
+
+function requestWithBudgetingContinuation(
+  active: {
+    message: InboundChannelMessageV1;
+    budgetingContinuation?: BudgetingContinuationV1;
+  },
+  request: unknown,
+): unknown {
+  const parsed = BudgetingDelegateRequestSchemaV1.safeParse(request);
+  if (!parsed.success) {
+    delete active.budgetingContinuation;
+    return request;
+  }
+  return prepareBudgetingDraft(active.message, parsed.data, active.budgetingContinuation);
 }
 
 function requestWithTransactionContinuation(

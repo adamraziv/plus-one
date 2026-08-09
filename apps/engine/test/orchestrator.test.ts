@@ -77,6 +77,20 @@ const accountingTeam = {
   allowedStrategyNames: ['single-maker-checker'],
 } as TeamDefinition;
 
+const budgetingTeam = {
+  team: 'budgeting',
+  lead: {
+    identity: { roleName: 'budgeting-lead', roleVersion: 1 },
+    kind: 'lead',
+    agentId: 'budgeting-lead',
+    runtimePolicy: { policyName: 'budgeting-lead', policyVersion: 1 },
+  },
+  charter: 'Prepare checked household budgets.',
+  prohibitedBehavior: [],
+  workCells: [],
+  allowedStrategyNames: ['single-maker-checker'],
+} as TeamDefinition;
+
 function message(body: string) {
   return InboundChannelMessageSchemaV1.parse({
     schemaName: 'inbound-channel-message',
@@ -154,7 +168,7 @@ function pendingWorkingMemory(
   });
 }
 
-function teamResult(team: 'accounting' | 'query' = 'query') {
+function teamResult(team: 'accounting' | 'query' | 'budgeting' = 'query') {
   return TeamResultEnvelopeSchemaV2.parse({
     schemaName: 'team-result',
     schemaVersion: 2,
@@ -626,7 +640,7 @@ function emptyCurrentBalancesResult() {
   });
 }
 
-function insufficientEvidenceResult(team: 'accounting' | 'query' = 'accounting') {
+function insufficientEvidenceResult(team: 'accounting' | 'query' | 'budgeting' = 'accounting') {
   return TeamResultEnvelopeSchemaV2.parse({
     ...teamResult(team),
     status: 'insufficient_evidence',
@@ -3297,6 +3311,138 @@ describe('OrchestratorAgent', () => {
         }),
       }),
     }));
+  });
+
+  it('retains the budgeting draft across clarification turns when the model omits prior evidence', async () => {
+    const runTeamLead = vi.fn(async (input: Parameters<OrchestratorTeamRuntime['runTeamLead']>[0]) => {
+      void input;
+      return insufficientEvidenceResult('budgeting');
+    });
+    const generate = vi.fn()
+      .mockImplementationOnce(async (_prompt: unknown, options: unknown) => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'budgeting',
+          request: {
+            schemaName: 'budgeting-lead-request',
+            schemaVersion: 1,
+            intent: 'budget_plan',
+            request: {
+              schemaName: 'budget-plan-request-draft',
+              schemaVersion: 1,
+              instruction: 'setup budget for jajan',
+              scopeKey: 'monthly',
+              known: {
+                categories: [{ name: 'Jajan' }],
+                evidence: [{ path: 'categories[0]', sourceQuote: 'jajan', start: 17, end: 22 }],
+              },
+            },
+          },
+        });
+        return submitFinalResponse(options, 'Which priority, amount, and timeframe should I use?');
+      })
+      .mockImplementationOnce(async (_prompt: unknown, options: unknown) => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'budgeting',
+          request: {
+            schemaName: 'budgeting-lead-request',
+            schemaVersion: 1,
+            intent: 'budget_plan',
+            request: {
+              schemaName: 'budget-plan-request-draft',
+              schemaVersion: 1,
+              instruction: 'monthly cap, monthly, 200k idr',
+              scopeKey: 'monthly',
+              known: {
+                priorities: ['monthly cap'],
+                targetAmount: { amount: '200000', currency: 'IDR' },
+                categories: [{ name: 'Jajan' }],
+                evidence: [
+                  { path: 'priorities[0]', sourceQuote: 'monthly cap', start: 0, end: 11 },
+                  { path: 'targetAmount', sourceQuote: '200k idr', start: 22, end: 31 },
+                ],
+              },
+            },
+          },
+        });
+        return submitFinalResponse(options, 'What timeframe should I use?');
+      })
+      .mockImplementationOnce(async (_prompt: unknown, options: unknown) => {
+        await executeDelegate(orchestrator.agentTools.delegateTeam, {
+          team: 'budgeting',
+          request: {
+            schemaName: 'budgeting-lead-request',
+            schemaVersion: 1,
+            intent: 'budget_plan',
+            request: {
+              schemaName: 'budget-plan-request-draft',
+              schemaVersion: 1,
+              instruction: 'correct',
+              scopeKey: 'monthly',
+              known: {
+                priorities: ['monthly cap'],
+                targetAmount: { amount: '200000', currency: 'IDR' },
+                categories: [{ name: 'Jajan' }],
+                evidence: [],
+              },
+            },
+          },
+        });
+        return submitFinalResponse(options, 'What timeframe should I use?');
+      });
+    const orchestrator = singleLoopOrchestrator({
+      generate,
+      runTeamLead,
+      teams: [budgetingTeam],
+    });
+
+    const first = await orchestrator.runTurn({ message: message('setup budget for jajan') });
+    expect(first).toMatchObject({
+      kind: 'ask-user',
+      budgetingContinuation: { known: { categories: [{ name: 'Jajan' }] } },
+    });
+    if (first.kind !== 'ask-user' || first.budgetingContinuation === undefined) {
+      throw new Error('Expected a budgeting continuation after the first clarification.');
+    }
+
+    const second = await orchestrator.runTurn({
+      message: message('monthly cap, monthly, 200k idr'),
+      budgetingContinuation: first.budgetingContinuation,
+    });
+    expect(runTeamLead).toHaveBeenLastCalledWith(expect.objectContaining({
+      budgetingContinuation: first.budgetingContinuation,
+      request: expect.objectContaining({
+        request: expect.objectContaining({
+          known: {
+            priorities: ['monthly cap'],
+            targetAmount: { amount: '200000', currency: 'IDR' },
+            categories: [{ name: 'Jajan' }],
+          },
+        }),
+      }),
+    }));
+    expect(second).toMatchObject({
+      kind: 'ask-user',
+      budgetingContinuation: {
+        known: {
+          priorities: ['monthly cap'],
+          targetAmount: { amount: '200000', currency: 'IDR' },
+          categories: [{ name: 'Jajan' }],
+        },
+      },
+    });
+    if (second.kind !== 'ask-user' || second.budgetingContinuation === undefined) {
+      throw new Error('Expected the merged budgeting continuation after the second clarification.');
+    }
+
+    const third = await orchestrator.runTurn({
+      message: message('correct'),
+      budgetingContinuation: second.budgetingContinuation,
+    });
+    expect(third).toMatchObject({
+      kind: 'ask-user',
+      budgetingContinuation: second.budgetingContinuation,
+    });
+    expect(runTeamLead).toHaveBeenCalledTimes(3);
   });
 
   it('rejects a raw post-delegation text leak instead of selecting fallback prose', async () => {

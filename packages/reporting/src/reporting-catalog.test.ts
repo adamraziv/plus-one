@@ -20,6 +20,7 @@ describe('ReportingCatalog', () => {
       'reporting.category_spend_monthly',
       'reporting.cash_flow_monthly',
       'reporting.obligation_occurrences',
+      'reporting.budget_list',
       'reporting.budget_variance',
       'reporting.savings_goal_progress',
       'reporting.debt_progress',

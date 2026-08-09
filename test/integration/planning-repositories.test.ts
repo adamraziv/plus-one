@@ -92,17 +92,41 @@ describe('planning repositories', () => {
         strategy: { monthlyPayment: { amount: '300.00', currency: 'USD' }, priority: 1 },
       }), fixture.context);
 
-      await expect(new BudgetRepository().activate(client, ActivateBudgetProposalSchemaV1.parse({
+      const overlappingBudget = await new BudgetRepository().activate(client, ActivateBudgetProposalSchemaV1.parse({
         schemaName: 'activate-budget-proposal',
         schemaVersion: 1,
         householdId: fixture.householdId,
         scopeKey: 'monthly',
         name: 'Overlap budget',
         validFrom: '2026-06-15',
-        categories: [{ categoryKey: 'other', name: 'Other' }],
-        allocations: [],
-        mappings: [],
-      }), fixture.context)).rejects.toThrow(/overlap/);
+        validTo: '2026-06-30',
+        categories: [{ categoryKey: 'food', name: 'Food' }],
+        allocations: [{
+          categoryKey: 'food',
+          periodStart: '2026-06-15',
+          periodEnd: '2026-06-30',
+          amount: { amount: '600.00', currency: 'USD' },
+        }],
+        mappings: [{ categoryKey: 'food', accountId: fixture.expenseAccountId, direction: 'expense', validFrom: '2026-06-01' }],
+      }), fixture.context);
+      expect(overlappingBudget.recordType).toBe('budget_version');
+      expect(overlappingBudget.recordId).not.toBe(budget.recordId);
+
+      const budgetCount = await client.query<{ count: string }>(
+        'SELECT count(*) FROM planning.budget_versions WHERE household_id = $1',
+        [fixture.householdDbId],
+      );
+      expect(budgetCount.rows[0]?.count).toBe('2');
+      const allocationCount = await client.query<{ count: string }>(
+        'SELECT count(*) FROM planning.budget_allocations WHERE household_id = $1',
+        [fixture.householdDbId],
+      );
+      expect(allocationCount.rows[0]?.count).toBe('2');
+      const mappingCount = await client.query<{ count: string }>(
+        'SELECT count(*) FROM planning.budget_category_account_mappings WHERE household_id = $1',
+        [fixture.householdDbId],
+      );
+      expect(mappingCount.rows[0]?.count).toBe('1');
 
       await client.query('ROLLBACK');
       await client.query('BEGIN');
