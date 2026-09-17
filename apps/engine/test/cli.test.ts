@@ -19,6 +19,25 @@ describe('Plus One CLI', () => {
     PLUS_ONE_MEMORY_PASSWORD: 'memory-password',
   };
 
+  it.each(['help', '--help', '-h'])('prints operator help for %s without starting runtime resources', async (command) => {
+    const stdout = { write: vi.fn() };
+    const stderr = { write: vi.fn() };
+    const runDaemonStart = vi.fn(async () => 0);
+
+    await expect(runPlusOneCli([command], {
+      runDaemonStart,
+      stdout,
+      stderr,
+    })).resolves.toBe(0);
+
+    expect(stdout.write).toHaveBeenCalledWith(expect.stringContaining('Usage: plus-one [command]'));
+    expect(stdout.write).toHaveBeenCalledWith(expect.stringContaining('telegram pairing list-pending'));
+    expect(stdout.write).toHaveBeenCalledWith(expect.stringContaining('telegram pairing approve'));
+    expect(stdout.write).toHaveBeenCalledWith(expect.stringContaining('telegram pairing revoke'));
+    expect(stderr.write).not.toHaveBeenCalled();
+    expect(runDaemonStart).not.toHaveBeenCalled();
+  });
+
   it('activates Telegram pairing approval through the telegram pairing command', async () => {
     const write = vi.fn();
     const service = {
