@@ -6,6 +6,13 @@ import process from 'node:process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
+import { isHelpRequest, renderHelp } from './plus-one-command-registry.mjs';
+
+const args = process.argv.slice(2);
+if (isHelpRequest(args)) {
+  process.stdout.write(renderHelp());
+  process.exit(0);
+}
 
 const launcherPath = realpathSync(fileURLToPath(import.meta.url));
 const installationRoot = resolve(dirname(launcherPath), '..');
@@ -14,7 +21,7 @@ const child = spawn(process.execPath, [
   '--import',
   tsxLoader,
   resolve(installationRoot, 'apps/engine/src/cli.ts'),
-  ...process.argv.slice(2),
+  ...args,
 ], {
   cwd: installationRoot,
   stdio: 'inherit',

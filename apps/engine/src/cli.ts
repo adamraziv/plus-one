@@ -1,5 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import {
+  commandRegistry,
+  isHelpRequest,
+  renderHelp,
+  type CommandContext,
+  type CommandDefinition,
+} from '../../../bin/plus-one-command-registry.mjs';
+import {
   closeDatabasePools,
   createDatabasePools,
   PostgresChannelPairingRepository,
@@ -49,7 +56,9 @@ interface PlusOneCliDependencies {
   configureLogging?: typeof configureLogging;
 }
 
-const usage = 'Usage: plus-one [stop|status|live] | logs [agent|errors|gateway] [options] | telegram pairing approve <code> --household <household_id> | telegram pairing revoke <telegram_user_id> | telegram pairing list-pending\n';
+function findCommand(argv: string[]): CommandDefinition | undefined {
+  return commandRegistry.find((command) => command.matches(argv));
+}
 
 export async function runPlusOneCli(
   argv: string[] = process.argv.slice(2),
@@ -58,6 +67,11 @@ export async function runPlusOneCli(
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
   try {
+    if (isHelpRequest(argv)) {
+      stdout.write(renderHelp());
+      return 0;
+    }
+
     if (argv.length === 0) {
       return await (dependencies.runDaemonStart ?? dependencies.runGateway ?? startGatewayDaemon)({
         environment: dependencies.environment ?? process.env,
@@ -66,54 +80,46 @@ export async function runPlusOneCli(
       });
     }
 
-    if (argv[0] === '--foreground' && argv.length === 1) {
-      return await (dependencies.runForegroundGateway ?? runGatewayRuntime)({
-        environment: dependencies.environment ?? process.env,
-        stdout,
-        stderr,
-      });
+    const command = findCommand(argv);
+    if (command !== undefined) {
+      const operations: CommandContext['operations'] = {
+        status: () => (dependencies.runDaemonStatus ?? getGatewayDaemonStatus)({
+          environment: dependencies.environment ?? process.env,
+          stdout,
+          stderr,
+        }),
+        stop: () => (dependencies.runDaemonStop ?? stopGatewayDaemon)({
+          environment: dependencies.environment ?? process.env,
+          stdout,
+          stderr,
+        }),
+        live: () => (dependencies.runLiveCli ?? runLiveCli)({
+          environment: dependencies.environment ?? process.env,
+          stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
+          stdout,
+          stderr,
+          ...(dependencies.configureLogging === undefined ? {} : { configureLogging: dependencies.configureLogging }),
+        }),
+        logs: (commandArgv) => (dependencies.runLogs ?? runLogsCli)(commandArgv, {
+          environment: dependencies.environment ?? process.env,
+          stdout,
+          stderr,
+        }),
+        telegramPairing: async (commandArgv) => {
+          const result = await runTelegramPairingCommand(commandArgv, dependencies);
+          stdout.write(`${result}\n`);
+          return 0;
+        },
+        foreground: () => (dependencies.runForegroundGateway ?? runGatewayRuntime)({
+          environment: dependencies.environment ?? process.env,
+          stdout,
+          stderr,
+        }),
+      };
+      const context: CommandContext = { operations };
+      return await command.run(argv, context);
     }
-
-    if (argv[0] === 'stop' && argv.length === 1) {
-      return await (dependencies.runDaemonStop ?? stopGatewayDaemon)({
-        environment: dependencies.environment ?? process.env,
-        stdout,
-        stderr,
-      });
-    }
-
-    if (argv[0] === 'status' && argv.length === 1) {
-      return await (dependencies.runDaemonStatus ?? getGatewayDaemonStatus)({
-        environment: dependencies.environment ?? process.env,
-        stdout,
-        stderr,
-      });
-    }
-
-    if (argv[0] === 'logs') {
-      return await (dependencies.runLogs ?? runLogsCli)(argv.slice(1), {
-        environment: dependencies.environment ?? process.env,
-        stdout,
-        stderr,
-      });
-    }
-
-    if (argv[0] === 'live') {
-      return await (dependencies.runLiveCli ?? runLiveCli)({
-        environment: dependencies.environment ?? process.env,
-        stdin: (dependencies.stdin ?? process.stdin) as NonNullable<RunLiveCliDependencies['stdin']>,
-        stdout,
-        stderr,
-        ...(dependencies.configureLogging === undefined ? {} : { configureLogging: dependencies.configureLogging }),
-      });
-    }
-
-    if (argv[0] === 'telegram' && argv[1] === 'pairing') {
-      const result = await runTelegramPairingCommand(argv.slice(2), dependencies);
-      stdout.write(`${result}\n`);
-      return 0;
-    }
-    stderr.write(usage);
+    stderr.write(renderHelp());
     return 1;
   } catch (error) {
     stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
